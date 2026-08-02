@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="app-head">
+  <div>
+    <p class="kicker">TARIFLAR</p>
+    <h2>TezPOS uchun mos reja tanlang</h2>
+    <p>Biznes hajmiga qarab narx va limitlarni osongina tanlang.</p>
+  </div>
+  <div class="app-head-actions">
+    <a href="/accounts/cabinet/" role="button" class="cta-main">Shaxsiy kabinet</a>
+    <a href="/dashboard/" role="button" class="secondary outline">Dashboard</a>
+  </div>
+</section>
+
+{% if subscription %}
+<article class="data-card current-plan">
+  <strong>Joriy tarif:</strong> {{ subscription.plan.name }} |
+  <strong>Holat:</strong> {{ subscription.status }} |
+  <strong>Tugash sanasi:</strong> {{ subscription.ends_at }}
+</article>
+{% endif %}
+
+<section class="pricing-grid">
+{% for plan in plans %}
+  <article class="price-card">
+    <p class="plan-name">{{ plan.name }}</p>
+    <h3 class="plan-price">{{ plan.monthly_price|floatformat:0 }} so'm</h3>
+    <p class="plan-cycle">/oyiga</p>
+    <ul>
+      <li>{{ plan.max_users }} tagacha foydalanuvchi</li>
+      <li>{{ plan.max_products }} tagacha mahsulot</li>
+      <li>Real-time analitika paneli</li>
+      <li>Texnik qo'llab-quvvatlash</li>
+    </ul>
+    <button disabled class="cta-main">Tez orada ulash</button>
+  </article>
+{% empty %}
+  <article class="data-card">
+    <p>Tariflar hali qo'shilmagan.</p>
+  </article>
+{% endfor %}
+</section>
+{% endblock %}

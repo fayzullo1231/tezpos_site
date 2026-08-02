@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TezPOS — Kirish</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/site.css">
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  <link rel="apple-touch-icon" href="/static/img/favicon.png">
+</head>
+<body class="auth-body">
+<main class="auth-wrap">
+  <article class="auth-card">
+    <img src="/static/img/logo.png" alt="TezPOS" height="36" class="auth-logo">
+    <p class="kicker">SHAXSIY KABINET</p>
+    <h2>Kirish</h2>
+    <p>TezPOS dasturidagi server nomi, foydalanuvchi va parol bilan kiring. Kabinetdagi barcha ma’lumotlar shu hisobdan olinadi.</p>
+    {% if login_errors %}
+    <ul class="auth-errors">
+      {% for err in login_errors %}
+      <li>{{ err }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <form method="post" class="auth-form" novalidate>
+      {% csrf_token %}
+      <label for="id_server_name">Server nomi *</label>
+      <input type="text" name="server_name" id="id_server_name" value="{{ default_server }}" placeholder="TezPOS server nomi" required autocomplete="organization" autofocus>
+      <label for="id_username">Foydalanuvchi *</label>
+      <input type="text" name="username" id="id_username" value="{{ default_login }}" placeholder="Foydalanuvchi" required autocomplete="username">
+      <label for="id_password">Parol *</label>
+      <input type="password" name="password" id="id_password" placeholder="Parol" required autocomplete="current-password">
+      <button type="submit" class="auth-submit">Kirish</button>
+      <input type="hidden" name="next" value="{{ next|default:'/accounts/cabinet/' }}">
+    </form>
+    <p class="auth-hint">API: <code>{{ api_base }}</code></p>
+    <a href="/" class="auth-back">← Bosh sahifa</a>
+  </article>
+</main>
+</body>
+</html>
