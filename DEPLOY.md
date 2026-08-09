@@ -1,87 +1,104 @@
-# TezPOS sayt — Contabo + HTTPS (tez-pos.uz)
+# TezPOS — Contabo + tez-pos.uz + Google (bosqichma-bosqich)
 
-Bu qo‘llanma `tezpos_site` (landing + shaxsiy kabinet) ni Contabo VPS ga qo‘yish
-va `https://tez-pos.uz` orqali ishlatish uchun.
+Bu qo‘llanma: kompyuterdan GitHub → Contabo VPS → `https://tez-pos.uz` → Google qidiruv.
+
+Repo: `https://github.com/fayzullo1231/tezpos_site.git`
 
 ---
 
-## 0. DNS (rasimdagi panel)
+## Umumiy tartib (5 bosqich)
 
-Contabo serveringizning **public IP** sini oling (`curl -4 ifconfig.me` serverda).
+```
+1) DNS: tez-pos.uz → Contabo IP
+2) Kompyuter: kodni GitHub ga push
+3) Server: git clone/pull + .env + gunicorn + nginx + SSL
+4) Backend API: TEZPOS_API_URL (desktop/backend)
+5) Google: Search Console + sitemap
+```
+
+---
+
+## 1-bosqich — DNS (domen Contabo ga)
+
+Contabo server IP ni oling (serverda):
+
+```bash
+curl -4 ifconfig.me
+```
+
+Domen panelida (tez-pos.uz DNS):
 
 | NAME | TYPE | RDATA |
 |------|------|--------|
-| `@` | A | **Contabo IP** (hozirgi `13.140.146.78` o‘rniga) |
-| `www` | CNAME | `tez-pos.uz` (o‘zgartirish shart emas) |
+| `@` | A | **Contabo public IP** |
+| `www` | CNAME | `tez-pos.uz` |
 
-**Save Changes** bosing. DNS 5–60 daqiqa (ba’zan 24 soat) tarqaladi.
+**Save Changes.** 5–60 daqiqa (ba’zan 24 soat) kutish mumkin.
 
-Tekshiruv (kompyuterda):
+Tekshiruv (Windows PowerShell):
 
-```bash
+```powershell
 nslookup tez-pos.uz
 ```
 
-Javob Contabo IP bo‘lishi kerak.
+Javob Contabo IP bo‘lishi kerak. Eski IP (`13.140.146.78` va hokazo) chiqsa — hali DNS yangilanmagan.
 
 ---
 
-## 1. GitHub (bir marta)
+## 2-bosqich — Kompyuter: GitHub ga yuborish
 
-Loyiha allaqachon GitHub ga push qilingan bo‘lishi kerak. Repo URL ni saqlang, masalan:
+Loyiha papkasida (`tezpos_site`):
 
-`https://github.com/fayzullo1231/tezpos_site.git`
+```powershell
+cd C:\Users\User\Documents\tezpos_site
+git status
+git add -A
+git commit -m "Production: SEO, deploy ready"
+git push origin main
+```
+
+Remote: `origin` → `https://github.com/fayzullo1231/tezpos_site.git`
+
+Agar push so‘rasa login: GitHub Personal Access Token yoki `gh auth login`.
 
 ---
 
-## 2. Contabo server — paketlar
+## 3-bosqich — Contabo: birinchi o‘rnatish
+
+### 3.1 SSH
 
 ```bash
 ssh root@CONTABO_IP
-
-apt update && apt upgrade -y
-apt install -y git python3 python3-venv python3-pip nginx certbot python3-certbot-nginx
 ```
 
----
+### 3.2 Paketlar
 
-## 3. Loyihani clone / pull
+```bash
+apt update && apt upgrade -y
+apt install -y git python3 python3-venv python3-pip nginx certbot python3-certbot-nginx ufw
+```
+
+### 3.3 Clone + deploy skript
 
 ```bash
 export REPO_URL="https://github.com/fayzullo1231/tezpos_site.git"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/fayzullo1231/tezpos_site/main/deploy/deploy.sh)" || true
+
+# Yoki qo'lda:
 git clone "$REPO_URL" /opt/tezpos_site
 cd /opt/tezpos_site
+REPO_URL="$REPO_URL" bash deploy/deploy.sh
 ```
 
-Keyingi yangilanishlar:
+Skript: venv, pip, migrate, collectstatic, gunicorn systemd (`:8001`).
+
+### 3.4 `.env` ni to‘ldirish
 
 ```bash
-cd /opt/tezpos_site
-git pull origin main
+nano /opt/tezpos_site/.env
 ```
 
-yoki:
-
-```bash
-REPO_URL=https://github.com/fayzullo1231/tezpos_site.git bash deploy/deploy.sh
-```
-
----
-
-## 4. Virtualenv + .env
-
-```bash
-cd /opt/tezpos_site
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
-
-cp .env.example .env
-nano .env
-```
-
-`.env` da muhimlar:
+Minimal:
 
 ```env
 DEBUG=0
@@ -89,31 +106,24 @@ SECRET_KEY=juda-uzun-tasodifiy-kalit
 ALLOWED_HOSTS=tez-pos.uz,www.tez-pos.uz
 CSRF_TRUSTED_ORIGINS=https://tez-pos.uz,https://www.tez-pos.uz
 USE_HTTPS=1
-TEZPOS_API_URL=http://127.0.0.1:8000
+SECURE_SSL_REDIRECT=1
+TEZPOS_API_URL=http://127.0.0.1:9000
+DEVSMS_TOKEN=
 ```
 
-`SECRET_KEY` generatsiya:
+**Muhim:** `TEZPOS_API_URL` — TezPOS **backend** (desktop API). Sayt o‘zi gunicorn da `8001` da. Backend boshqa portda bo‘lsa, shu URL ni yozing.
+
+`SECRET_KEY`:
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(50))"
+python3 -c "import secrets; print(secrets.token_urlsafe(50))"
 ```
 
+Huquqlar:
+
 ```bash
-mkdir -p media staticfiles /var/log/tezpos_site
 chown -R www-data:www-data /opt/tezpos_site /var/log/tezpos_site
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput
-```
-
----
-
-## 5. Gunicorn (systemd)
-
-```bash
-cp /opt/tezpos_site/deploy/tezpos-site.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now tezpos-site
-systemctl status tezpos-site
+systemctl restart tezpos-site
 ```
 
 Tekshiruv:
@@ -122,11 +132,7 @@ Tekshiruv:
 curl -I http://127.0.0.1:8001/
 ```
 
----
-
-## 6. Nginx + HTTPS
-
-**Birinchi** HTTP config (SSL sertifikat olish uchun):
+### 3.5 Nginx (HTTP → keyin SSL)
 
 ```bash
 mkdir -p /var/www/certbot
@@ -136,53 +142,96 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 ```
 
-DNS Contabo IP ga qaraganini kutib, SSL:
+DNS Contabo IP ga qaraganini kutib:
 
 ```bash
-certbot --nginx -d tez-pos.uz -d www.tez-pos.uz --redirect -m siz@email.com --agree-tos -n
+certbot --nginx -d tez-pos.uz -d www.tez-pos.uz --redirect -m siz@email.com --agree-tos
 ```
 
-Yoki to‘liq HTTPS conf:
+To‘liq HTTPS conf (ixtiyoriy, certbot dan keyin):
 
 ```bash
 cp /opt/tezpos_site/deploy/nginx-tez-pos.uz.conf /etc/nginx/sites-available/tez-pos.uz
 nginx -t && systemctl reload nginx
 ```
 
-Ochilishi kerak: **https://tez-pos.uz**
-
----
-
-## 7. Firewall
+Firewall:
 
 ```bash
 ufw allow OpenSSH
 ufw allow 80/tcp
 ufw allow 443/tcp
-ufw enable
+ufw --force enable
+```
+
+Brauzer: **https://tez-pos.uz**
+
+Admin (serverda yaratish):
+
+```bash
+cd /opt/tezpos_site
+source .venv/bin/activate
+python manage.py createsuperuser
 ```
 
 ---
 
-## 8. Keyingi deploy (kod yangilash)
+## 4-bosqich — Har safar kod yangilash (git pull)
 
-Kompyuterda:
+### Kompyuterda
 
-```bash
-git add -A && git commit -m "..." && git push
+```powershell
+git add -A
+git commit -m "..."
+git push origin main
 ```
 
-Serverda:
+### Contabo da
 
 ```bash
 cd /opt/tezpos_site
 git pull origin main
-source .venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput
-systemctl restart tezpos-site
+# yoki bitta buyruq:
+REPO_URL=https://github.com/fayzullo1231/tezpos_site.git bash deploy/deploy.sh
 ```
+
+`deploy.sh` o‘zi: pull → pip → migrate → collectstatic → gunicorn restart.
+
+---
+
+## 5-bosqich — Google da «tez pos» chiqishi
+
+Saytda tayyor: `robots.txt`, `sitemap.xml`, meta description / Open Graph.
+
+### 5.1 Tekshiruv
+
+Brauzerda oching:
+
+- https://tez-pos.uz/robots.txt  
+- https://tez-pos.uz/sitemap.xml  
+- https://tez-pos.uz/ (title va description DevTools → Elements)
+
+### 5.2 Google Search Console
+
+1. https://search.google.com/search-console  
+2. **Property qo‘shish** → `https://tez-pos.uz`  
+3. DNS yoki HTML file orqali tasdiqlash  
+4. **Sitemaps** → `https://tez-pos.uz/sitemap.xml` yuboring  
+5. **URL inspection** → `https://tez-pos.uz/` → **Request indexing**
+
+### 5.3 Kutish va SEO haqiqati
+
+- Indekslash: odatda **bir necha kun** (ba’zan 1–2 hafta).  
+- «tez pos» da **1-o‘rin** kafolat emas — raqobat, backlink, kontent kerak.  
+- Yaxshilash: blog/sahifalar («TezPOS nima», «POS dasturi O‘zbekiston»), Google Business Profile, Telegram/Instagramda `tez-pos.uz` link.
+
+### 5.4 Tez tekshiruv
+
+```
+site:tez-pos.uz
+```
+
+Google ga yozib qidirilsin — indeksga tushganini ko‘rsatadi.
 
 ---
 
@@ -190,34 +239,32 @@ systemctl restart tezpos-site
 
 | Belgi | Yechim |
 |--------|--------|
-| 502 Bad Gateway | `systemctl status tezpos-site` — gunicorn ishlamayapti |
-| CSRF / login xato | `.env` da `CSRF_TRUSTED_ORIGINS=https://tez-pos.uz,...` |
+| 502 Bad Gateway | `systemctl status tezpos-site` + `journalctl -u tezpos-site -n 50` |
+| CSRF / login | `.env`: `CSRF_TRUSTED_ORIGINS=https://tez-pos.uz,...` |
 | Static yo‘q | `collectstatic` + nginx `/static/` |
-| SSL xato | DNS hali eski IP ga qaragan — `nslookup tez-pos.uz` |
-| Kabinet API xato | `TEZPOS_API_URL` ni to‘g‘ri backendga qo‘ying |
+| SSL xato | DNS eski IP — `nslookup tez-pos.uz` |
+| Kabinet API xato | `TEZPOS_API_URL` backendga to‘g‘ri |
+| Permission denied | `chown -R www-data:www-data /opt/tezpos_site` |
 
 ---
 
 ## Qisqa checklist
 
-1. DNS A `@` → Contabo IP, Save  
-2. GitHub dan `git clone` → `/opt/tezpos_site`  
-3. `.env` + venv + migrate + collectstatic  
-4. systemd gunicorn `:8001`  
-5. nginx + certbot → HTTPS  
-6. Brauzerda `https://tez-pos.uz`
+- [ ] DNS A `@` → Contabo IP  
+- [ ] `git push` GitHub `main`  
+- [ ] Server: clone + `deploy/deploy.sh` + `.env`  
+- [ ] nginx + certbot → HTTPS  
+- [ ] `https://tez-pos.uz` ochiladi  
+- [ ] Search Console + sitemap + Request indexing  
 
 ---
 
-## Tezlik / production tayyor
+## Fayllar
 
-- Kabinet: `bot` / `qarzdorlar` API kutmasdan ochiladi; splash faqat birinchi kirishda
-- Static: WhiteNoise Manifest + nginx `30d immutable`
-- Gunicorn: 4 worker × 2 thread
-- `.env`: `DEBUG=0`, `USE_HTTPS=1`, `TEZPOS_API_URL` (backend), `DEVSMS_TOKEN`
-
-Yangilash:
-
-```bash
-REPO_URL=https://github.com/fayzullo1231/tezpos_site.git bash /opt/tezpos_site/deploy/deploy.sh
-```
+| Fayl | Vazifa |
+|------|--------|
+| `deploy/deploy.sh` | clone/pull + venv + migrate + gunicorn |
+| `deploy/tezpos-site.service` | systemd (gunicorn `:8001`) |
+| `deploy/nginx-tez-pos.uz.conf` | HTTPS nginx |
+| `deploy/nginx-tez-pos.uz.http-only.conf` | SSL oldidan HTTP |
+| `.env.example` | production env shablon |
