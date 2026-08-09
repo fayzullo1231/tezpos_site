@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load l10n static %}
+{% load l10n %}
 {% block title %}Shaxsiy kabinet — {{ tenant.business_name }}{% endblock %}
 {% block body_class %}cabinet-body{% endblock %}
 {% block extra_head %}
@@ -66,27 +66,20 @@
     85%{opacity:1}
     100%{left:100%;opacity:0}
   }
-  /* Skel faqat overlay — layout balandligini egallamasin */
-  html.cabinet-booting .cabinet-content{
-    display:none !important;
-  }
-  html.cabinet-booting .cab-skel{
-    display:grid;opacity:1;visibility:visible;
-  }
-  html.cabinet-ready .cab-skel{
-    display:none !important;height:0 !important;margin:0 !important;padding:0 !important;
-    overflow:hidden !important;pointer-events:none !important;
-  }
+  html.cabinet-booting .cabinet-content{opacity:0;visibility:hidden;pointer-events:none}
+  html.cabinet-booting .cab-skel{opacity:1;visibility:visible}
+  html.cabinet-ready .cab-skel{opacity:0;visibility:hidden;pointer-events:none;transition:opacity .35s ease,visibility .35s ease}
   html.cabinet-ready .cabinet-content{
-    display:block;
-    animation:cab-content-in .35s ease both;
+    opacity:1;visibility:visible;
+    animation:cab-content-in .45s ease both;
   }
   @keyframes cab-content-in{
     from{opacity:0}
     to{opacity:1}
   }
   .cab-skel{
-    display:none;gap:.75rem;padding:0;margin:0;
+    display:grid;gap:1rem;padding:.15rem 0 1.5rem;
+    opacity:0;visibility:hidden;
   }
   .sk{
     display:block;border-radius:14px;
@@ -94,34 +87,28 @@
     background-size:220% 100%;
     animation:cab-skel-shimmer 1.15s ease-in-out infinite;
   }
-  .cab-skel-banner{height:72px;border-radius:14px}
-  .cab-skel-chips{display:flex;flex-wrap:wrap;gap:.45rem}
-  .cab-skel-chips .sk{height:28px;width:64px;border-radius:10px;flex:0 0 auto}
-  .cab-skel-chips .sk:nth-child(2){width:76px}
-  .cab-skel-chips .sk:nth-child(3){width:56px}
-  .cab-skel-chips .sk:nth-child(5){width:84px}
-  .cab-skel-chips .sk:nth-child(7){width:70px}
+  .cab-skel-banner{height:clamp(140px,28vw,220px);border-radius:18px}
+  .cab-skel-chips{display:flex;flex-wrap:wrap;gap:.55rem}
+  .cab-skel-chips .sk{height:36px;width:72px;border-radius:12px;flex:0 0 auto}
+  .cab-skel-chips .sk:nth-child(2){width:88px}
+  .cab-skel-chips .sk:nth-child(3){width:64px}
+  .cab-skel-chips .sk:nth-child(5){width:96px}
+  .cab-skel-chips .sk:nth-child(7){width:80px}
   .cab-skel-cards{
     display:grid;
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    gap:.65rem;
+    grid-template-columns:repeat(auto-fill,minmax(148px,1fr));
+    gap:.75rem;
   }
-  .cab-skel-cards .sk{height:88px;border-radius:14px;min-height:0;aspect-ratio:auto}
+  .cab-skel-cards .sk{aspect-ratio:1/1.05;border-radius:16px;min-height:132px}
   @keyframes cab-skel-shimmer{
     0%{background-position:100% 0}
     100%{background-position:-100% 0}
-  }
-  html.cabinet-ready .cabinet-content > .cabinet-kpi{
-    margin-top:0 !important;
-  }
-  .cabinet-main > .cabinet-topbar{
-    margin-bottom:.7rem;
   }
   html.cabinet-ready .cabinet-content > .cabinet-kpi > article,
   html.cabinet-ready .cabinet-content > .cabinet-card,
   html.cabinet-ready .cabinet-content > .cabinet-charts > .cabinet-card,
   html.cabinet-ready .cabinet-content > .tops-products-panel {
-    animation:cab-item-in .45s cubic-bezier(.22,.8,.28,1) both;
+    animation:cab-item-in .5s cubic-bezier(.22,.8,.28,1) both;
   }
   html.cabinet-ready .cabinet-content > .cabinet-kpi > article:nth-child(1){animation-delay:.04s}
   html.cabinet-ready .cabinet-content > .cabinet-kpi > article:nth-child(2){animation-delay:.09s}
@@ -155,27 +142,30 @@
 </div>
 <script>
 (function () {
-  var seen = false;
-  try { seen = sessionStorage.getItem("tezpos_cab_seen") === "1"; } catch (e) {}
   var splash = document.getElementById("cabinet-splash");
-  if (!splash) {
+  var fast = {{ fast_nav|default:False|yesno:"true,false" }};
+  try {
+    if (sessionStorage.getItem("tezpos_cab_seen") === "1") fast = true;
+  } catch (e) {}
+  function readyNow() {
     document.documentElement.classList.remove("cabinet-booting");
     document.documentElement.classList.add("cabinet-ready");
-    return;
-  }
-  // Bo‘limdan bo‘limga — splashni o‘tkazib yuborish (tez navigatsiya)
-  if (seen || {{ fast_nav|default:False|yesno:"true,false" }}) {
-    splash.classList.add("is-done");
-    if (splash.parentNode) splash.parentNode.removeChild(splash);
-    document.documentElement.classList.remove("cabinet-booting");
-    document.documentElement.classList.add("cabinet-ready");
+    if (splash && splash.parentNode) splash.parentNode.removeChild(splash);
     var skel = document.getElementById("cabinet-skel");
     if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
     try { sessionStorage.setItem("tezpos_cab_seen", "1"); } catch (e) {}
+  }
+  if (!splash) {
+    readyNow();
     return;
   }
-  var minMs = 320;
-  var maxMs = 700;
+  // Bo‘limdan bo‘limga — splashni o‘tkazib yuborish
+  if (fast) {
+    readyNow();
+    return;
+  }
+  var minMs = 280;
+  var maxMs = 600;
   var started = Date.now();
   var finished = false;
   function finish() {
@@ -185,15 +175,8 @@
     setTimeout(function () {
       splash.classList.add("is-done");
       setTimeout(function () {
-        var skel = document.getElementById("cabinet-skel");
-        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
-        document.documentElement.classList.remove("cabinet-booting");
-        document.documentElement.classList.add("cabinet-ready");
-        try { sessionStorage.setItem("tezpos_cab_seen", "1"); } catch (e) {}
-        setTimeout(function () {
-          if (splash && splash.parentNode) splash.parentNode.removeChild(splash);
-        }, 280);
-      }, 180);
+        readyNow();
+      }, 160);
     }, wait);
   }
   if (document.readyState === "loading") {
@@ -225,6 +208,7 @@
       <a href="?section=shifts" class="{% if section == 'shifts' %}is-active{% endif %}"><span class="nav-dot"></span> Smenalar</a>
       <a href="?section=products" class="{% if section == 'products' %}is-active{% endif %}"><span class="nav-dot"></span> Mahsulotlar</a>
       <a href="?section=inventory" class="{% if section == 'inventory' %}is-active{% endif %}"><span class="nav-dot"></span> Ombor</a>
+      <a href="?section=stock_value" class="{% if section == 'stock_value' %}is-active{% endif %}"><span class="nav-dot"></span> Ombor qiymati</a>
       <a href="?section=bot" class="{% if section == 'bot' %}is-active{% endif %}"><span class="nav-dot"></span> Bot sozlamalari</a>
       <a href="?section=debtors" class="{% if section == 'debtors' %}is-active{% endif %}"><span class="nav-dot"></span> Qarzdorlar ro‘yxati</a>
     </nav>
@@ -269,8 +253,8 @@
         <span class="sk"></span>
       </div>
       <div class="cab-skel-cards">
-        <div class="sk"></div><div class="sk"></div>
-        <div class="sk"></div><div class="sk"></div>
+        <div class="sk"></div><div class="sk"></div><div class="sk"></div>
+        <div class="sk"></div><div class="sk"></div><div class="sk"></div>
       </div>
     </div>
 
@@ -510,7 +494,7 @@
           </label>
         </div>
       </div>
-      <div class="tops-list" id="tops-products-grid">
+      <div class="product-tile-grid product-tile-grid--list product-tile-grid--full" id="tops-products-grid">
         <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
           <span class="sk"></span><span class="sk"></span><span class="sk"></span>
           <span class="sk"></span><span class="sk"></span>
@@ -759,7 +743,7 @@
       <div class="cabinet-card-head">
         <div>
           <h3>Bot sozlamalari</h3>
-          <p class="cabinet-hint">Telegram bot tokenini qo‘ying — smena yopilganda kunlik sotuv, qarzdorlar, kam qoldiq va to‘liq Excel yuboriladi.</p>
+          <p class="cabinet-hint">Telegram bot tokenini qo‘ying — smena ochilganda/yopilganda savdo, foyda, sotuv/optom va qarzlar Excel bilan yuboriladi.</p>
         </div>
         <span class="bot-status-pill {% if bot_settings.enabled %}is-on{% else %}is-off{% endif %}" id="bot-status-pill">
           {% if bot_settings.enabled %}Yoqilgan{% else %}O‘chirilgan{% endif %}
@@ -800,7 +784,7 @@
           </label>
           <label class="bot-field bot-switch">
             <input type="checkbox" id="bot-notify-close" {% if bot_settings.notify_close %}checked{% endif %}>
-            <span>Smena yopilganda to‘liq hisobot + Excel</span>
+            <span>Smena yopilganda xabar + Excel</span>
           </label>
         </div>
 
@@ -820,7 +804,7 @@
           <li>O‘zingiz botga kirib <strong>/start</strong> yozing (majburiy).</li>
           <li><strong>Chatlarni topish</strong> → o‘z Chat ID raqamingizni tanlang.</li>
           <li>Guruh/kanal uchun botni qo‘shing va admin qiling.</li>
-          <li>Smena yopilganda: kunlik sotuv, sof foyda, qarzdorlar ro‘yxati, kam qoldiq + Excel (barcha ma’lumot).</li>
+          <li>Smena yopilganda: savdo, foyda, sotuv/optom, qarzlar + Excel keladi.</li>
         </ol>
       </div>
     </section>
@@ -852,6 +836,47 @@
       </div>
       <p class="cabinet-empty" id="debtors-empty" hidden>Qarzdorlar yo‘q.</p>
       <p class="cabinet-hint" id="debtors-error" hidden></p>
+    </section>
+    {% endif %}
+
+    {% if section == 'stock_value' %}
+    <section class="cabinet-card stock-value-panel" id="stock-value-panel">
+      <div class="cabinet-card-head">
+        <div>
+          <h3>Ombor qiymati</h3>
+          <p class="cabinet-hint">Har bir tovar qoldig‘i × tannarx va sotuv / narx ro‘yxatlari — omborda qancha pulik tovar borligi.</p>
+        </div>
+      </div>
+      <div class="debtors-kpis" id="stock-value-kpis">
+        <div class="debtors-kpi"><span>Tovarlar</span><strong id="sv-count">—</strong></div>
+        <div class="debtors-kpi"><span>Jami qoldiq</span><strong id="sv-qty">—</strong></div>
+        <div class="debtors-kpi"><span>Tannarx jami</span><strong id="sv-cost-total">—</strong></div>
+        <div class="debtors-kpi"><span>Sotuv jami</span><strong class="is-profit" id="sv-sell-total">—</strong></div>
+        <div class="debtors-kpi"><span>Farq (sotuv − tannarx)</span><strong class="is-profit" id="sv-margin-total">—</strong></div>
+      </div>
+      <div class="stock-value-toolbar">
+        <label class="products-search">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 104.47 10l4.26 4.27 1.42-1.42-4.27-4.26A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z"/></svg>
+          <input type="search" id="sv-search" placeholder="Qidiruv: nom yoki shtrixkod…" autocomplete="off">
+        </label>
+        <label class="sv-filter">
+          <span>Qoldiq</span>
+          <select id="sv-stock-filter">
+            <option value="gt0" selected>Faqat &gt; 0</option>
+            <option value="all">Hammasi</option>
+            <option value="lt0">Manfiy</option>
+            <option value="eq0">Nol</option>
+          </select>
+        </label>
+      </div>
+      <div class="products-table-wrap stock-value-table-wrap">
+        <table class="products-table" id="stock-value-table">
+          <thead id="stock-value-thead"></thead>
+          <tbody id="stock-value-tbody"></tbody>
+          <tfoot id="stock-value-tfoot"></tfoot>
+        </table>
+      </div>
+      <p class="cabinet-empty" id="sv-empty" hidden>Ko‘rsatish uchun tovar yo‘q.</p>
     </section>
     {% endif %}
 
@@ -1228,11 +1253,11 @@
 {% endblock %}
 
 {% block extra_js %}
-{% if section == 'overview' or section == 'reports' or section == 'sales' or section == 'shifts' or section == 'tops' %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% if section == 'overview' or section == 'reports' or section == 'tops' %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 {% endif %}
 {% if section == 'products' or section == 'inventory' or section == 'labels' %}
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 {% endif %}
 <script>
   window.TEZPOS_CHARTS = {
@@ -1262,8 +1287,10 @@
     debtorPayUrl: "{% url 'accounts:cabinet_debtor_pay' %}",
     botSettings: {{ bot_settings_json|default:"{}"|safe }},
     daySales: {{ day_sales_json|default:"[]"|safe }},
-    saleDate: "{{ sale_date_iso|default:'' }}"
+    saleDate: "{{ sale_date_iso|default:'' }}",
+    section: "{{ section|default:'overview'|escapejs }}",
+    fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
 </script>
-<script src="{% static 'cabinet.js' %}" defer></script>
+<script src="/static/cabinet.js?v=perf-shell-2" defer></script>
 {% endblock %}

@@ -404,9 +404,9 @@ def build_shift_message(
         f"{emoji} <b>{business_name}</b>",
         f"Smena <b>{status}</b>",
         f"Kassir: <b>{shift.get('cashier') or '—'}</b>",
-        f"Vaqt: {shift.get('opened_at_display') or shift.get('opened_at') or '—'}"
+        f"Vaqt: {shift.get('opened_at_display') or shift.get('opened_display') or shift.get('opened_at') or '—'}"
         + (
-            f" → {shift.get('closed_at_display') or shift.get('closed_at') or '—'}"
+            f" → {shift.get('closed_at_display') or shift.get('closed_display') or shift.get('closed_at') or '—'}"
             if event == "close"
             else ""
         ),

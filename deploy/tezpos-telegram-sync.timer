@@ -1,0 +1,12 @@
+[Unit]
+Description=TezPOS Telegram smena sync timer (1 daqiqa)
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=tezpos-telegram-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -172,3 +172,6 @@ TEZPOS_API_URL = os.environ.get("TEZPOS_API_URL", "http://127.0.0.1:8000")
 # DevSMS — qarz/to'lov SMS (TezPOS bilan bir xil)
 DEVSMS_TOKEN = os.environ.get("DEVSMS_TOKEN", "").strip()
 DEVSMS_FROM = os.environ.get("DEVSMS_FROM", "4546").strip() or "4546"
+
+# Smena Telegram sync (cron/systemd) — brauzersiz, har 1 daqiqada
+TELEGRAM_CRON_SECRET = os.environ.get("TELEGRAM_CRON_SECRET", "").strip()

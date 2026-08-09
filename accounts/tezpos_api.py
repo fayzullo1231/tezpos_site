@@ -164,7 +164,7 @@ def get_products(token: str, server_name: str, *, max_pages: int = 8) -> list:
         token=token,
         server_name=server_name,
         query={"all": "true"},
-        timeout=45,
+        timeout=28,
     )
     if isinstance(data, list):
         return data

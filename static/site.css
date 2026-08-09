@@ -3627,6 +3627,31 @@ html.cabinet-ready .cabinet-content {
 .debtors-kpi strong { color: #002048; font-size: 1.15rem; font-family: "Space Grotesk", Manrope, sans-serif; }
 .debtors-kpi strong.is-debt { color: #c2410c; }
 .debtors-search { margin-bottom: .85rem; max-width: 420px; }
+
+/* Ombor qiymati */
+.stock-value-toolbar {
+  display: flex; flex-wrap: wrap; gap: .75rem; align-items: center;
+  margin-bottom: .9rem;
+}
+.stock-value-toolbar .products-search { flex: 1; min-width: 200px; max-width: 420px; margin: 0; }
+.sv-filter {
+  display: inline-flex; align-items: center; gap: .45rem;
+  color: #5b6b85; font-size: .85rem; font-weight: 600;
+}
+.sv-filter select {
+  border: 1px solid #e2e8f2; border-radius: 10px; background: #fff;
+  padding: .45rem .65rem; font: inherit; color: #002048;
+}
+.stock-value-table-wrap { max-height: min(70vh, 720px); overflow: auto; }
+.stock-value-panel .products-table tfoot th,
+.stock-value-panel .products-table tfoot td {
+  position: sticky; bottom: 0; background: #f1f5f9; border-top: 2px solid #cbd5e1;
+  font-weight: 700; color: #002048; padding: .65rem .55rem;
+}
+.stock-value-panel .sv-barcode {
+  display: block; color: #8b97ab; font-size: .75rem; font-weight: 500; margin-top: .15rem;
+}
+.debtors-kpi strong.is-profit { color: #16a34a; }
 .debtors-list { display: grid; gap: .75rem; }
 .debtor-card {
   border: 1px solid #e2e8f2; border-radius: 16px; background: #fff;

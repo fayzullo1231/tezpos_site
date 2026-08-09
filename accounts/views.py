@@ -1836,6 +1836,7 @@ def cabinet_view(request):
         "sales",
         "inventory",
         "products",
+        "stock_value",
         "reports",
         "abc",
         "signals",
@@ -1848,13 +1849,19 @@ def cabinet_view(request):
     if section not in allowed:
         section = "overview"
 
-    # Bot / qarzdorlar — API kutmasdan darhol ochiladi (AJAX o‘zi yuklaydi)
-    if section in ("bot", "debtors") and request.method != "POST":
-        resp = render(
-            request,
-            "accounts/cabinet.html",
-            _cabinet_shell_context(request, tenant, section, form=form, sale_date=sale_date),
+    # Engil bo‘limlar — TezPOS API kutmasdan darhol ochiladi (AJAX o‘zi yuklaydi)
+    FAST_SHELL = {
+        "overview",
+        "tops",
+        "bot",
+        "debtors",
+    }
+    if section in FAST_SHELL and request.method != "POST":
+        ctx = _cabinet_shell_context(
+            request, tenant, section, form=form, sale_date=sale_date
         )
+        ctx["fast_nav"] = True
+        resp = render(request, "accounts/cabinet.html", ctx)
         resp["Cache-Control"] = "private, no-cache"
         return resp
 
@@ -1864,103 +1871,113 @@ def cabinet_view(request):
     raw_sales: list = []
     day_sales_raw: list = []
 
-    # Overview: engil yuklash — mahsulotlar/kunlik cheklar AJAX yoki boshqa bo‘limlarda
+    # Og‘ir SSR faqat kerakli joylarda
     need_products = section in (
         "products",
         "inventory",
+        "stock_value",
         "labels",
-        "sales",
-        "shifts",
-        "tops",
-        "abc",
         "signals",
+        "sales",
+        "abc",
     )
-    need_chart_sales = section in ("reports", "tops", "abc", "sales", "shifts")
-    # overview: SSR juda engil — grafik/KPI AJAX (range-stats) orqali
-    need_day_sales = section == "sales"  # overview sekinlashmasin
-    # Chek detali faqat kunlik sotuvlar — overview AJAX orqali
-    need_sale_details = section == "sales"
-    need_price_list_stats = False  # overview'da bloklamaslik — range-stats AJAX
-    need_price_lists = section in ("products", "inventory", "shifts", "sales")
-    need_top_stats = section in ("tops", "abc")
+    need_chart_sales = section in ("sales", "abc", "reports")
+    need_day_sales = section == "sales"
+    # Chek detali SSR da emas — jadval tez ochilsin (foyda taxminiy)
+    need_sale_details = False
+    need_price_list_stats = False
+    need_price_lists = section in (
+        "products",
+        "inventory",
+        "stock_value",
+        "sales",
+    )
+    need_top_stats = section == "abc"
     need_shifts = section == "shifts"
-    # Overview: kamroq sahifa; mahsulotlar/all=true odatda 1 so'rovda
-    if section in ("products", "inventory", "labels"):
-        product_pages = 24
-    elif section in ("tops", "abc", "signals"):
-        product_pages = 6
-    elif section in ("sales", "shifts"):
-        product_pages = 3
-    elif section == "overview":
-        product_pages = 1
-    else:
+    # all=true ko‘pincha 1 so‘rov — ortiqcha sahifa kutmaslik
+    if section in ("products", "inventory", "stock_value", "labels"):
+        product_pages = 4
+    elif section in ("signals", "sales", "abc"):
         product_pages = 2
+    else:
+        product_pages = 1
 
     def _load_products():
-        return tezpos_api.get_products(token, server, max_pages=product_pages)
+        key = f"products:{server}:{product_pages}"
+        return _memo_get(
+            key,
+            90.0,
+            lambda: tezpos_api.get_products(token, server, max_pages=product_pages),
+        )
 
     def _load_chart_sales():
-        # Overview: faqat 7 kun — uzun davrlar AJAX
-        if section == "overview":
-            days, pages, timeout = 7, 2, 14
-        elif section == "shifts":
-            days, pages, timeout = 14, 4, 22  # smena uchun 14 kun yetarli
-        elif section == "reports":
-            days, pages, timeout = 90, 4, 30
-        elif section in ("tops", "abc"):
-            days, pages, timeout = 30, 5, 28
+        if section == "reports":
+            days, pages, timeout = 30, 3, 20
+        elif section == "abc":
+            days, pages, timeout = 14, 3, 18
         else:
-            days, pages, timeout = 14, 3, 22
-        try:
-            return tezpos_api.get_sales(
-                token,
-                server,
-                date_from=(today - timedelta(days=days)).isoformat(),
-                date_to=today.isoformat(),
-                timeout=timeout,
-                max_pages=pages,
-            )
-        except (tezpos_api.TezPosApiError, TimeoutError, OSError) as exc:
-            if getattr(exc, "status", None) in (401, 403):
-                raise
+            days, pages, timeout = 7, 2, 16
+        key = f"sales:{server}:{days}:{pages}"
+
+        def _loader():
             try:
                 return tezpos_api.get_sales(
                     token,
                     server,
-                    date_from=(today - timedelta(days=3)).isoformat(),
+                    date_from=(today - timedelta(days=days)).isoformat(),
                     date_to=today.isoformat(),
-                    timeout=15,
+                    timeout=timeout,
+                    max_pages=pages,
+                )
+            except (tezpos_api.TezPosApiError, TimeoutError, OSError) as exc:
+                if getattr(exc, "status", None) in (401, 403):
+                    raise
+                return tezpos_api.get_sales(
+                    token,
+                    server,
+                    date_from=(today - timedelta(days=2)).isoformat(),
+                    date_to=today.isoformat(),
+                    timeout=12,
                     max_pages=2,
                 )
-            except (tezpos_api.TezPosApiError, TimeoutError, OSError):
-                raise exc
+
+        return _memo_get(key, 60.0, _loader)
 
     def _load_price_lists():
-        try:
-            return tezpos_api.get_price_lists(token, server)
-        except (tezpos_api.TezPosApiError, TimeoutError, OSError):
-            return []
+        key = f"price_lists:{server}"
+
+        def _loader():
+            try:
+                return tezpos_api.get_price_lists(token, server)
+            except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+                return []
+
+        return _memo_get(key, 120.0, _loader)
 
     def _load_shifts_api():
         # Oldin 404 bo‘lgan bo‘lsa — qayta 7 ta yo‘lni sinamaymiz (sekinlik)
         if request.session.get("tezpos_shifts_api_missing"):
             return []
-        try:
-            rows = tezpos_api.get_shifts(
-                token,
-                server,
-                date_from=(today - timedelta(days=30)).isoformat(),
-                date_to=today.isoformat(),
-                timeout=12,
-                max_pages=2,
-            )
-            if not rows:
-                request.session["tezpos_shifts_api_missing"] = True
-            return rows
-        except (tezpos_api.TezPosApiError, TimeoutError, OSError):
-            request.session["tezpos_shifts_api_missing"] = True
-            return []
+        key = f"shifts:{server}:{today.isoformat()}"
 
+        def _loader():
+            try:
+                rows = tezpos_api.get_shifts(
+                    token,
+                    server,
+                    date_from=(today - timedelta(days=14)).isoformat(),
+                    date_to=today.isoformat(),
+                    timeout=10,
+                    max_pages=1,
+                )
+                if not rows:
+                    request.session["tezpos_shifts_api_missing"] = True
+                return rows
+            except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+                request.session["tezpos_shifts_api_missing"] = True
+                return []
+
+        return _memo_get(key, 45.0, _loader)
     def _auth_fail(exc):
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -2470,6 +2487,7 @@ def cabinet_view(request):
         "sales",
         "inventory",
         "products",
+        "stock_value",
         "reports",
         "abc",
         "signals",
@@ -2566,7 +2584,7 @@ def cabinet_view(request):
                 },
                 ensure_ascii=False,
             ),
-            "fast_nav": section in ("overview", "bot", "debtors"),
+            "fast_nav": True,
         }
     resp = render(request, "accounts/cabinet.html", ctx)
     # Brauzer navigatsiyasini biroz tezlatish (shaxsiy kabinet — kesh emas)
@@ -3499,20 +3517,81 @@ def cabinet_telegram_sync(request):
     if not tenant.telegram_enabled or not tenant.telegram_bot_token:
         return JsonResponse({"ok": True, "skipped": True, "reason": "disabled"})
 
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    # Fon cron uchun credential yangilab turish
+    if token and server:
+        TenantProfile.objects.filter(pk=tenant.pk).update(
+            tezpos_api_token=token,
+            tezpos_server_name=server,
+        )
+        tenant.tezpos_api_token = token
+        tenant.tezpos_server_name = server
+
+    try:
+        result = sync_telegram_shifts_for_tenant(tenant, token, server)
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError) as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+    return JsonResponse(result)
+
+
+@require_GET
+def telegram_cron_sync(request):
+    """
+    Brauzersiz smena sync — systemd/cron har 1 daqiqada.
+    Header: X-Cron-Secret yoki ?secret=
+    """
+    from django.conf import settings as dj_settings
+
+    expected = (getattr(dj_settings, "TELEGRAM_CRON_SECRET", "") or "").strip()
+    got = (
+        request.headers.get("X-Cron-Secret")
+        or request.GET.get("secret")
+        or ""
+    ).strip()
+    if not expected or got != expected:
+        return JsonResponse({"error": "forbidden"}, status=403)
+
+    tenants = TenantProfile.objects.filter(
+        telegram_enabled=True,
+    ).exclude(telegram_bot_token="").exclude(tezpos_api_token="").exclude(
+        tezpos_server_name=""
+    )
+    results = []
+    for tenant in tenants:
+        try:
+            results.append(
+                {
+                    "tenant": tenant.business_name,
+                    **sync_telegram_shifts_for_tenant(
+                        tenant,
+                        tenant.tezpos_api_token,
+                        tenant.tezpos_server_name,
+                    ),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            results.append({"tenant": tenant.business_name, "error": str(exc)})
+    return JsonResponse({"ok": True, "results": results})
+
+
+def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
+    """
+    Smena ochilish/yopilishni tekshiradi.
+    Yopilishda: avval TEZKOR xabar, keyin Excel (kechikishsiz bildirishnoma).
+    """
     from . import telegram_bot as tg
 
     recipients = tg.parse_recipients(tenant.telegram_recipients)
     if not recipients:
-        return JsonResponse({"ok": True, "skipped": True, "reason": "no_recipients"})
+        return {"ok": True, "skipped": True, "reason": "no_recipients"}
 
-    token = request.session[SESSION_TOKEN]
-    server = request.session[SESSION_SERVER]
     today = timezone.localdate()
 
     try:
         raw_shifts = tezpos_api.get_shifts(token, server) or []
-    except (tezpos_api.TezPosApiError, TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=502)
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+        raise
 
     shifts = []
     for raw in raw_shifts:
@@ -3526,8 +3605,8 @@ def cabinet_telegram_sync(request):
                 server,
                 date_from=(today - timedelta(days=2)).isoformat(),
                 date_to=today.isoformat(),
-                timeout=22,
-                max_pages=4,
+                timeout=18,
+                max_pages=3,
             )
         except (tezpos_api.TezPosApiError, TimeoutError, OSError):
             sales = []
@@ -3560,10 +3639,11 @@ def cabinet_telegram_sync(request):
             else:
                 notified[f"{sid}:close"] = timezone.now().isoformat()
                 notified.setdefault(f"{sid}:open", timezone.now().isoformat())
+                notified.setdefault(f"{sid}:excel", timezone.now().isoformat())
         notified.pop("__seeded__", None)
         tenant.telegram_notified_events = notified
         tenant.save(update_fields=["telegram_notified_events"])
-        return JsonResponse({"ok": True, "sent": [], "checked": len(shifts), "seeded": True})
+        return {"ok": True, "sent": [], "checked": len(shifts), "seeded": True}
 
     for sh in shifts[:12]:
         sid = str(sh.get("id") or "").strip()
@@ -3588,33 +3668,56 @@ def cabinet_telegram_sync(request):
                 closed_dt = _parse_dt(sh.get("closed_at")) or _parse_dt(sh.get("opened_at"))
                 if closed_dt and timezone.now() - closed_dt > timedelta(days=3):
                     notified[key] = timezone.now().isoformat()
+                    notified.setdefault(f"{sid}:excel", timezone.now().isoformat())
                     continue
 
             try:
-                sh["business_name"] = tenant.business_name
-                bundle = _shift_report_bundle(token, server, sh)
-                enriched = bundle["shift"]
+                # Tezkor xabar — Excel kutmasdan (2 daqiqa ichida yetishi uchun)
+                quick = dict(sh)
+                quick["business_name"] = tenant.business_name
+                quick["opened_at_display"] = sh.get("opened_display") or sh.get("opened_at")
+                quick["closed_at_display"] = sh.get("closed_display") or sh.get("closed_at")
                 text = tg.build_shift_message(
                     business_name=tenant.business_name,
                     event=event,
-                    shift=enriched,
+                    shift=quick,
                 )
                 msg_res = tg.broadcast_message(tenant.telegram_bot_token, recipients, text)
-                doc_res = []
-                if event == "close" and bundle.get("excel"):
-                    day = timezone.localdate().isoformat()
-                    fname = f"kunlik_hisobot_{day}_{sid[:8]}.xlsx"
-                    doc_res = tg.broadcast_document(
-                        tenant.telegram_bot_token,
-                        recipients,
-                        fname,
-                        bundle["excel"],
-                        caption=(
-                            f"📎 Kunlik hisobot — {tenant.business_name}\n"
-                            f"Sotuv · Qarzdorlar · Kam qoldiq · Excel"
-                        ),
-                    )
                 notified[key] = timezone.now().isoformat()
+                tenant.telegram_notified_events = notified
+                tenant.save(update_fields=["telegram_notified_events"])
+
+                doc_res = []
+                if event == "close":
+                    excel_key = f"{sid}:excel"
+                    if excel_key not in notified:
+                        try:
+                            bundle = _shift_report_bundle(token, server, sh)
+                            if bundle.get("excel"):
+                                day = timezone.localdate().isoformat()
+                                fname = f"kunlik_hisobot_{day}_{sid[:8]}.xlsx"
+                                doc_res = tg.broadcast_document(
+                                    tenant.telegram_bot_token,
+                                    recipients,
+                                    fname,
+                                    bundle["excel"],
+                                    caption=(
+                                        f"📎 Kunlik hisobot — {tenant.business_name}\n"
+                                        f"Sotuv · Qarzdorlar · Kam qoldiq · Excel"
+                                    ),
+                                )
+                            notified[excel_key] = timezone.now().isoformat()
+                            tenant.telegram_notified_events = notified
+                            tenant.save(update_fields=["telegram_notified_events"])
+                        except Exception as excel_exc:  # noqa: BLE001
+                            sent.append(
+                                {
+                                    "shift_id": sid,
+                                    "event": "excel",
+                                    "error": str(excel_exc),
+                                }
+                            )
+
                 sent.append(
                     {
                         "shift_id": sid,
@@ -3626,6 +3729,35 @@ def cabinet_telegram_sync(request):
             except Exception as exc:  # noqa: BLE001
                 sent.append({"shift_id": sid, "event": event, "error": str(exc)})
 
+    # Yopilgan smenalar uchun Excel hali ketmagan bo‘lsa — alohida urinish
+    if tenant.telegram_notify_close:
+        for sh in shifts[:12]:
+            sid = str(sh.get("id") or "").strip()
+            if not sid or (sh.get("status") or "") != "closed":
+                continue
+            close_key = f"{sid}:close"
+            excel_key = f"{sid}:excel"
+            if close_key not in notified or excel_key in notified:
+                continue
+            try:
+                bundle = _shift_report_bundle(token, server, sh)
+                if bundle.get("excel"):
+                    day = timezone.localdate().isoformat()
+                    fname = f"kunlik_hisobot_{day}_{sid[:8]}.xlsx"
+                    doc_res = tg.broadcast_document(
+                        tenant.telegram_bot_token,
+                        recipients,
+                        fname,
+                        bundle["excel"],
+                        caption=f"📎 Kunlik hisobot — {tenant.business_name}",
+                    )
+                    notified[excel_key] = timezone.now().isoformat()
+                    sent.append(
+                        {"shift_id": sid, "event": "excel", "documents": doc_res}
+                    )
+            except Exception as exc:  # noqa: BLE001
+                sent.append({"shift_id": sid, "event": "excel", "error": str(exc)})
+
     if len(notified) > 120:
         items = sorted(notified.items(), key=lambda x: x[1])
         notified = dict(items[-80:])
@@ -3633,7 +3765,7 @@ def cabinet_telegram_sync(request):
     tenant.telegram_notified_events = notified
     tenant.save(update_fields=["telegram_notified_events"])
 
-    return JsonResponse({"ok": True, "sent": sent, "checked": len(shifts)})
+    return {"ok": True, "sent": sent, "checked": len(shifts)}
 
 
 def _debt_amount(value) -> Decimal:

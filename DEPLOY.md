@@ -235,6 +235,36 @@ Google ga yozib qidirilsin — indeksga tushganini ko‘rsatadi.
 
 ---
 
+## Telegram smena xabari (1 daqiqada)
+
+Avval xabar faqat kabinet ochiq brauzerda tekshirilardi — shuning uchun kechikardi.
+
+Endi:
+
+1. Yopilishda **avval tezkor xabar**, keyin Excel  
+2. Kabinetda har **30 soniya** tekshiruv  
+3. Serverda **har 1 daqiqa** systemd timer (brauzer kerak emas)
+
+```bash
+cd /opt/tezpos_site
+source .venv/bin/activate
+python manage.py migrate --noinput
+
+cp deploy/tezpos-telegram-sync.service /etc/systemd/system/
+cp deploy/tezpos-telegram-sync.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now tezpos-telegram-sync.timer
+systemctl list-timers | grep tezpos
+```
+
+Bir marta kabinetga **login** qiling (API token saqlanadi), bot yoqilgan bo‘lsin.
+
+```bash
+python manage.py sync_telegram_shifts
+```
+
+---
+
 ## Muammolar
 
 | Belgi | Yechim |

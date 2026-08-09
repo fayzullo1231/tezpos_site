@@ -38,7 +38,12 @@
   menuClose?.addEventListener("click", () => setNavOpen(false));
   menuBackdrop?.addEventListener("click", () => setNavOpen(false));
   document.querySelectorAll(".cabinet-nav a").forEach((a) => {
-    a.addEventListener("click", () => setNavOpen(false));
+    a.addEventListener("click", () => {
+      try {
+        sessionStorage.setItem("tezpos_cab_seen", "1");
+      } catch (e) {}
+      setNavOpen(false);
+    });
   });
   window.addEventListener("resize", () => {
     if (window.innerWidth > 1024) setNavOpen(false);
@@ -289,7 +294,6 @@
         return `<article class="price-list-stat cab-reveal-item${isTotal ? " is-total" : ""}" data-pl-id="${row.id}" style="animation-delay:${Math.min(i, 6) * 45}ms">
         <h4>${row.name || "Ro‘yxat"}${isTotal ? "" : ` <em>${Number(row.share || 0).toFixed(1)}%</em>`}</h4>
         <dl>
-          <div><dt>Mahsulot sotildi</dt><dd>${fmt(row.qty)}</dd></div>
           <div><dt>Chek chiqdi</dt><dd>${fmt(row.checks)}</dd></div>
           <div><dt>Tushum</dt><dd>${fmtMoneyKpi(row.revenue)}</dd></div>
           <div><dt>Tannarx</dt><dd>${fmtMoneyKpi(row.cost)}</dd></div>
@@ -3199,13 +3203,17 @@
   const runTelegramSync = () => {
     if (!syncUrl) return;
     const bs = data.botSettings || {};
-    if (!bs.enabled && !bs.token_set) return;
+    if (!bs.enabled) return;
+    // Faqat bot bo‘limida yoki fon timer orqali — boshqa sahifalarni sekinlatmasin
+    if (data.section && data.section !== "bot" && data.section !== "overview") return;
     fetch(syncUrl, { credentials: "same-origin", headers: { Accept: "application/json" } })
       .then((r) => r.json())
       .catch(() => null);
   };
-  setTimeout(runTelegramSync, 2500);
-  setInterval(runTelegramSync, 120000);
+  if ((data.botSettings || {}).enabled) {
+    setTimeout(runTelegramSync, 4000);
+    setInterval(runTelegramSync, 90000);
+  }
 
   const form = document.getElementById("bot-settings-form");
   if (!form) return;
@@ -3666,4 +3674,251 @@
   });
   refreshBtn?.addEventListener("click", () => load());
   load();
+})();
+
+(() => {
+  const panel = document.getElementById("stock-value-panel");
+  if (!panel) return;
+
+  const data = window.TEZPOS_CHARTS || {};
+  const products = Array.isArray(data.products) ? data.products : [];
+  const priceLists = Array.isArray(data.priceLists) ? data.priceLists : [];
+  const fmt = (n) =>
+    Number(n || 0).toLocaleString("uz-UZ", {
+      maximumFractionDigits: 2,
+    });
+  const esc = (s) =>
+    String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
+  const thead = document.getElementById("stock-value-thead");
+  const tbody = document.getElementById("stock-value-tbody");
+  const tfoot = document.getElementById("stock-value-tfoot");
+  const emptyEl = document.getElementById("sv-empty");
+  const searchEl = document.getElementById("sv-search");
+  const filterEl = document.getElementById("sv-stock-filter");
+  const kpisEl = document.getElementById("stock-value-kpis");
+
+  // Sotuv ustuni selling_price; qolgan (is_selling bo‘lmagan) ro‘yxatlar list_prices dan
+  const extraLists = priceLists.filter((pl) => pl && pl.id && !pl.is_selling);
+
+  const listPrice = (p, plId) => {
+    const lp = p.list_prices || {};
+    const v = lp[plId] ?? lp[String(plId)];
+    return Number(v || 0);
+  };
+
+  const matchesFilter = (qty, mode) => {
+    if (mode === "all") return true;
+    if (mode === "lt0") return qty < 0;
+    if (mode === "eq0") return qty === 0;
+    return qty > 0;
+  };
+
+  const paint = () => {
+    const q = String(searchEl?.value || "")
+      .trim()
+      .toLowerCase();
+    const mode = filterEl?.value || "gt0";
+
+    const rows = [];
+    let sumQty = 0;
+    let sumCost = 0;
+    let sumSell = 0;
+    const sumLists = {};
+    extraLists.forEach((pl) => {
+      sumLists[String(pl.id)] = 0;
+    });
+
+    products.forEach((p) => {
+      const qty = Number(p.stock_qty || 0);
+      if (!matchesFilter(qty, mode)) return;
+      const name = String(p.name || "");
+      const barcode = String(p.barcode || "");
+      if (
+        q &&
+        !name.toLowerCase().includes(q) &&
+        !barcode.toLowerCase().includes(q)
+      ) {
+        return;
+      }
+      const cost = Number(p.cost_price || 0);
+      const sell = Number(p.selling_price || 0);
+      const costVal = qty * cost;
+      const sellVal = qty * sell;
+      const listVals = {};
+      extraLists.forEach((pl) => {
+        const id = String(pl.id);
+        const unit = listPrice(p, id);
+        const val = qty * unit;
+        listVals[id] = { unit, val };
+        sumLists[id] += val;
+      });
+      sumQty += qty;
+      sumCost += costVal;
+      sumSell += sellVal;
+      rows.push({
+        name,
+        barcode,
+        qty,
+        cost,
+        sell,
+        costVal,
+        sellVal,
+        listVals,
+      });
+    });
+
+    rows.sort((a, b) => Math.abs(b.costVal) - Math.abs(a.costVal));
+
+    const countEl = document.getElementById("sv-count");
+    const qtyEl = document.getElementById("sv-qty");
+    const costEl = document.getElementById("sv-cost-total");
+    const sellEl = document.getElementById("sv-sell-total");
+    const marginEl = document.getElementById("sv-margin-total");
+    if (countEl) countEl.textContent = fmt(rows.length);
+    if (qtyEl) qtyEl.textContent = fmt(sumQty);
+    if (costEl) costEl.textContent = fmt(sumCost) + " so'm";
+    if (sellEl) sellEl.textContent = fmt(sumSell) + " so'm";
+    if (marginEl) marginEl.textContent = fmt(sumSell - sumCost) + " so'm";
+
+    // Narx ro‘yxatlari KPI
+    if (kpisEl) {
+      kpisEl.querySelectorAll("[data-sv-pl]").forEach((el) => el.remove());
+      extraLists.forEach((pl) => {
+        const id = String(pl.id);
+        const card = document.createElement("div");
+        card.className = "debtors-kpi";
+        card.setAttribute("data-sv-pl", id);
+        card.innerHTML =
+          "<span>" +
+          esc(pl.name || "Narx") +
+          " jami</span><strong>" +
+          fmt(sumLists[id] || 0) +
+          " so'm</strong>";
+        kpisEl.appendChild(card);
+      });
+    }
+
+    if (thead) {
+      thead.innerHTML =
+        "<tr>" +
+        "<th class=\"col-name\">Mahsulot</th>" +
+        "<th class=\"col-num\">Qoldiq</th>" +
+        "<th class=\"col-num\">Tannarx</th>" +
+        "<th class=\"col-num\">Tannarx jami</th>" +
+        "<th class=\"col-num\">Sotuv</th>" +
+        "<th class=\"col-num\">Sotuv jami</th>" +
+        extraLists
+          .map(
+            (pl) =>
+              '<th class="col-num">' +
+              esc(pl.name || "Narx") +
+              "</th><th class=\"col-num\">" +
+              esc(pl.name || "Narx") +
+              " jami</th>"
+          )
+          .join("") +
+        "</tr>";
+    }
+
+    if (!rows.length) {
+      if (tbody) tbody.innerHTML = "";
+      if (tfoot) tfoot.innerHTML = "";
+      if (emptyEl) emptyEl.hidden = false;
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+
+    if (tbody) {
+      tbody.innerHTML = rows
+        .map((r) => {
+          const stockCls =
+            r.qty > 0
+              ? "is-stock-pos"
+              : r.qty < 0
+                ? "is-stock-neg"
+                : "is-stock-zero";
+          const listCells = extraLists
+            .map((pl) => {
+              const id = String(pl.id);
+              const lv = r.listVals[id] || { unit: 0, val: 0 };
+              return (
+                '<td class="col-num">' +
+                fmt(lv.unit) +
+                '</td><td class="col-num">' +
+                fmt(lv.val) +
+                "</td>"
+              );
+            })
+            .join("");
+          return (
+            "<tr>" +
+            '<td class="col-name"><strong>' +
+            esc(r.name) +
+            "</strong>" +
+            (r.barcode
+              ? '<small class="sv-barcode">' + esc(r.barcode) + "</small>"
+              : "") +
+            "</td>" +
+            '<td class="col-num ' +
+            stockCls +
+            '">' +
+            fmt(r.qty) +
+            "</td>" +
+            '<td class="col-num">' +
+            fmt(r.cost) +
+            "</td>" +
+            '<td class="col-num">' +
+            fmt(r.costVal) +
+            "</td>" +
+            '<td class="col-num">' +
+            fmt(r.sell) +
+            "</td>" +
+            '<td class="col-num">' +
+            fmt(r.sellVal) +
+            "</td>" +
+            listCells +
+            "</tr>"
+          );
+        })
+        .join("");
+    }
+
+    if (tfoot) {
+      const listFoot = extraLists
+        .map((pl) => {
+          const id = String(pl.id);
+          return (
+            '<td class="col-num"></td><td class="col-num"><strong>' +
+            fmt(sumLists[id] || 0) +
+            "</strong></td>"
+          );
+        })
+        .join("");
+      tfoot.innerHTML =
+        "<tr>" +
+        "<th>Jami</th>" +
+        '<th class="col-num">' +
+        fmt(sumQty) +
+        "</th>" +
+        "<th></th>" +
+        '<th class="col-num">' +
+        fmt(sumCost) +
+        "</th>" +
+        "<th></th>" +
+        '<th class="col-num">' +
+        fmt(sumSell) +
+        "</th>" +
+        listFoot +
+        "</tr>";
+    }
+  };
+
+  searchEl?.addEventListener("input", paint);
+  filterEl?.addEventListener("change", paint);
+  paint();
 })();

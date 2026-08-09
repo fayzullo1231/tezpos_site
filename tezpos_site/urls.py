@@ -20,14 +20,11 @@ from django.conf.urls.static import static
 from django.urls import include, path
 from accounts.auth_views import tezpos_login, tezpos_logout
 from sales.public_check import PublicReceiptCheckView
-from sales.seo_views import robots_txt, sitemap_xml
 from sales.views import sales_page_view
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path("", sales_page_view, name="landing"),
-    path("robots.txt", robots_txt, name="robots"),
-    path("sitemap.xml", sitemap_xml, name="sitemap"),
     path(
         "check/<str:server_name>/<str:ref>/",
         PublicReceiptCheckView.as_view(),

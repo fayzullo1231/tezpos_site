@@ -13,6 +13,7 @@ from .views import (
     cabinet_top_stats,
     cabinet_view,
     download_installer,
+    telegram_cron_sync,
 )
 
 app_name = "accounts"
@@ -28,6 +29,7 @@ urlpatterns = [
     path("cabinet/bot-settings/", cabinet_bot_settings_save, name="cabinet_bot_settings_save"),
     path("cabinet/bot-chats/", cabinet_bot_chats, name="cabinet_bot_chats"),
     path("cabinet/telegram-sync/", cabinet_telegram_sync, name="cabinet_telegram_sync"),
+    path("cabinet/telegram-cron/", telegram_cron_sync, name="telegram_cron_sync"),
     path("cabinet/debtors/", cabinet_debtors, name="cabinet_debtors"),
     path("cabinet/debtors/pay/", cabinet_debtor_pay, name="cabinet_debtor_pay"),
 ]

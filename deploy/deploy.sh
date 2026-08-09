@@ -20,25 +20,42 @@ git fetch origin
 git checkout "$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
-python3 -m venv .venv
-# shellcheck disable=SC1091
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
+echo "==> Python venv"
+# Eski buzilgan venv (pip yo'q) ni tozalash
+if [[ ! -x .venv/bin/pip ]] && [[ ! -x .venv/bin/pip3 ]]; then
+  rm -rf .venv
+fi
+python3 -m venv .venv || python3 -m venv --without-pip .venv
+
+PY="$APP_DIR/.venv/bin/python"
+if [[ ! -x "$APP_DIR/.venv/bin/pip" ]]; then
+  echo "==> pip yo'q — get-pip.py bilan o'rnatiladi"
+  curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+  "$PY" /tmp/get-pip.py
+fi
+PIP="$APP_DIR/.venv/bin/pip"
+
+"$PIP" install -U pip
+"$PIP" install -r requirements.txt
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  SK=$(python -c "import secrets; print(secrets.token_urlsafe(50))")
+  SK=$("$PY" -c "import secrets; print(secrets.token_urlsafe(50))")
   sed -i "s|^SECRET_KEY=.*|SECRET_KEY=${SK}|" .env
-  echo ">>> .env yaratildi — TEZPOS_API_URL va DEVSMS_TOKEN ni tekshiring."
+  # SSL bo'lmaguncha
+  sed -i "s|^USE_HTTPS=.*|USE_HTTPS=0|" .env || true
+  sed -i "s|^SECURE_SSL_REDIRECT=.*|SECURE_SSL_REDIRECT=0|" .env || true
+  grep -q '^USE_HTTPS=' .env || echo 'USE_HTTPS=0' >> .env
+  grep -q '^SECURE_SSL_REDIRECT=' .env || echo 'SECURE_SSL_REDIRECT=0' >> .env
+  echo ">>> .env yaratildi — TEZPOS_API_URL ni tekshiring (backend port)."
 fi
 
 mkdir -p media staticfiles /var/log/tezpos_site
 chown -R www-data:www-data "$APP_DIR" /var/log/tezpos_site 2>/dev/null || true
 
 export DJANGO_SETTINGS_MODULE=tezpos_site.settings
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput
+"$PY" manage.py migrate --noinput
+"$PY" manage.py collectstatic --noinput
 
 cp -f "$APP_DIR/deploy/tezpos-site.service" /etc/systemd/system/tezpos-site.service
 systemctl daemon-reload
@@ -46,5 +63,7 @@ systemctl enable tezpos-site
 systemctl restart tezpos-site
 systemctl reload nginx || true
 
-echo "OK: https://tez-pos.uz (nginx + gunicorn)"
+echo "OK: http://tez-pos.uz (nginx + gunicorn :8001)"
 systemctl --no-pager status tezpos-site | head -n 15
+ss -lntp | grep 8001 || true
+curl -sI http://127.0.0.1:8001/ | head -n 5 || true

@@ -3,20 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TezPOS — Tez, oson va ishonchli savdo dasturi | POS tizimi</title>
-  <meta name="description" content="TezPOS — do‘kon va savdo uchun tez POS dasturi. Cheklar, ombor, smena, qarzlar va shaxsiy kabinet. O‘zbekiston uchun tez-pos.uz">
-  <meta name="keywords" content="TezPOS, tez pos, POS dasturi, savdo dasturi, kassa dasturi, ombor, O‘zbekiston">
-  <meta name="robots" content="index, follow">
-  <link rel="canonical" href="https://tez-pos.uz/">
-  <meta property="og:type" content="website">
-  <meta property="og:locale" content="uz_UZ">
-  <meta property="og:url" content="https://tez-pos.uz/">
-  <meta property="og:title" content="TezPOS — Tez, oson va ishonchli savdo dasturi">
-  <meta property="og:description" content="Do‘koningiz uchun tez va aniq POS. Cheklar, ombor, smenalar va kabinet — bir joyda.">
-  <meta property="og:image" content="https://tez-pos.uz/static/img/logo.png">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="TezPOS — savdo dasturi">
-  <meta name="twitter:description" content="Tez POS: cheklar, ombor, smena va shaxsiy kabinet.">
+  <title>TezPOS — Tez, oson va ishonchli savdo dasturi</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -38,9 +25,7 @@
       <a href="#faq">Savollar</a>
     </nav>
     <div class="nav-cta">
-      <a href="{% url 'accounts:download_installer' %}" class="btn btn-outline btn-sm btn-install" aria-label="O‘rnatish"{% if installer_version %} title="TezPOS {{ installer_version }}"{% else %} title="O‘rnatish"{% endif %}>
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 19h14"/></svg>
-      </a>
+      <a href="{% url 'accounts:download_installer' %}" class="btn btn-outline btn-sm btn-install"{% if installer_version %} title="TezPOS {{ installer_version }}"{% endif %}>Install</a>
       {% if request.user.is_authenticated %}
         <a href="/accounts/cabinet/" class="btn btn-primary btn-sm">Shaxsiy kabinet</a>
       {% else %}
@@ -58,9 +43,7 @@
     <a href="#kabinet">Shaxsiy kabinet</a>
     <a href="#narxlar">Narxlar</a>
     <a href="#faq">Savollar</a>
-    <a href="{% url 'accounts:download_installer' %}" class="btn btn-outline btn-sm btn-install" aria-label="O‘rnatish" title="O‘rnatish">
-      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 19h14"/></svg>
-    </a>
+    <a href="{% url 'accounts:download_installer' %}" class="btn btn-outline btn-sm btn-install">Install</a>
     {% if request.user.is_authenticated %}
       <a href="/accounts/cabinet/" class="btn btn-primary btn-sm">Shaxsiy kabinet</a>
     {% else %}

@@ -81,16 +81,7 @@
     font-weight:700;
     border-color:rgba(18,179,161,.45);
     color:var(--teal,#0b8f82);
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    width:40px;
-    height:40px;
-    padding:0;
-    border-radius:12px;
-    line-height:0;
   }
-  .btn-install svg{display:block;flex-shrink:0;}
   .btn-install:hover{
     border-color:var(--teal,#12b3a1);
     background:rgba(18,179,161,.08);

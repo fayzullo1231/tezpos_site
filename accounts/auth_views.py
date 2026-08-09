@@ -124,7 +124,9 @@ def tezpos_login(request):
         first_name=user_payload.get("first_name") or "",
     )
     TenantProfile.objects.filter(user=local_user).update(
-        business_name=user_payload.get("display_name") or resolved_server
+        business_name=user_payload.get("display_name") or resolved_server,
+        tezpos_api_token=token,
+        tezpos_server_name=resolved_server,
     )
     django_login(request, local_user, backend="django.contrib.auth.backends.ModelBackend")
     store_tezpos_session(
