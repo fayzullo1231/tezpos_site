@@ -118,6 +118,41 @@ def _rewrite_payment_labels_in_html(html: bytes) -> bytes:
     return text.encode("utf-8")
 
 
+def _fix_sana_timezone_in_html(html: bytes) -> bytes:
+    """Eski backend HTML dagi Sana (UTC) ni Asia/Tashkent ga o'tkazadi."""
+    from datetime import datetime, timezone as dt_tz
+    from zoneinfo import ZoneInfo
+
+    try:
+        text = html.decode("utf-8")
+    except Exception:
+        return html
+
+    uz = ZoneInfo("Asia/Tashkent")
+
+    def _convert(m: re.Match) -> str:
+        raw = m.group(2)
+        try:
+            local = (
+                datetime.strptime(raw, "%d.%m.%Y %H:%M")
+                .replace(tzinfo=dt_tz.utc)
+                .astimezone(uz)
+                .strftime("%d.%m.%Y %H:%M")
+            )
+        except Exception:
+            local = raw
+        return f"{m.group(1)}{local}{m.group(3)}"
+
+    text = re.sub(
+        r"(Sana</span>\s*<strong[^>]*>)(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})(</strong>)",
+        _convert,
+        text,
+        count=3,
+        flags=re.IGNORECASE,
+    )
+    return text.encode("utf-8")
+
+
 class PublicReceiptCheckView(View):
     template_name = "sales/public_check.html"
 
@@ -136,6 +171,18 @@ class PublicReceiptCheckView(View):
             payload = _payload_dict(exc)
             if payload:
                 data = payload
+            else:
+                # Eski backend: /check/?format=json
+                try:
+                    data = api_request(
+                        "GET",
+                        f"/check/{slug}/{ref}/",
+                        query={"format": "json"},
+                    )
+                except TezPosApiError as exc2:
+                    data = _payload_dict(exc2)
+                except Exception:
+                    data = None
         except Exception:
             data = None
 
@@ -145,10 +192,11 @@ class PublicReceiptCheckView(View):
             status = 404 if ctx["kind"] == "not_found" else 200
             return render(request, self.template_name, ctx, status=status)
 
+        # HTML fallback — Sana qatoridagi UTC soatni UZ ga tuzatish
         html = _fetch_backend_check_html(slug, ref)
         if html:
             return HttpResponse(
-                _rewrite_payment_labels_in_html(html),
+                _rewrite_payment_labels_in_html(_fix_sana_timezone_in_html(html)),
                 content_type="text/html; charset=utf-8",
                 status=200,
             )
