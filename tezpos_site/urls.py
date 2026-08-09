@@ -19,11 +19,22 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import include, path
 from accounts.auth_views import tezpos_login, tezpos_logout
+from sales.public_check import PublicReceiptCheckView
 from sales.views import sales_page_view
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path("", sales_page_view, name="landing"),
+    path(
+        "check/<str:server_name>/<str:ref>/",
+        PublicReceiptCheckView.as_view(),
+        name="public-receipt-check",
+    ),
+    path(
+        "check/<str:server_name>/<str:ref>",
+        PublicReceiptCheckView.as_view(),
+        name="public-receipt-check-noslash",
+    ),
     path("accounts/", include("accounts.urls")),
     path("sales/", include("sales.urls")),
     path("billing/", include("billing.urls")),

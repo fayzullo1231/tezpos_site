@@ -1,9 +1,33 @@
 from django.urls import path
 
-from .views import cabinet_view
+from .views import (
+    cabinet_bot_chats,
+    cabinet_bot_settings_save,
+    cabinet_debtor_pay,
+    cabinet_debtors,
+    cabinet_products_export,
+    cabinet_products_import,
+    cabinet_range_stats,
+    cabinet_shift_detail,
+    cabinet_telegram_sync,
+    cabinet_top_stats,
+    cabinet_view,
+    download_installer,
+)
 
 app_name = "accounts"
 
 urlpatterns = [
     path("cabinet/", cabinet_view, name="cabinet"),
+    path("download/", download_installer, name="download_installer"),
+    path("cabinet/range-stats/", cabinet_range_stats, name="cabinet_range_stats"),
+    path("cabinet/top-stats/", cabinet_top_stats, name="cabinet_top_stats"),
+    path("cabinet/shift-detail/", cabinet_shift_detail, name="cabinet_shift_detail"),
+    path("cabinet/products-import/", cabinet_products_import, name="cabinet_products_import"),
+    path("cabinet/products-export/", cabinet_products_export, name="cabinet_products_export"),
+    path("cabinet/bot-settings/", cabinet_bot_settings_save, name="cabinet_bot_settings_save"),
+    path("cabinet/bot-chats/", cabinet_bot_chats, name="cabinet_bot_chats"),
+    path("cabinet/telegram-sync/", cabinet_telegram_sync, name="cabinet_telegram_sync"),
+    path("cabinet/debtors/", cabinet_debtors, name="cabinet_debtors"),
+    path("cabinet/debtors/pay/", cabinet_debtor_pay, name="cabinet_debtor_pay"),
 ]

@@ -1,11 +1,209 @@
 {% extends "base.html" %}
+{% load l10n static %}
 {% block title %}Shaxsiy kabinet — {{ tenant.business_name }}{% endblock %}
 {% block body_class %}cabinet-body{% endblock %}
 {% block extra_head %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preload" href="/static/img/logo.png" as="image">
+<style>
+  /* Splash — birinchi bo‘yoq, darhol */
+  .cabinet-splash{
+    position:fixed;inset:0;z-index:100000;
+    display:grid;place-items:center;
+    background:#fff;
+    transition:opacity .45s ease,visibility .45s ease;
+  }
+  .cabinet-splash.is-done{opacity:0;visibility:hidden;pointer-events:none}
+  .cabinet-splash-stage{
+    position:relative;
+    width:min(560px,82vw);
+    height:auto;
+    min-height:112px;
+    display:grid;place-items:center;
+  }
+  .cabinet-splash-logo-clip{
+    width:100%;height:100%;
+    display:grid;place-items:center;
+    clip-path:inset(0 100% 0 0);
+    animation:cab-splash-reveal .55s cubic-bezier(.22,.75,.28,1) forwards;
+  }
+  .cabinet-splash-logo{
+    width:min(520px,78vw);
+    max-width:896px;
+    height:auto;
+    display:block;
+  }
+  .cabinet-splash-beam{
+    position:absolute;top:-18%;bottom:-18%;
+    width:72px;margin-left:-36px;
+    left:0;
+    pointer-events:none;
+    background:linear-gradient(90deg,
+      transparent 0%,
+      rgba(18,179,161,.08) 28%,
+      rgba(44,134,224,.55) 52%,
+      rgba(18,179,161,.2) 68%,
+      transparent 100%);
+    animation:cab-splash-beam .55s cubic-bezier(.22,.75,.28,1) forwards;
+  }
+  .cabinet-splash{transition:opacity .28s ease,visibility .28s ease}
+  .cabinet-splash-beam::after{
+    content:"";
+    position:absolute;top:8%;bottom:8%;left:48%;
+    width:2px;
+    background:linear-gradient(180deg,transparent,rgba(6,48,94,.55),transparent);
+    box-shadow:0 0 10px rgba(44,134,224,.35);
+  }
+  @keyframes cab-splash-reveal{
+    0%{clip-path:inset(0 100% 0 0);opacity:.35}
+    55%{opacity:1}
+    100%{clip-path:inset(0 0 0 0);opacity:1}
+  }
+  @keyframes cab-splash-beam{
+    0%{left:0%;opacity:0}
+    8%{opacity:1}
+    85%{opacity:1}
+    100%{left:100%;opacity:0}
+  }
+  /* Skel faqat overlay — layout balandligini egallamasin */
+  html.cabinet-booting .cabinet-content{
+    display:none !important;
+  }
+  html.cabinet-booting .cab-skel{
+    display:grid;opacity:1;visibility:visible;
+  }
+  html.cabinet-ready .cab-skel{
+    display:none !important;height:0 !important;margin:0 !important;padding:0 !important;
+    overflow:hidden !important;pointer-events:none !important;
+  }
+  html.cabinet-ready .cabinet-content{
+    display:block;
+    animation:cab-content-in .35s ease both;
+  }
+  @keyframes cab-content-in{
+    from{opacity:0}
+    to{opacity:1}
+  }
+  .cab-skel{
+    display:none;gap:.75rem;padding:0;margin:0;
+  }
+  .sk{
+    display:block;border-radius:14px;
+    background:linear-gradient(90deg,#e8ecf3 0%,#f4f6fa 42%,#e8ecf3 84%);
+    background-size:220% 100%;
+    animation:cab-skel-shimmer 1.15s ease-in-out infinite;
+  }
+  .cab-skel-banner{height:72px;border-radius:14px}
+  .cab-skel-chips{display:flex;flex-wrap:wrap;gap:.45rem}
+  .cab-skel-chips .sk{height:28px;width:64px;border-radius:10px;flex:0 0 auto}
+  .cab-skel-chips .sk:nth-child(2){width:76px}
+  .cab-skel-chips .sk:nth-child(3){width:56px}
+  .cab-skel-chips .sk:nth-child(5){width:84px}
+  .cab-skel-chips .sk:nth-child(7){width:70px}
+  .cab-skel-cards{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:.65rem;
+  }
+  .cab-skel-cards .sk{height:88px;border-radius:14px;min-height:0;aspect-ratio:auto}
+  @keyframes cab-skel-shimmer{
+    0%{background-position:100% 0}
+    100%{background-position:-100% 0}
+  }
+  html.cabinet-ready .cabinet-content > .cabinet-kpi{
+    margin-top:0 !important;
+  }
+  .cabinet-main > .cabinet-topbar{
+    margin-bottom:.7rem;
+  }
+  html.cabinet-ready .cabinet-content > .cabinet-kpi > article,
+  html.cabinet-ready .cabinet-content > .cabinet-card,
+  html.cabinet-ready .cabinet-content > .cabinet-charts > .cabinet-card,
+  html.cabinet-ready .cabinet-content > .tops-products-panel {
+    animation:cab-item-in .45s cubic-bezier(.22,.8,.28,1) both;
+  }
+  html.cabinet-ready .cabinet-content > .cabinet-kpi > article:nth-child(1){animation-delay:.04s}
+  html.cabinet-ready .cabinet-content > .cabinet-kpi > article:nth-child(2){animation-delay:.09s}
+  html.cabinet-ready .cabinet-content > .cabinet-kpi > article:nth-child(3){animation-delay:.14s}
+  html.cabinet-ready .cabinet-content > .cabinet-kpi > article:nth-child(4){animation-delay:.19s}
+  html.cabinet-ready .cabinet-content > .cabinet-card{animation-delay:.16s}
+  html.cabinet-ready .cabinet-content > .cabinet-charts{animation:cab-item-in .5s .24s cubic-bezier(.22,.8,.28,1) both}
+  @keyframes cab-item-in{
+    from{opacity:0}
+    to{opacity:1}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .sk{animation:none}
+    html.cabinet-ready .cabinet-content,
+    html.cabinet-ready .cabinet-content > .cabinet-kpi > article,
+    html.cabinet-ready .cabinet-content > .cabinet-card,
+    html.cabinet-ready .cabinet-content > .cabinet-charts,
+    html.cabinet-ready .cabinet-content > .tops-products-panel{animation:none}
+  }
+</style>
+<script>document.documentElement.classList.add("cabinet-booting");</script>
 {% endblock %}
 {% block body %}
+<div class="cabinet-splash" id="cabinet-splash" role="status" aria-label="Yuklanmoqda">
+  <div class="cabinet-splash-stage">
+    <div class="cabinet-splash-logo-clip">
+      <img class="cabinet-splash-logo" src="/static/img/logo.png" alt="TezPOS" width="896" height="178" decoding="async" fetchpriority="high">
+    </div>
+    <div class="cabinet-splash-beam" aria-hidden="true"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var seen = false;
+  try { seen = sessionStorage.getItem("tezpos_cab_seen") === "1"; } catch (e) {}
+  var splash = document.getElementById("cabinet-splash");
+  if (!splash) {
+    document.documentElement.classList.remove("cabinet-booting");
+    document.documentElement.classList.add("cabinet-ready");
+    return;
+  }
+  // Bo‘limdan bo‘limga — splashni o‘tkazib yuborish (tez navigatsiya)
+  if (seen || {{ fast_nav|default:False|yesno:"true,false" }}) {
+    splash.classList.add("is-done");
+    if (splash.parentNode) splash.parentNode.removeChild(splash);
+    document.documentElement.classList.remove("cabinet-booting");
+    document.documentElement.classList.add("cabinet-ready");
+    var skel = document.getElementById("cabinet-skel");
+    if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
+    try { sessionStorage.setItem("tezpos_cab_seen", "1"); } catch (e) {}
+    return;
+  }
+  var minMs = 320;
+  var maxMs = 700;
+  var started = Date.now();
+  var finished = false;
+  function finish() {
+    if (finished) return;
+    finished = true;
+    var wait = Math.max(0, minMs - (Date.now() - started));
+    setTimeout(function () {
+      splash.classList.add("is-done");
+      setTimeout(function () {
+        var skel = document.getElementById("cabinet-skel");
+        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
+        document.documentElement.classList.remove("cabinet-booting");
+        document.documentElement.classList.add("cabinet-ready");
+        try { sessionStorage.setItem("tezpos_cab_seen", "1"); } catch (e) {}
+        setTimeout(function () {
+          if (splash && splash.parentNode) splash.parentNode.removeChild(splash);
+        }, 280);
+      }, 180);
+    }, wait);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", finish);
+  } else {
+    finish();
+  }
+  setTimeout(finish, maxMs);
+})();
+</script>
 <div class="cabinet-app">
   <div class="cabinet-sidebar-backdrop" id="cabinet-sidebar-backdrop" hidden></div>
   <aside class="cabinet-sidebar" id="cabinet-sidebar">
@@ -19,14 +217,16 @@
     </div>
     <nav class="cabinet-nav">
       <a href="?section=overview" class="{% if section == 'overview' %}is-active{% endif %}"><span class="nav-dot"></span> Bosh sahifa</a>
-      <a href="?section=abc" class="{% if section == 'abc' %}is-active{% endif %}"><span class="nav-dot"></span> ABC-XYZ</a>
       <a href="?section=signals" class="{% if section == 'signals' %}is-active{% endif %}"><span class="nav-dot"></span> Signallar</a>
       <a href="?section=reports" class="{% if section == 'reports' %}is-active{% endif %}"><span class="nav-dot"></span> Hisobotlar</a>
       <a href="?section=tops" class="{% if section == 'tops' %}is-active{% endif %}"><span class="nav-dot"></span> Top reyting</a>
       <a href="?section=labels" class="{% if section == 'labels' %}is-active{% endif %}"><span class="nav-dot"></span> Yorliqlar</a>
       <a href="?section=sales" class="{% if section == 'sales' %}is-active{% endif %}"><span class="nav-dot"></span> Kunlik sotuvlar</a>
+      <a href="?section=shifts" class="{% if section == 'shifts' %}is-active{% endif %}"><span class="nav-dot"></span> Smenalar</a>
       <a href="?section=products" class="{% if section == 'products' %}is-active{% endif %}"><span class="nav-dot"></span> Mahsulotlar</a>
       <a href="?section=inventory" class="{% if section == 'inventory' %}is-active{% endif %}"><span class="nav-dot"></span> Ombor</a>
+      <a href="?section=bot" class="{% if section == 'bot' %}is-active{% endif %}"><span class="nav-dot"></span> Bot sozlamalari</a>
+      <a href="?section=debtors" class="{% if section == 'debtors' %}is-active{% endif %}"><span class="nav-dot"></span> Qarzdorlar ro‘yxati</a>
     </nav>
     <div class="cabinet-side-foot">
       <a href="/">← Saytga qaytish</a>
@@ -61,17 +261,32 @@
     </ul>
     {% endif %}
 
+    <div class="cab-skel" id="cabinet-skel" aria-hidden="true">
+      <div class="sk cab-skel-banner"></div>
+      <div class="cab-skel-chips">
+        <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+        <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+        <span class="sk"></span>
+      </div>
+      <div class="cab-skel-cards">
+        <div class="sk"></div><div class="sk"></div>
+        <div class="sk"></div><div class="sk"></div>
+      </div>
+    </div>
+
+    <div class="cabinet-content" id="cabinet-content">
+
     {% if section == 'overview' %}
-    <section class="cabinet-kpi">
+    <section class="cabinet-kpi" id="overview-kpi">
       <article>
-        <p>Bugungi sotuv</p>
-        <h2>{{ today_count }}</h2>
-        <small>{{ today_gross }} so'm</small>
+        <p id="kpi-period-label">Tanlangan davr</p>
+        <h2 id="kpi-checks">{{ range_checks|default:total_sales }}</h2>
+        <small>Cheklar · <span id="kpi-gross" data-fmt-money="{{ gross }}">0</span> so'm</small>
       </article>
       <article>
-        <p>Cheklar</p>
-        <h2>{{ total_sales }}</h2>
-        <small>Jami tushum {{ gross }}</small>
+        <p>Sof foyda <span id="kpi-price-list-name" class="kpi-pl-tag"></span></p>
+        <h2 class="is-profit" id="kpi-profit" data-fmt-money="{{ profit }}">0</h2>
+        <small>Marja <span id="kpi-margin">{{ margin|floatformat:1 }}</span>%</small>
       </article>
       <article>
         <p>Faol signallar</p>
@@ -79,44 +294,81 @@
         <small><a href="?section=signals">Ko‘rish →</a></small>
       </article>
       <article>
-        <p>Sof foyda</p>
-        <h2>{{ profit }}</h2>
-        <small>Marja {{ margin|floatformat:1 }}%</small>
+        <p>Bugungi sotuv</p>
+        <h2>{{ today_count }}</h2>
+        <small><span data-fmt-money="{{ today_gross }}">0</span> so'm</small>
       </article>
+    </section>
+
+    <section class="cabinet-card" id="price-list-stats-card">
+      <div class="cabinet-card-head">
+        <h3>Narxlar ro‘yxati bo‘yicha</h3>
+        <div class="price-list-toolbar">
+          <label class="cabinet-select-wrap">
+            <select id="overview-price-list-filter" class="cabinet-select" aria-label="Narxlar ro‘yxati">
+              <option value="all">Barcha narxlar</option>
+              <option value="__selling__">Sotuv</option>
+            </select>
+          </label>
+          <span id="price-list-period-hint">Tanlangan davr</span>
+        </div>
+      </div>
+      <p class="cabinet-hint">Sotuv — sotuv narxidagi savdolar; Optom — narxlar ro‘yxati. Jami — davrning to‘liq tushumi.</p>
+      <div class="price-list-mix" id="price-list-mix">
+        <div class="cab-inline-skel cab-inline-skel--chips cab-inline-skel--mix" aria-hidden="true">
+          <span class="sk" style="width:88px"></span>
+          <span class="sk" style="width:72px"></span>
+          <span class="sk" style="width:96px"></span>
+          <span class="sk" style="width:64px"></span>
+        </div>
+      </div>
+      <div class="price-list-stats" id="price-list-stats">
+        <div class="cab-inline-skel cab-inline-skel--stats" aria-hidden="true">
+          <div class="sk"></div><div class="sk"></div><div class="sk"></div>
+        </div>
+      </div>
     </section>
 
     <section class="cabinet-charts cabinet-charts--stack">
       <article class="cabinet-card">
         <div class="cabinet-card-head">
           <h3>Sotuv statistikasi</h3>
-          <div class="period-toggle period-toggle--wrap" id="sales-range-toggle">
-            <button type="button" data-range="d1">1 kun</button>
-            <button type="button" class="active" data-range="d7">7 kun</button>
-            <button type="button" data-range="d15">15 kun</button>
-            <button type="button" data-range="d30">30 kun</button>
-            <button type="button" data-range="m1">1 oy</button>
-            <button type="button" data-range="m3">3 oy</button>
-            <button type="button" data-range="m6">6 oy</button>
-            <button type="button" data-range="y1">1 yil</button>
+          <div class="sales-date-picker" id="sales-date-picker">
+            <button type="button" class="sales-date-trigger" id="sales-date-trigger" aria-expanded="false" aria-haspopup="dialog">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M3 9h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+              <span id="sales-date-label">Kalendar</span>
+            </button>
+            <div class="sales-calendar" id="sales-calendar" hidden role="dialog" aria-label="Sana tanlash">
+              <div class="sales-calendar-banner" id="sales-calendar-banner">Sana tanlang</div>
+              <div class="sales-calendar-nav">
+                <button type="button" class="sales-cal-nav-btn" id="sales-cal-prev" aria-label="Oldingi oy">‹</button>
+                <div class="sales-cal-selects">
+                  <select id="sales-cal-month" aria-label="Oy"></select>
+                  <select id="sales-cal-year" aria-label="Yil"></select>
+                </div>
+                <button type="button" class="sales-cal-nav-btn" id="sales-cal-next" aria-label="Keyingi oy">›</button>
+              </div>
+              <div class="sales-calendar-weekdays" aria-hidden="true">
+                <span>Ya</span><span>Du</span><span>Se</span><span>Ch</span><span>Pa</span><span>Ju</span><span>Sh</span>
+              </div>
+              <div class="sales-calendar-grid" id="sales-calendar-grid"></div>
+              <p class="sales-calendar-hint">Bir kun: 2 marta bosing. Oraliq: boshlanish → tugash, so‘ng Qo‘llash.</p>
+              <div class="sales-calendar-actions">
+                <button type="button" class="sales-cal-btn sales-cal-btn--ghost" id="sales-cal-cancel">Bekor qilish</button>
+                <button type="button" class="sales-cal-btn sales-cal-btn--primary" id="sales-cal-apply">Qo‘llash</button>
+              </div>
+            </div>
           </div>
         </div>
         <canvas id="salesLineChart" height="120"></canvas>
-        <ul class="cabinet-report-list" id="sales-range-summary"></ul>
-      </article>
-      <article class="cabinet-card cabinet-share-card">
-        <div class="cabinet-card-head">
-          <h3>Mahsulot bo‘yicha ulush</h3>
-          <label class="cabinet-select-wrap">
-            <select id="share-top-select" class="cabinet-select" aria-label="Top miqdor">
-              <option value="10">Top 10</option>
-              <option value="30">Top 30</option>
-              <option value="50" selected>Top 50</option>
-              <option value="100">Top 100</option>
-              <option value="200">Top 200</option>
-            </select>
-          </label>
-        </div>
-        <div class="product-tile-grid product-tile-grid--full" id="share-product-grid"></div>
+        <ul class="cabinet-report-list" id="sales-range-summary">
+          <li class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
+            <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+          </li>
+        </ul>
       </article>
     </section>
     {% endif %}
@@ -202,20 +454,52 @@
       <canvas id="reportLineChart" height="110"></canvas>
       <ul class="cabinet-report-list" id="report-summary">
         <li>Jami cheklar: <strong>{{ total_sales }}</strong></li>
-        <li>Jami tushum: <strong>{{ gross }} so'm</strong></li>
-        <li>Jami tannarx: <strong>{{ cost }} so'm</strong></li>
-        <li>Sof foyda: <strong>{{ profit }} so'm</strong></li>
+        <li>Jami tushum: <strong><span data-fmt-money="{{ gross }}">0</span> so'm</strong></li>
+        <li>Jami tannarx: <strong><span data-fmt-money="{{ cost }}">0</span> so'm</strong></li>
+        <li>Sof foyda: <strong class="is-profit"><span data-fmt-money="{{ profit }}">0</span> so'm</strong></li>
         <li>O‘rtacha marja: <strong>{{ margin|floatformat:1 }}%</strong></li>
-        <li>Bugungi foyda: <strong>{{ today_profit }} so'm</strong></li>
+        <li>Bugungi foyda: <strong class="is-profit"><span data-fmt-money="{{ today_profit }}">0</span> so'm</strong></li>
       </ul>
     </section>
     {% endif %}
 
     {% if section == 'tops' %}
-    <section class="cabinet-split">
-      <article class="cabinet-card">
-        <div class="cabinet-card-head">
+    <section class="cabinet-card tops-products-panel">
+      <div class="cabinet-card-head">
+        <div>
           <h3>Top tovar</h3>
+          <p class="cabinet-hint" id="tops-period-hint">Tanlangan sana oralig‘idagi eng yaxshi sotilgan mahsulotlar</p>
+        </div>
+        <div class="tops-toolbar">
+          <div class="sales-date-picker" id="tops-date-picker">
+            <button type="button" class="sales-date-trigger" id="tops-date-trigger" aria-expanded="false" aria-haspopup="dialog">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M3 9h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+              <span id="tops-date-label">Kalendar</span>
+            </button>
+            <div class="sales-calendar" id="tops-calendar" hidden role="dialog" aria-label="Sana tanlash">
+              <div class="sales-calendar-banner" id="tops-calendar-banner">Sana tanlang</div>
+              <div class="sales-calendar-nav">
+                <button type="button" class="sales-cal-nav-btn" id="tops-cal-prev" aria-label="Oldingi oy">‹</button>
+                <div class="sales-cal-selects">
+                  <select id="tops-cal-month" aria-label="Oy"></select>
+                  <select id="tops-cal-year" aria-label="Yil"></select>
+                </div>
+                <button type="button" class="sales-cal-nav-btn" id="tops-cal-next" aria-label="Keyingi oy">›</button>
+              </div>
+              <div class="sales-calendar-weekdays" aria-hidden="true">
+                <span>Ya</span><span>Du</span><span>Se</span><span>Ch</span><span>Pa</span><span>Ju</span><span>Sh</span>
+              </div>
+              <div class="sales-calendar-grid" id="tops-calendar-grid"></div>
+              <p class="sales-calendar-hint">Bir kun: 2 marta bosing. Oraliq: boshlanish → tugash, so‘ng Qo‘llash.</p>
+              <div class="sales-calendar-actions">
+                <button type="button" class="sales-cal-btn sales-cal-btn--ghost" id="tops-cal-cancel">Bekor qilish</button>
+                <button type="button" class="sales-cal-btn sales-cal-btn--primary" id="tops-cal-apply">Qo‘llash</button>
+              </div>
+            </div>
+          </div>
           <label class="cabinet-select-wrap">
             <select id="tops-products-select" class="cabinet-select" aria-label="Top miqdor">
               <option value="10" selected>Top 10</option>
@@ -225,61 +509,349 @@
             </select>
           </label>
         </div>
-        <div class="cabinet-table-wrap">
-          <table>
-            <thead><tr><th>#</th><th>Tovar</th><th>Miqdor</th><th>Tushum</th><th>Qoldiq</th></tr></thead>
-            <tbody id="tops-products-body"></tbody>
-          </table>
+      </div>
+      <div class="tops-list" id="tops-products-grid">
+        <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
+          <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+          <span class="sk"></span><span class="sk"></span>
         </div>
-      </article>
-      <article class="cabinet-card">
-        <div class="cabinet-card-head">
-          <h3>Top xaridor</h3>
-          <label class="cabinet-select-wrap">
-            <select id="tops-customers-select" class="cabinet-select" aria-label="Top miqdor">
-              <option value="10" selected>Top 10</option>
-              <option value="30">Top 30</option>
-              <option value="50">Top 50</option>
-              <option value="100">Top 100</option>
-            </select>
-          </label>
-        </div>
-        <div class="cabinet-table-wrap">
-          <table>
-            <thead><tr><th>#</th><th>Mijoz</th><th>Buyurtma</th><th>Jami</th></tr></thead>
-            <tbody id="tops-customers-body"></tbody>
-          </table>
-        </div>
-      </article>
+      </div>
+    </section>
+    <section class="cabinet-card">
+      <div class="cabinet-card-head">
+        <h3>Top xaridor</h3>
+        <label class="cabinet-select-wrap">
+          <select id="tops-customers-select" class="cabinet-select" aria-label="Top miqdor">
+            <option value="10" selected>Top 10</option>
+            <option value="30">Top 30</option>
+            <option value="50">Top 50</option>
+            <option value="100">Top 100</option>
+          </select>
+        </label>
+      </div>
+      <div class="cabinet-table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Mijoz</th><th>Buyurtma</th><th>Jami</th></tr></thead>
+          <tbody id="tops-customers-body"></tbody>
+        </table>
+      </div>
     </section>
     {% endif %}
 
     {% if section == 'labels' %}
-    <section class="cabinet-card">
+    <section class="label-hub" id="label-hub">
+      <button type="button" class="label-hub-card" id="ld-open-print" data-mode="print">
+        <svg viewBox="0 0 24 24" width="36" height="36" aria-hidden="true"><path fill="currentColor" d="M7 3h10v5H7V3zm-2 7h14a2 2 0 012 2v5h-3v4H6v-4H3v-5a2 2 0 012-2zm3 7h8v-2H8v2z"/></svg>
+        <span>Narx teglarini chop etish</span>
+      </button>
+      <button type="button" class="label-hub-card" id="ld-open-design" data-mode="design">
+        <svg viewBox="0 0 24 24" width="36" height="36" aria-hidden="true"><path fill="currentColor" d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5v-9zm9 1.2 5.2-2.6L12 4.2 6.8 6.1 12 8.7zM5 9.3v6.3l6 3V12.3L5 9.3zm8 9.3 6-3V9.3l-6 3v6.3z"/></svg>
+        <span>Narx belgilari</span>
+      </button>
+    </section>
+
+    <section class="label-designer" id="label-designer" hidden>
+      <div class="label-designer-toolbar">
+        <button type="button" class="btn-soft" id="ld-back-hub">← Orqaga</button>
+        <label class="ld-field">
+          <span>Nomi</span>
+          <input type="text" id="ld-tpl-name" value="Cennik 38x58" maxlength="80">
+        </label>
+        <label class="ld-field ld-field--num">
+          <span>Eni</span>
+          <input type="number" id="ld-tpl-w" value="38" min="20" max="200" step="1">
+          <em>mm</em>
+        </label>
+        <label class="ld-field ld-field--num">
+          <span>Balandligi</span>
+          <input type="number" id="ld-tpl-h" value="58" min="20" max="200" step="1">
+          <em>mm</em>
+        </label>
+        <div class="ld-toolbar-actions">
+          <button type="button" class="btn-soft" id="ld-reset-btn">Standart</button>
+          <button type="button" class="lp-btn-primary" id="ld-save-btn">Saqlash</button>
+        </div>
+      </div>
+
+      <div class="label-designer-body">
+        <aside class="label-designer-side">
+          <article class="ld-panel">
+            <h4>Narx sozlamalari</h4>
+            <label class="ld-check">
+              <span>Narxni formatlash</span>
+              <input type="checkbox" id="ld-fmt-price">
+            </label>
+            <label class="ld-field">
+              <span>Narx qo‘shimchasi</span>
+              <input type="text" id="ld-price-suffix" placeholder="so'm" maxlength="20">
+            </label>
+          </article>
+
+          <article class="ld-panel">
+            <h4>Cennik elementlari</h4>
+            <div class="ld-elements" id="ld-elements">
+              <label class="ld-check" data-el="name"><span>Nomi</span><input type="checkbox" checked></label>
+              <label class="ld-check" data-el="price"><span>Narxi</span><input type="checkbox" checked></label>
+              <label class="ld-check" data-el="old_price"><span>Eski narxi</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="wholesale"><span>Ulgurji narx</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="sku"><span>Artikul</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="created"><span>Yaratilgan sana</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="custom1"><span>Maxsus matn</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="custom2"><span>Maxsus matn 2</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="custom3"><span>Maxsus matn 3</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="old_label"><span>Eski narxi matni</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="print_date"><span>Chiqqan sana</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="barcode"><span>Barkod</span><input type="checkbox"></label>
+              <label class="ld-check" data-el="logo"><span>Logo</span><input type="checkbox"></label>
+            </div>
+          </article>
+
+          <article class="ld-panel" id="ld-font-panel">
+            <h4>Shrift sozlamalari</h4>
+            <p class="ld-hint">Ko‘k chiziqni sudrang: o‘ng/chap (X), yuqori/past (Y) yoki diagonal. Shift — faqat bitta o‘q.</p>
+            <label class="ld-field">
+              <span>Shrift o‘lchami</span>
+              <select id="ld-font-size"></select>
+            </label>
+            <label class="ld-field">
+              <span>Shrift qalinligi</span>
+              <select id="ld-font-weight">
+                <option value="400">400</option>
+                <option value="500">500</option>
+                <option value="600">600</option>
+                <option value="700">700</option>
+                <option value="800" selected>800</option>
+                <option value="900">900</option>
+              </select>
+            </label>
+            <label class="ld-field">
+              <span>Joylashuv</span>
+              <select id="ld-font-align">
+                <option value="left">Chap</option>
+                <option value="center" selected>Markaz</option>
+                <option value="right">O‘ng</option>
+              </select>
+            </label>
+            <label class="ld-field">
+              <span>Aylantirish</span>
+              <div class="ld-rotate-row">
+                <button type="button" class="ld-rot-btn" id="ld-rot-left" title="Chapga">↺</button>
+                <input type="number" id="ld-font-rotate" value="0" min="-180" max="360" step="1">
+                <button type="button" class="ld-rot-btn" id="ld-rot-right" title="O‘ngga">↻</button>
+              </div>
+              <em class="ld-rot-hint">Yuqoridagi ko‘k dumaloq tutqichni aylantiring; ↺ ↻ — chap/o‘ng</em>
+            </label>
+            <label class="ld-field" id="ld-text-wrap">
+              <span>Matni</span>
+              <input type="text" id="ld-font-text" maxlength="120">
+            </label>
+          </article>
+        </aside>
+
+        <div class="label-designer-canvas">
+          <div class="ld-canvas-stage" id="ld-canvas-stage">
+            <div class="ld-preview-card" id="ld-preview-card">
+              <div class="ld-preview-inner" id="ld-preview"></div>
+              <div class="ld-preview-chrome" id="ld-preview-chrome" aria-hidden="true"></div>
+            </div>
+          </div>
+          <p class="cabinet-hint ld-canvas-hint">Shablonni saqlang — chop etishda yorliqlar xuddi shu joylashuvda chiqadi.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="label-print-view" id="label-print-view" hidden>
+      <div class="label-designer-toolbar">
+        <button type="button" class="btn-soft" id="ld-print-back">← Orqaga</button>
+        <h3 class="ld-print-title">Narx teglarini chop etish</h3>
+        <div class="ld-toolbar-actions">
+          <button type="button" class="lp-btn-primary" id="print-labels-btn">Tayyor</button>
+        </div>
+      </div>
+      <div class="label-print-layout">
+        <aside class="ld-panel ld-print-side">
+          <h4>Chiqarish sozlamalari</h4>
+          <label class="ld-field">
+            <span>Bir qatorda</span>
+            <input type="number" id="ld-print-cols" value="1" min="1" max="6">
+          </label>
+          <label class="ld-field">
+            <span>Narx turi</span>
+            <select id="ld-print-price-type">
+              <option value="selling">Sotuv narxi</option>
+              <option value="wholesale">Ulgurji narx</option>
+            </select>
+          </label>
+          <div class="ld-mini-preview" id="ld-mini-preview"></div>
+          <p class="ld-hint" id="ld-tpl-title">Shablon</p>
+        </aside>
+        <article class="cabinet-card ld-products-card">
+          <div class="cabinet-card-head">
+            <h3>Mahsulotlar</h3>
+            <div class="ld-products-actions">
+              <button type="button" class="btn-soft" id="ld-select-all">Barchasini tanlash</button>
+              <button type="button" class="btn-soft" id="ld-select-none">Bekor qilish</button>
+            </div>
+          </div>
+          <label class="products-search ld-print-search">
+            <input type="search" id="ld-product-search" placeholder="Qidirish…" autocomplete="off">
+          </label>
+          <div class="cabinet-table-wrap">
+            <table id="labels-table">
+              <thead>
+                <tr><th></th><th>Nomi</th><th>Shtrixkod</th><th>Sotuv</th><th>Ulgurji</th></tr>
+              </thead>
+              <tbody>
+                {% for p in products %}
+                <tr class="ld-product-row" tabindex="0"
+                    data-name="{{ p.name }}"
+                    data-price="{{ p.selling_price|unlocalize }}"
+                    data-wholesale="{{ p.wholesale_price|default:0|unlocalize }}"
+                    data-cost="{{ p.cost_price|default:0|unlocalize }}"
+                    data-barcode="{{ p.barcode|default:p.sku }}"
+                    data-sku="{{ p.sku|default:p.barcode }}">
+                  <td><input type="checkbox" class="label-check"
+                    data-name="{{ p.name }}"
+                    data-price="{{ p.selling_price|unlocalize }}"
+                    data-wholesale="{{ p.wholesale_price|default:0|unlocalize }}"
+                    data-cost="{{ p.cost_price|default:0|unlocalize }}"
+                    data-barcode="{{ p.barcode|default:p.sku }}"
+                    data-sku="{{ p.sku|default:p.barcode }}"></td>
+                  <td>{{ p.name }}</td>
+                  <td>{{ p.barcode|default:p.sku|default:"—" }}</td>
+                  <td>{{ p.selling_price }}</td>
+                  <td>{{ p.wholesale_price|default:"—" }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5">Mahsulot yo‘q</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if section == 'shifts' %}
+    <section class="cabinet-card shifts-panel">
       <div class="cabinet-card-head">
-        <h3>Narx yorliqlari</h3>
-        <button type="button" class="lp-btn-primary" id="print-labels-btn">Chop etish</button>
+        <div>
+          <h3>Smenalar</h3>
+          <p class="cabinet-hint">
+            {% if shifts_source == 'api' %}
+              TezPOS Shifts API dan yuklandi.
+            {% else %}
+              TezPOS smena endpointi topilmadi — sotuvlar oralig‘idan smenalar yig‘ildi (4 soatlik tanaffus).
+            {% endif %}
+          </p>
+        </div>
+        <span class="products-total">Jami: <strong id="shifts-total-count">0</strong> ta</span>
       </div>
-      <p class="cabinet-hint">Tovarlarni belgilang. “Chop etish” faqat yorliqlarni yangi oynada ochadi.</p>
-      <div class="cabinet-table-wrap">
-        <table id="labels-table">
-          <thead>
-            <tr><th></th><th>Nomi</th><th>Shtrixkod</th><th>Narx</th></tr>
-          </thead>
-          <tbody>
-            {% for p in products %}
-            <tr>
-              <td><input type="checkbox" class="label-check" data-name="{{ p.name }}" data-price="{{ p.selling_price }}" data-barcode="{{ p.barcode|default:p.sku }}"></td>
-              <td>{{ p.name }}</td>
-              <td>{{ p.barcode|default:p.sku|default:"—" }}</td>
-              <td>{{ p.selling_price }} so'm</td>
-            </tr>
-            {% empty %}
-            <tr><td colspan="4">Mahsulot yo‘q</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      <div class="shifts-kpis" id="shifts-summary-kpis"></div>
+      <div class="shifts-list" id="shifts-list"></div>
+      <p class="cabinet-empty" id="shifts-empty" hidden>Smena topilmadi.</p>
+    </section>
+    {% endif %}
+
+    {% if section == 'bot' %}
+    <section class="cabinet-card bot-settings-panel">
+      <div class="cabinet-card-head">
+        <div>
+          <h3>Bot sozlamalari</h3>
+          <p class="cabinet-hint">Telegram bot tokenini qo‘ying — smena yopilganda kunlik sotuv, qarzdorlar, kam qoldiq va to‘liq Excel yuboriladi.</p>
+        </div>
+        <span class="bot-status-pill {% if bot_settings.enabled %}is-on{% else %}is-off{% endif %}" id="bot-status-pill">
+          {% if bot_settings.enabled %}Yoqilgan{% else %}O‘chirilgan{% endif %}
+        </span>
       </div>
+
+      <form class="bot-settings-form" id="bot-settings-form">
+        <label class="bot-field bot-switch">
+          <input type="checkbox" id="bot-enabled" {% if bot_settings.enabled %}checked{% endif %}>
+          <span>Botni yoqish</span>
+        </label>
+
+        <label class="bot-field">
+          <span class="field-label">Bot token <span class="req">*</span></span>
+          <input type="password" id="bot-token" value="{{ bot_settings.token }}" placeholder="123456:AA..." autocomplete="off">
+          <small>@BotFather dan olingan token. Masalan: <code>7123456789:AAH...</code></small>
+        </label>
+
+        <label class="bot-field">
+          <span class="field-label">Kimga yuborilsin <span class="req">*</span></span>
+          <textarea id="bot-recipients" rows="5" placeholder="123456789&#10;-1001234567890&#10;https://t.me/mychannel">{{ bot_settings.recipients }}</textarea>
+          <small>
+            <strong>Muhim:</strong> shaxsiy akkauntga <code>@username</code> ishlamaydi.
+            Avval botga (masalan <strong>@zakaz_bot_test_bot</strong>) kirib <code>/start</code> yozing,
+            keyin <em>Chatlarni topish</em> orqali raqamli ID qo‘ying.
+            Guruh/kanal: botni qo‘shib admin qiling, keyin <code>-100...</code> ID yoki <code>t.me/...</code>.
+          </small>
+        </label>
+        <div class="bot-chats-box" id="bot-chats-box" hidden>
+          <div class="bot-chats-head">Botga yozgan chatlar — bosing, ID qo‘shiladi</div>
+          <div class="bot-chats-list" id="bot-chats-list"></div>
+        </div>
+
+        <div class="bot-checks">
+          <label class="bot-field bot-switch">
+            <input type="checkbox" id="bot-notify-open" {% if bot_settings.notify_open %}checked{% endif %}>
+            <span>Smena ochilganda xabar</span>
+          </label>
+          <label class="bot-field bot-switch">
+            <input type="checkbox" id="bot-notify-close" {% if bot_settings.notify_close %}checked{% endif %}>
+            <span>Smena yopilganda to‘liq hisobot + Excel</span>
+          </label>
+        </div>
+
+        <div class="bot-actions">
+          <button type="submit" class="btn-save" id="bot-save-btn">Saqlash</button>
+          <button type="button" class="btn-soft" id="bot-test-btn">Test xabar yuborish</button>
+          <button type="button" class="btn-ghost" id="bot-find-chats-btn">Chatlarni topish</button>
+          <button type="button" class="btn-ghost" id="bot-sync-btn">Hozir tekshirish</button>
+        </div>
+        <p class="bot-form-status" id="bot-form-status" hidden></p>
+      </form>
+
+      <div class="bot-help">
+        <h4>Qanday ishlaydi?</h4>
+        <ol>
+          <li>Telegramda <strong>@BotFather</strong> orqali bot yarating va token oling.</li>
+          <li>O‘zingiz botga kirib <strong>/start</strong> yozing (majburiy).</li>
+          <li><strong>Chatlarni topish</strong> → o‘z Chat ID raqamingizni tanlang.</li>
+          <li>Guruh/kanal uchun botni qo‘shing va admin qiling.</li>
+          <li>Smena yopilganda: kunlik sotuv, sof foyda, qarzdorlar ro‘yxati, kam qoldiq + Excel (barcha ma’lumot).</li>
+        </ol>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if section == 'debtors' %}
+    <section class="cabinet-card debtors-panel" id="debtors-panel">
+      <div class="cabinet-card-head">
+        <div>
+          <h3>Qarzdorlar ro‘yxati</h3>
+          <p class="cabinet-hint">TezPOS dasturidagi mijoz qarzlari. Qisman yoki to‘liq to‘lov qilishingiz mumkin.</p>
+        </div>
+        <div class="debtors-toolbar">
+          <button type="button" class="btn-soft" id="debtors-refresh">Yangilash</button>
+        </div>
+      </div>
+      <div class="debtors-kpis" id="debtors-kpis">
+        <div class="debtors-kpi"><span>Qarzdorlar</span><strong id="debtors-count">—</strong></div>
+        <div class="debtors-kpi"><span>Jami qarz</span><strong class="is-debt" id="debtors-total">—</strong></div>
+      </div>
+      <label class="products-search debtors-search">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 104.47 10l4.26 4.27 1.42-1.42-4.27-4.26A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z"/></svg>
+        <input type="search" id="debtors-search" placeholder="Qidiruv: mijoz ismi yoki telefon…" autocomplete="off">
+      </label>
+      <div class="debtors-list" id="debtors-list">
+        <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
+          <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+        </div>
+      </div>
+      <p class="cabinet-empty" id="debtors-empty" hidden>Qarzdorlar yo‘q.</p>
+      <p class="cabinet-hint" id="debtors-error" hidden></p>
     </section>
     {% endif %}
 
@@ -416,8 +988,6 @@
             </select>
             <select class="cabinet-select" id="products-price-type" aria-label="Narx turi">
               <option value="selling">Sotuv narxi</option>
-              <option value="wholesale">Ulgurji narx</option>
-              <option value="cost">Tannarx</option>
             </select>
             <label class="products-search">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 104.47 10l4.26 4.27 1.42-1.42-4.27-4.26A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z"/></svg>
@@ -426,6 +996,10 @@
           </div>
           <div class="products-toolbar-right">
             <span class="products-total" id="products-total">Jami: <strong>{{ all_products_count }}</strong> ta</span>
+            <button type="button" class="btn-ghost" id="btn-product-export" title="Excelga yuklash">
+              <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4 6.3 10.7l1.4-1.4L11 12.6V4zM5 18h14v2H5v-2z"/></svg>
+              Yuklash
+            </button>
             <button type="button" class="btn-soft" id="btn-product-add">
               <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>
               Mahsulot qo‘shish
@@ -453,6 +1027,10 @@
       </article>
     </section>
 
+    {% endif %}
+    </div><!-- /.cabinet-content -->
+
+    {% if section == 'inventory' or section == 'products' %}
     <div class="product-modal" id="product-modal" hidden>
       <div class="product-modal-backdrop" data-close-modal></div>
       <div class="product-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="product-modal-title">
@@ -549,8 +1127,9 @@
                 </label>
               </div>
               <label>
-                <span class="field-label">Minimal qoldiq</span>
-                <input type="number" step="0.001" min="0" name="min_stock" id="f_min_stock" placeholder="0" inputmode="decimal">
+                <span class="field-label">Minimal qoldiqda ogohlantirish</span>
+                <input type="number" step="0.001" min="0" name="min_stock" id="f_min_stock" placeholder="masalan: 5" inputmode="decimal">
+                <small style="display:block;margin-top:4px;color:#94a3b8;font-size:12px">Qoldiq shu sondan past yoki teng bo‘lsa ogohlantiriladi</small>
               </label>
               <input type="hidden" name="image_url" id="f_image_url" value="">
             </div>
@@ -587,28 +1166,104 @@
         </form>
       </div>
     </div>
+    <div class="product-modal" id="product-import-modal" hidden>
+      <div class="product-modal-backdrop" data-close-import></div>
+      <div class="product-modal-dialog product-import-dialog" role="dialog" aria-modal="true" aria-labelledby="product-import-title">
+        <header class="product-modal-head">
+          <div>
+            <h3 id="product-import-title">Excelga yuklash</h3>
+            <p>Avval kerakli maydonlarni tanlang (nom, brend, narxlar ro‘yxati…). Keyin «Excelga yuklash»ni bosing.</p>
+          </div>
+          <button type="button" class="modal-close" data-close-import aria-label="Yopish">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>
+          </button>
+        </header>
+        <div class="product-modal-body product-import-body">
+          <section class="pi-step">
+            <div class="pi-step-head">
+              <h4>1. Qaysi ustunlar kerak?</h4>
+              <div class="pi-step-actions">
+                <button type="button" class="link-btn" id="pi-select-all">Barchasini tanlash</button>
+                <button type="button" class="link-btn" id="pi-select-none">Bekor qilish</button>
+              </div>
+            </div>
+            <div class="pi-fields" id="pi-fields"></div>
+            <p class="cabinet-hint">Narxlar ro‘yxatidagi narxlar, brend, bo‘lim va boshqa maydonlarni belgilang.</p>
+          </section>
+          <section class="pi-step">
+            <h4>2. Excel</h4>
+            <div class="pi-file-row">
+              <button type="button" class="btn-save" id="pi-download-tpl">Tanlanganlar bo‘yicha Excelga yuklash</button>
+              <label class="pi-file-btn btn-soft">
+                Yoki Excel fayl tanlash (import)
+                <input type="file" id="pi-file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" hidden>
+              </label>
+              <span class="pi-file-name" id="pi-file-name">Fayl tanlanmagan</span>
+            </div>
+            <p class="cabinet-hint">Yuklash — tanlangan ustunlar bilan barcha mahsulotlar. Import — fayldan TezPOS ga qo‘shish.</p>
+          </section>
+          <section class="pi-step" id="pi-preview-wrap" hidden>
+            <div class="pi-step-head">
+              <h4>3. Ko‘rib chiqish</h4>
+              <span class="pi-preview-meta" id="pi-preview-meta"></span>
+            </div>
+            <div class="cabinet-table-wrap pi-preview-table-wrap">
+              <table class="pi-preview-table" id="pi-preview-table">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+          <div class="pi-status" id="pi-status" hidden></div>
+        </div>
+        <footer class="product-modal-foot">
+          <button type="button" class="btn-ghost" data-close-import>Yopish</button>
+          <button type="button" class="btn-save" id="pi-run">Excelga yuklash</button>
+        </footer>
+      </div>
+    </div>
     {% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% if section == 'overview' or section == 'reports' or section == 'sales' or section == 'shifts' or section == 'tops' %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+{% endif %}
+{% if section == 'products' or section == 'inventory' or section == 'labels' %}
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+{% endif %}
 <script>
   window.TEZPOS_CHARTS = {
     labels: {{ chart_labels_json|safe }},
     totals: {{ chart_totals_json|safe }},
     counts: {{ chart_counts_json|safe }},
     salesStats: {{ sales_stats_json|safe }},
+    priceListStats: {{ price_list_stats_json|default:"{}"|safe }},
+    priceLists: {{ price_lists_json|default:"[]"|safe }},
+    rangeStatsUrl: "{% url 'accounts:cabinet_range_stats' %}",
+    topStatsUrl: "{% url 'accounts:cabinet_top_stats' %}",
+    productsImportUrl: "{% url 'accounts:cabinet_products_import' %}",
+    productsExportUrl: "{% url 'accounts:cabinet_products_export' %}",
     shareItems: {{ share_items_json|safe }},
     reports: {{ report_charts_json|safe }},
     nearMin: {{ near_min_json|safe }},
     topProducts: {{ top_products_json|safe }},
     topCustomers: {{ top_customers_json|safe }},
     products: {{ products_json|default:"[]"|safe }},
+    shifts: {{ shifts_json|default:"[]"|safe }},
+    shiftsSource: "{{ shifts_source|default:'none' }}",
+    shiftDetailUrl: "{% url 'accounts:cabinet_shift_detail' %}",
+    botSettingsUrl: "{% url 'accounts:cabinet_bot_settings_save' %}",
+    botChatsUrl: "{% url 'accounts:cabinet_bot_chats' %}",
+    telegramSyncUrl: "{% url 'accounts:cabinet_telegram_sync' %}",
+    debtorsUrl: "{% url 'accounts:cabinet_debtors' %}",
+    debtorPayUrl: "{% url 'accounts:cabinet_debtor_pay' %}",
+    botSettings: {{ bot_settings_json|default:"{}"|safe }},
     daySales: {{ day_sales_json|default:"[]"|safe }},
     saleDate: "{{ sale_date_iso|default:'' }}"
   };
 </script>
-<script src="/static/cabinet.js" defer></script>
+<script src="{% static 'cabinet.js' %}" defer></script>
 {% endblock %}

@@ -27,11 +27,24 @@ def normalize_api_base(url: str | None = None) -> str:
 
 
 def _parse_error(body: bytes, status: int) -> str:
-    text = body.decode("utf-8", errors="replace")
+    text = body.decode("utf-8", errors="replace").strip()
+    # Django HTML 404/500 — foydalanuvchiga xom HTML chiqarmaslik
+    lowered = text[:200].lower()
+    if "<!doctype" in lowered or "<html" in lowered:
+        if status == 404:
+            return (
+                f"API topilmadi (HTTP 404). TEZPOS_API_URL noto‘g‘ri yoki backendda "
+                f"marshrut yo‘q. Hozirgi: {normalize_api_base()}"
+            )
+        return f"TezPOS API xato (HTTP {status}). Manzil: {normalize_api_base()}"
     try:
         data = json.loads(text)
     except Exception:
-        return text.strip() or f"HTTP {status}"
+        # Qisqa matn; uzun HTML emas
+        clean = " ".join(text.split())
+        if len(clean) > 180:
+            clean = clean[:177] + "..."
+        return clean or f"HTTP {status}"
     if isinstance(data, dict):
         for key in ("detail", "login", "password", "server_name", "non_field_errors"):
             val = data.get(key)
@@ -39,13 +52,12 @@ def _parse_error(body: bytes, status: int) -> str:
                 return str(val[0])
             if isinstance(val, str) and val.strip():
                 return val
-        # first list/string error
         for val in data.values():
             if isinstance(val, list) and val:
                 return str(val[0])
             if isinstance(val, str) and val.strip():
                 return val
-    return text.strip() or f"HTTP {status}"
+    return text[:180] or f"HTTP {status}"
 
 
 def api_request(
@@ -87,7 +99,25 @@ def api_request(
             raw = resp.read()
             if not raw:
                 return None
-            return json.loads(raw.decode("utf-8"))
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            text = raw.decode("utf-8", errors="replace")
+            if "text/html" in ctype or text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
+                raise TezPosApiError(
+                    f"API HTML qaytardi (JSON emas). TEZPOS_API_URL={base} sayt emas, "
+                    f"TezPOS backend bo‘lishi kerak. Path: {path}",
+                    status=502,
+                    payload=raw[:200],
+                )
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise TezPosApiError(
+                    f"API JSON emas. TEZPOS_API_URL={base}, path={path}",
+                    status=502,
+                    payload=raw[:200],
+                ) from exc
+    except TezPosApiError:
+        raise
     except urllib.error.HTTPError as exc:
         err_body = exc.read() if hasattr(exc, "read") else b""
         raise TezPosApiError(_parse_error(err_body, exc.code), status=exc.code, payload=err_body) from exc
@@ -127,14 +157,14 @@ def get_me(token: str, server_name: str) -> dict:
     return api_request("GET", "/api/auth/me/", token=token, server_name=server_name)
 
 
-def get_products(token: str, server_name: str) -> list:
+def get_products(token: str, server_name: str, *, max_pages: int = 8) -> list:
     data = api_request(
         "GET",
         "/api/catalog/products/",
         token=token,
         server_name=server_name,
         query={"all": "true"},
-        timeout=120,
+        timeout=45,
     )
     if isinstance(data, list):
         return data
@@ -142,14 +172,14 @@ def get_products(token: str, server_name: str) -> list:
         results = list(data.get("results") or [])
         next_url = data.get("next")
         page = 2
-        while next_url and page <= 60:
+        while next_url and page <= max_pages:
             page_data = api_request(
                 "GET",
                 "/api/catalog/products/",
                 token=token,
                 server_name=server_name,
                 query={"page": page},
-                timeout=60,
+                timeout=30,
             )
             if isinstance(page_data, list):
                 results.extend(page_data)
@@ -172,7 +202,8 @@ def get_sales(
     *,
     date_from: str | None = None,
     date_to: str | None = None,
-    timeout: float = 60,
+    timeout: float = 35,
+    max_pages: int = 5,
 ) -> list:
     """Sotuvlar ro'yxati. all=true bilan pagination o'chiriladi."""
     data = api_request(
@@ -194,7 +225,7 @@ def get_sales(
         # Ba'zi sozlamalarda all=true ishlamasa — sahifalab yig'ish
         next_url = data.get("next")
         page = 2
-        while next_url and page <= 40:
+        while next_url and page <= max_pages:
             page_data = api_request(
                 "GET",
                 "/api/sales/",
@@ -224,7 +255,7 @@ def get_sales(
 
 def get_sales_for_day(token: str, server_name: str, day: str) -> list:
     """Bitta kun uchun sotuvlar (tez)."""
-    return get_sales(token, server_name, date_from=day, date_to=day, timeout=45)
+    return get_sales(token, server_name, date_from=day, date_to=day, timeout=20, max_pages=2)
 
 
 def get_sale(token: str, server_name: str, sale_id: str) -> dict:
@@ -233,8 +264,130 @@ def get_sale(token: str, server_name: str, sale_id: str) -> dict:
         f"/api/sales/{sale_id}/",
         token=token,
         server_name=server_name,
-        timeout=8,
+        timeout=5,
     )
+
+
+def get_price_lists(token: str, server_name: str) -> list:
+    data = api_request(
+        "GET",
+        "/api/catalog/price-lists/",
+        token=token,
+        server_name=server_name,
+        timeout=20,
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("results") or []
+    return []
+
+
+SHIFT_LIST_PATHS = (
+    "/api/shifts/",
+    "/api/cash-shifts/",
+    "/api/cash_shifts/",
+    "/api/pos/shifts/",
+    "/api/sales/shifts/",
+    "/api/cash-sessions/",
+    "/api/cash_sessions/",
+)
+
+
+def get_shifts(
+    token: str,
+    server_name: str,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    timeout: float = 25,
+    max_pages: int = 4,
+) -> list:
+    """TezPOS smenalari. Endpoint topilmasa bo'sh ro'yxat."""
+    last_404 = True
+    for path in SHIFT_LIST_PATHS:
+        try:
+            data = api_request(
+                "GET",
+                path,
+                token=token,
+                server_name=server_name,
+                query={
+                    "all": "true",
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+                timeout=timeout,
+            )
+        except TezPosApiError as exc:
+            if exc.status in (404, 405):
+                continue
+            if exc.status in (401, 403):
+                raise
+            last_404 = False
+            continue
+        rows: list = []
+        if isinstance(data, list):
+            rows = data
+        elif isinstance(data, dict):
+            rows = list(data.get("results") or data.get("items") or data.get("shifts") or [])
+            next_url = data.get("next")
+            page = 2
+            while next_url and page <= max_pages:
+                try:
+                    page_data = api_request(
+                        "GET",
+                        path,
+                        token=token,
+                        server_name=server_name,
+                        query={
+                            "page": page,
+                            "date_from": date_from,
+                            "date_to": date_to,
+                        },
+                        timeout=timeout,
+                    )
+                except TezPosApiError:
+                    break
+                if isinstance(page_data, list):
+                    rows.extend(page_data)
+                    break
+                if not isinstance(page_data, dict):
+                    break
+                chunk = page_data.get("results") or page_data.get("items") or []
+                rows.extend(chunk)
+                next_url = page_data.get("next")
+                if not chunk:
+                    break
+                page += 1
+        if rows or data is not None:
+            return [r for r in rows if isinstance(r, dict)]
+    return []
+
+
+def get_shift(token: str, server_name: str, shift_id: str) -> dict:
+    """Bitta smena detali — mavjud yo'llarni sinaydi."""
+    sid = str(shift_id).strip()
+    for path in (
+        f"/api/shifts/{sid}/",
+        f"/api/cash-shifts/{sid}/",
+        f"/api/cash_shifts/{sid}/",
+        f"/api/pos/shifts/{sid}/",
+        f"/api/sales/shifts/{sid}/",
+    ):
+        try:
+            data = api_request(
+                "GET", path, token=token, server_name=server_name, timeout=12
+            )
+            if isinstance(data, dict):
+                return data
+        except TezPosApiError as exc:
+            if exc.status in (404, 405):
+                continue
+            if exc.status in (401, 403):
+                raise
+            continue
+    return {}
 
 
 def get_daily_stats(token: str, server_name: str) -> dict:
@@ -246,7 +399,22 @@ def get_daily_stats(token: str, server_name: str) -> dict:
     ) or {}
 
 
-def get_top_products(token: str, server_name: str, days: int = 30, limit: int = 100) -> dict:
+def get_top_products(
+    token: str,
+    server_name: str,
+    days: int = 30,
+    limit: int = 100,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    query: dict = {"limit": limit}
+    if date_from and date_to:
+        query["date_from"] = date_from
+        query["date_to"] = date_to
+        query["from"] = date_from
+        query["to"] = date_to
+    else:
+        query["days"] = days
     try:
         return (
             api_request(
@@ -254,7 +422,7 @@ def get_top_products(token: str, server_name: str, days: int = 30, limit: int = 
                 "/api/sales/stats/top-products/",
                 token=token,
                 server_name=server_name,
-                query={"days": days, "limit": limit},
+                query=query,
                 timeout=30,
             )
             or {}
@@ -280,6 +448,117 @@ def get_customers(token: str, server_name: str) -> list:
     if isinstance(data, dict):
         return data.get("results") or []
     return []
+
+
+def pay_customer_debt(
+    token: str,
+    server_name: str,
+    customer_id: str,
+    amount,
+    *,
+    payment_type: str = "cash",
+    note: str = "",
+    check_base_url: str | None = None,
+) -> dict:
+    body: dict = {
+        "amount": str(amount),
+        "payment_type": payment_type or "cash",
+        "note": note or "",
+        "send_sms": True,
+        "sms": True,
+        "notify": True,
+        "notify_sms": True,
+    }
+    # Localhost SMS chekiga yaroqsiz — faqat ochiq domen
+    if check_base_url and "127.0.0.1" not in check_base_url and "localhost" not in check_base_url:
+        body["check_base_url"] = check_base_url
+        body["public_check_base"] = check_base_url
+        body["site_url"] = check_base_url
+    return api_request(
+        "POST",
+        f"/api/sales/customers/{customer_id}/pay-debt/",
+        token=token,
+        server_name=server_name,
+        body=body,
+        timeout=45,
+    )
+
+
+def send_sales_sms(
+    token: str,
+    server_name: str,
+    *,
+    phone: str,
+    message: str,
+    customer_id: str | None = None,
+) -> dict:
+    """
+    DevSMS orqali SMS — TezPOS /api/sales/sms/ endpointi.
+    Backend maydon nomlari farq qilishi mumkin, shuning uchun bir necha variant sinanadi.
+    """
+    phone = (phone or "").strip()
+    message = (message or "").strip()
+    if not phone:
+        return {"ok": False, "error": "Mijozda telefon raqam yo‘q — SMS yuborib bo‘lmaydi."}
+    if not message:
+        return {"ok": False, "error": "SMS matni bo‘sh."}
+
+    payloads: list[dict] = [
+        {"phone": phone, "message": message},
+        {"phone": phone, "text": message},
+        {"to": phone, "message": message},
+        {"phone_number": phone, "message": message},
+    ]
+    if customer_id:
+        payloads.extend(
+            [
+                {"customer_id": customer_id, "message": message, "phone": phone},
+                {"customer": customer_id, "phone": phone, "message": message},
+                {"customer_id": customer_id, "text": message},
+            ]
+        )
+
+    last_err = "SMS yuborilmadi"
+    for body in payloads:
+        try:
+            data = api_request(
+                "POST",
+                "/api/sales/sms/",
+                token=token,
+                server_name=server_name,
+                body=body,
+                timeout=30,
+            )
+            if isinstance(data, dict) and data.get("ok") is False:
+                last_err = str(data.get("error") or data.get("detail") or last_err)
+                continue
+            return {"ok": True, "result": data, "payload_used": body}
+        except TezPosApiError as exc:
+            # 404/405 — endpoint yo'q; boshqa payloadlar foydasiz
+            if exc.status in (404, 405):
+                return {"ok": False, "error": "Backendda SMS endpoint topilmadi (/api/sales/sms/)."}
+            # 400 — noto'g'ri maydon, keyingi variant
+            detail = str(exc)
+            if isinstance(exc.payload, (bytes, bytearray)):
+                try:
+                    payload = json.loads(exc.payload.decode("utf-8", errors="replace"))
+                    if isinstance(payload, dict):
+                        detail = str(
+                            payload.get("detail")
+                            or payload.get("error")
+                            or payload.get("message")
+                            or detail
+                        )
+                except Exception:
+                    pass
+            last_err = detail
+            if exc.status in (401, 403):
+                return {"ok": False, "error": detail}
+            continue
+        except Exception as exc:  # noqa: BLE001
+            last_err = str(exc)
+            continue
+    return {"ok": False, "error": last_err}
 
 
 def create_product(token: str, server_name: str, payload: dict) -> dict:

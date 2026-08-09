@@ -1,6 +1,7 @@
 from django.shortcuts import render
 
 from accounts.auth_views import session_has_tezpos
+from accounts.models import DesktopInstaller
 from accounts.views import get_tenant_for_user
 from billing.models import Plan
 
@@ -13,6 +14,7 @@ def sales_page_view(request):
     # Marketing landing — static demo raqamlar olib tashlandi
     highlights = []
     plans = Plan.objects.filter(is_active=True).order_by("monthly_price")[:3]
+    installer = DesktopInstaller.get_active()
     return render(
         request,
         "sales/sales_page.html",
@@ -21,5 +23,7 @@ def sales_page_view(request):
             "sales": [],
             "highlights": highlights,
             "plans": plans,
+            "installer_ready": bool(installer and installer.file),
+            "installer_version": (installer.version if installer else "") or "",
         },
     )

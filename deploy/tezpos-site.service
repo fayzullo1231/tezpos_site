@@ -9,8 +9,10 @@ WorkingDirectory=/opt/tezpos_site
 EnvironmentFile=/opt/tezpos_site/.env
 ExecStart=/opt/tezpos_site/.venv/bin/gunicorn tezpos_site.wsgi:application \
     --bind 127.0.0.1:8001 \
-    --workers 3 \
-    --timeout 120 \
+    --workers 4 \
+    --threads 2 \
+    --timeout 90 \
+    --keep-alive 5 \
     --access-logfile /var/log/tezpos_site/access.log \
     --error-logfile /var/log/tezpos_site/error.log
 Restart=always

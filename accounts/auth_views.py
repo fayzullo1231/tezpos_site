@@ -80,7 +80,6 @@ def tezpos_login(request):
     ctx = {
         "default_server": request.session.get(SESSION_SERVER, ""),
         "default_login": "",
-        "api_base": tezpos_api.normalize_api_base(),
         "next": next_url,
         "login_errors": [],
     }

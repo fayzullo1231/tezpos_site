@@ -35,7 +35,7 @@ class ProductForm(forms.ModelForm):
             "stock_qty": "Omborda qoldiq",
             "selling_price": "Sotuv narxi",
             "wholesale_price": "Ulgurji narx",
-            "min_stock": "Minimal qoldiq",
+            "min_stock": "Minimal qoldiqda ogohlantirish",
             "is_favorite": "Sevimlilar",
             "image_url": "Rasm URL",
         }

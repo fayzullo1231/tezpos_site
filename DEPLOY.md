@@ -206,3 +206,18 @@ systemctl restart tezpos-site
 4. systemd gunicorn `:8001`  
 5. nginx + certbot → HTTPS  
 6. Brauzerda `https://tez-pos.uz`
+
+---
+
+## Tezlik / production tayyor
+
+- Kabinet: `bot` / `qarzdorlar` API kutmasdan ochiladi; splash faqat birinchi kirishda
+- Static: WhiteNoise Manifest + nginx `30d immutable`
+- Gunicorn: 4 worker × 2 thread
+- `.env`: `DEBUG=0`, `USE_HTTPS=1`, `TEZPOS_API_URL` (backend), `DEVSMS_TOKEN`
+
+Yangilash:
+
+```bash
+REPO_URL=https://github.com/fayzullo1231/tezpos_site.git bash /opt/tezpos_site/deploy/deploy.sh
+```

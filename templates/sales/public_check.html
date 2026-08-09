@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #e8edf4;
+      --bg: #eef2f7;
+      --card: #ffffff;
+      --brand: #0b3d5c;
+      --ok: #047857;
+      --warn: #c2410c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(900px 420px at 10% -10%, #dbeafe 0%, transparent 55%),
+        radial-gradient(800px 380px at 100% 0%, #e2e8f0 0%, transparent 50%),
+        var(--bg);
+      font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+      color: var(--ink);
+    }
+    .wrap {
+      max-width: 440px;
+      margin: 28px auto 40px;
+      padding: 0 14px;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 18px;
+      box-shadow: 0 12px 40px rgba(15, 23, 42, 0.09);
+      overflow: hidden;
+      border: 1px solid rgba(15, 23, 42, 0.05);
+    }
+    .brand {
+      padding: 28px 22px 18px;
+      text-align: center;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+    }
+    .brand img {
+      display: block;
+      margin: 0 auto 10px;
+      height: 56px;
+      width: auto;
+      max-width: 220px;
+      object-fit: contain;
+    }
+    .brand .store {
+      font-size: 1.15rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: var(--brand);
+    }
+    .brand .sub {
+      margin-top: 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .meta {
+      padding: 16px 20px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+    .meta .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .meta strong { color: var(--ink); font-weight: 650; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      padding: 8px 4px;
+      font-weight: 600;
+      color: #94a3b8;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+    }
+    td {
+      padding: 10px 4px;
+      border-bottom: 1px solid #f1f5f9;
+      vertical-align: top;
+    }
+    .items { padding: 0 14px 8px; }
+    .totals {
+      padding: 16px 20px 22px;
+      border-top: 1px solid var(--line);
+    }
+    .totals .line {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+    .totals .line.muted { color: var(--muted); font-size: 13px; }
+    .box {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 12px;
+    }
+    .box.debt { background: #fff7ed; border: 1px solid #fed7aa; }
+    .box.pay { background: #ecfdf5; border: 1px solid #a7f3d0; }
+    .box .row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    .box.debt .row { color: #9a3412; }
+    .box.debt strong { color: var(--warn); }
+    .box.pay .row { color: #065f46; }
+    .box.pay strong { color: var(--ok); }
+    .foot {
+      text-align: center;
+      color: #94a3b8;
+      font-size: 11px;
+      margin-top: 16px;
+      letter-spacing: 0.04em;
+    }
+    .empty {
+      text-align: center;
+      padding: 28px 20px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="brand">
+        <img src="{{ logo_url }}" alt="TezPOS" width="220" height="56"/>
+        <div class="store">{{ store_name }}</div>
+        <div class="sub">{{ subtitle }}</div>
+      </div>
+
+      {% if kind == "not_found" %}
+      <div class="empty">
+        <div style="font-size:18px;font-weight:700;color:var(--ink);margin-bottom:8px">{{ empty_title }}</div>
+        <div>{{ empty_detail|safe }}</div>
+      </div>
+      {% else %}
+      <div class="meta">
+        {% for row in meta_rows %}
+        <div class="row"><span>{{ row.label }}</span><strong>{{ row.value }}</strong></div>
+        {% endfor %}
+      </div>
+
+      {% if kind == "sale" %}
+      <div class="items">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Mahsulot</th>
+              <th style="text-align:right">Soni</th>
+              <th style="text-align:right">Narx</th>
+              <th style="text-align:right">Summa</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for it in items %}
+            <tr>
+              <td style="color:#64748b">{{ forloop.counter }}</td>
+              <td>{{ it.name }}</td>
+              <td style="text-align:right">{{ it.qty }}</td>
+              <td style="text-align:right">{{ it.price }}</td>
+              <td style="text-align:right;font-weight:600">{{ it.total }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:14px">Mahsulot yo'q</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="totals">
+        <div class="line"><span style="color:var(--muted)">Jami</span><strong>{{ total }}</strong></div>
+        <div class="line muted"><span>To'langan</span><span>{{ paid }}</span></div>
+        {% if show_debt %}
+        <div class="box debt">
+          <div class="row"><span>Qarz</span><strong>{{ debt_amount }}</strong></div>
+          <div class="row" style="margin:0"><span>Qoldiq</span><strong>{{ debt_balance }}</strong></div>
+        </div>
+        {% endif %}
+      </div>
+      {% elif kind == "payment" %}
+      <div class="totals">
+        <div class="box pay">
+          <div class="row"><span>To'lov</span><strong>{{ debt_amount }}</strong></div>
+          <div class="row" style="margin:0"><span>Qoldiq</span><strong>{{ debt_balance }}</strong></div>
+        </div>
+      </div>
+      {% endif %}
+      {% endif %}
+    </div>
+    <div class="foot">TezPOS · elektron chek</div>
+  </div>
+</body>
+</html>

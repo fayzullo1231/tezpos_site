@@ -28,13 +28,19 @@ pip install -r requirements.txt
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  echo ">>> .env yaratildi — SECRET_KEY va TEZPOS_API_URL ni to'ldiring, keyin qayta ishga tushiring."
+  SK=$(python -c "import secrets; print(secrets.token_urlsafe(50))")
+  sed -i "s|^SECRET_KEY=.*|SECRET_KEY=${SK}|" .env
+  echo ">>> .env yaratildi — TEZPOS_API_URL va DEVSMS_TOKEN ni tekshiring."
 fi
 
 mkdir -p media staticfiles /var/log/tezpos_site
+chown -R www-data:www-data "$APP_DIR" /var/log/tezpos_site 2>/dev/null || true
+
+export DJANGO_SETTINGS_MODULE=tezpos_site.settings
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput
 
+cp -f "$APP_DIR/deploy/tezpos-site.service" /etc/systemd/system/tezpos-site.service
 systemctl daemon-reload
 systemctl enable tezpos-site
 systemctl restart tezpos-site

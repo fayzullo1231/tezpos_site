@@ -53,7 +53,8 @@ CSRF_TRUSTED_ORIGINS = [
 
 CSRF_USE_SESSIONS = False
 CSRF_COOKIE_HTTPONLY = False
-SESSION_SAVE_EVERY_REQUEST = True
+# Har so‘rovda session yozish sekinlatadi — productionda o‘chirilgan
+SESSION_SAVE_EVERY_REQUEST = DEBUG
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 
@@ -140,14 +141,21 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
+# Production: hashed + compressed (brauzer uzoq kesh)
+_static_backend = (
+    "whitenoise.storage.CompressedManifestStaticFilesStorage"
+    if not DEBUG
+    else "whitenoise.storage.CompressedStaticFilesStorage"
+)
 STORAGES = {
     "default": {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
     },
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
+        "BACKEND": _static_backend,
     },
 }
+WHITENOISE_MAX_AGE = 60 * 60 * 24 * 30  # 30 kun
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", str(BASE_DIR / "media")))
@@ -157,5 +165,10 @@ LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "accounts:cabinet"
 LOGOUT_REDIRECT_URL = "landing"
 
-# TezPOS desktop / API backend
+# TezPOS desktop / API backend (kabinet shu manzildan ma'lumot oladi)
+# Contabo: bir serverda backend → http://127.0.0.1:8000 (.env da TEZPOS_API_URL)
 TEZPOS_API_URL = os.environ.get("TEZPOS_API_URL", "http://127.0.0.1:8000")
+
+# DevSMS — qarz/to'lov SMS (TezPOS bilan bir xil)
+DEVSMS_TOKEN = os.environ.get("DEVSMS_TOKEN", "").strip()
+DEVSMS_FROM = os.environ.get("DEVSMS_FROM", "4546").strip() or "4546"
