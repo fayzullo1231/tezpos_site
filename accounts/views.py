@@ -4,6 +4,7 @@ from __future__ import annotations
 from io import BytesIO
 import csv
 import json
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -93,11 +94,230 @@ def _memo_get(key: str, ttl: float, loader):
     val = loader()
     _TEZPOS_MEMO[key] = (now, val)
     # Juda katta bo‘lib ketmasin
-    if len(_TEZPOS_MEMO) > 64:
-        oldest = sorted(_TEZPOS_MEMO.items(), key=lambda x: x[1][0])[:16]
+    if len(_TEZPOS_MEMO) > 96:
+        oldest = sorted(_TEZPOS_MEMO.items(), key=lambda x: x[1][0])[:24]
         for k, _ in oldest:
             _TEZPOS_MEMO.pop(k, None)
     return val
+
+
+def _products_payload_list(products: list) -> list[dict]:
+    out = []
+    for p in products:
+        images = []
+        try:
+            if hasattr(p, "images") and hasattr(p.images, "all"):
+                images = [
+                    {"id": img.id, "url": img.image.url, "is_primary": img.is_primary}
+                    for img in p.images.all()
+                ]
+        except Exception:
+            images = []
+        out.append(
+            {
+                "id": p.id,
+                "name": p.name,
+                "barcode": p.barcode or "",
+                "barcodes": getattr(p, "barcode_list", []) or [],
+                "unit": p.unit or "dona",
+                "category": p.category or "",
+                "brand": p.brand or "",
+                "selling_price": float(p.selling_price),
+                "wholesale_price": float(p.wholesale_price or 0),
+                "cost_price": float(p.cost_price or 0),
+                "list_prices": {
+                    str(k): float(v) for k, v in (p.list_prices or {}).items()
+                },
+                "stock_qty": float(p.stock_qty or 0),
+                "min_stock": float(p.min_stock or 0),
+                "is_favorite": bool(p.is_favorite),
+                "image": p.display_image,
+                "image_url": getattr(p, "image_url", "") or "",
+                "images": images,
+            }
+        )
+    return out
+
+
+@login_required
+@require_GET
+def cabinet_catalog(request):
+    """Mahsulotlar + narxlar ro‘yxati (AJAX) — SSR o‘rniga, kesh bilan."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_p = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|products|4",
+                    600.0,
+                    lambda: tezpos_api.get_products(token, server, max_pages=4),
+                )
+            )
+            fut_pl = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|price_lists",
+                    600.0,
+                    lambda: tezpos_api.get_price_lists(token, server) or [],
+                )
+            )
+            raw_products = fut_p.result() or []
+            raw_pl = fut_pl.result() or []
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        return JsonResponse({"error": str(exc)}, status=502)
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse({"error": str(exc)}, status=504)
+
+    products = [_map_product(p) for p in raw_products if isinstance(p, dict)]
+    products.sort(key=lambda p: (not p.is_active, p.name.lower()))
+    price_lists = [
+        pl for pl in raw_pl if isinstance(pl, dict) and pl.get("is_active", True)
+    ]
+    near_min = _build_near_min_stock(products)
+    return JsonResponse(
+        {
+            "ok": True,
+            "products": _products_payload_list(products),
+            "priceLists": [
+                {
+                    "id": str(pl.get("id") or ""),
+                    "name": (pl.get("name") or "").strip() or "Narxlar",
+                    "is_selling": bool(pl.get("is_selling")),
+                }
+                for pl in price_lists
+                if str(pl.get("id") or "")
+            ],
+            "nearMin": near_min,
+            "cached": True,
+        }
+    )
+
+
+@login_required
+@require_GET
+def cabinet_warm(request):
+    """API memo ni fonida isitish — navigatsiya kutmasin."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    today = timezone.localdate().isoformat()
+
+    def _warm() -> None:
+        try:
+            _memo_get(
+                f"{memo_prefix}|products|4",
+                600.0,
+                lambda: tezpos_api.get_products(token, server, max_pages=4),
+            )
+        except Exception:
+            pass
+        try:
+            _memo_get(
+                f"{memo_prefix}|price_lists",
+                600.0,
+                lambda: tezpos_api.get_price_lists(token, server) or [],
+            )
+        except Exception:
+            pass
+        try:
+            _memo_get(
+                f"{memo_prefix}|day|{today}",
+                120.0,
+                lambda: tezpos_api.get_sales_for_day(token, server, today),
+            )
+        except Exception:
+            pass
+        try:
+            _memo_get(
+                f"{memo_prefix}|sales|{today}|{today}|1",
+                90.0,
+                lambda: tezpos_api.get_sales(
+                    token,
+                    server,
+                    date_from=today,
+                    date_to=today,
+                    timeout=10,
+                    max_pages=1,
+                ),
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=_warm, daemon=True, name="tezpos-warm").start()
+    return JsonResponse({"ok": True, "warming": True})
+
+
+@login_required
+@require_GET
+def cabinet_day_sales(request):
+    """Kunlik sotuvlar ro‘yxati (AJAX) — sahifa darhol ochilsin."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    sale_date = _parse_sale_date(request.GET.get("sale_date"))
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    try:
+        day_sales_raw = _memo_get(
+            f"{memo_prefix}|day|{sale_date.isoformat()}",
+            90.0,
+            lambda: tezpos_api.get_sales_for_day(token, server, sale_date.isoformat()),
+        )
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        return JsonResponse({"error": str(exc)}, status=502)
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse({"error": str(exc)}, status=504)
+
+    day_sales_raw = [s for s in (day_sales_raw or []) if isinstance(s, dict)]
+    day_sales_raw.sort(
+        key=lambda s: _parse_dt(s.get("completed_at") or s.get("created_at"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    margin_ratio = Decimal("0.25")
+    payload = []
+    day_gross = Decimal("0")
+    for s in day_sales_raw:
+        total = _dec(s.get("total"))
+        day_gross += total
+        profit = total * margin_ratio
+        dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
+        method = s.get("payment_type") or s.get("payment_method") or "cash"
+        payload.append(
+            {
+                "id": str(s.get("id") or ""),
+                "time": timezone.localtime(dt).strftime("%H:%M") if dt else "",
+                "customer": s.get("customer_name") or "",
+                "total": float(total),
+                "cost": float(total - profit),
+                "profit": float(profit),
+                "payment": method,
+                "payment_label": PAYMENT_LABELS.get(
+                    str(method).strip().lower(), str(method or "—")
+                ),
+            }
+        )
+    return JsonResponse(
+        {
+            "ok": True,
+            "sale_date": sale_date.isoformat(),
+            "count": len(payload),
+            "gross": float(day_gross),
+            "profit": float(day_gross * margin_ratio),
+            "sales": payload,
+        }
+    )
 
 
 def _parse_sale_date(raw):
@@ -1855,6 +2075,12 @@ def cabinet_view(request):
         "tops",
         "bot",
         "debtors",
+        "products",
+        "inventory",
+        "stock_value",
+        "labels",
+        "signals",
+        "sales",
     }
     if section in FAST_SHELL and request.method != "POST":
         ctx = _cabinet_shell_context(
@@ -1878,10 +2104,9 @@ def cabinet_view(request):
         "stock_value",
         "labels",
         "signals",
-        "sales",
         "abc",
     )
-    need_chart_sales = section in ("sales", "abc", "reports")
+    need_chart_sales = section in ("abc", "reports")
     need_day_sales = section == "sales"
     # Chek detali SSR da emas — jadval tez ochilsin (foyda taxminiy)
     need_sale_details = False
@@ -1890,7 +2115,6 @@ def cabinet_view(request):
         "products",
         "inventory",
         "stock_value",
-        "sales",
     )
     need_top_stats = section == "abc"
     need_shifts = section == "shifts"
@@ -2623,45 +2847,41 @@ def cabinet_range_stats(request):
 
     span = (end - start).days + 1
     fast = (request.GET.get("fast") or "").strip() in ("1", "true", "yes")
-    if fast:
-        detail_cap = 0
-        max_pages = 2 if span <= 7 else 3
+    # Detail so‘rovlari o‘chirilgan — Contabo API sekin, 502/timeout oldini olish
+    if fast or span <= 7:
+        max_pages = 1
         product_pages = 0
-    elif span <= 1:
-        detail_cap = 80
-        max_pages = 4
-        product_pages = 3
-    elif span <= 7:
-        detail_cap = 36
-        max_pages = 3
-        product_pages = 2
-    elif span <= 15:
-        detail_cap = 48
-        max_pages = 3
-        product_pages = 2
+        sales_timeout = 8 if fast else 12
+        skip_lists = True
     elif span <= 31:
-        detail_cap = 40
-        max_pages = 3
-        product_pages = 2
+        max_pages = 2
+        product_pages = 0
+        sales_timeout = 16
+        skip_lists = True
     else:
-        detail_cap = 28
-        max_pages = 3
-        product_pages = 2
+        max_pages = 2
+        product_pages = 0
+        sales_timeout = 18
+        skip_lists = True
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
+    sales: list = []
+    products_raw: list = []
+    price_lists: list = []
+    api_err = ""
 
     try:
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             fut_s = pool.submit(
                 lambda: _memo_get(
                     f"{memo_prefix}|sales|{start}|{end}|{max_pages}",
-                    45.0,
+                    60.0,
                     lambda: tezpos_api.get_sales(
                         token,
                         server,
                         date_from=start.isoformat(),
                         date_to=end.isoformat(),
-                        timeout=16 if fast else 24,
+                        timeout=sales_timeout,
                         max_pages=max_pages,
                     ),
                 )
@@ -2677,29 +2897,28 @@ def cabinet_range_stats(request):
                         ),
                     )
                 )
-            fut_pl = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|price_lists",
-                    120.0,
-                    lambda: tezpos_api.get_price_lists(token, server) or [],
+            fut_pl = None
+            if not skip_lists:
+                fut_pl = pool.submit(
+                    lambda: _memo_get(
+                        f"{memo_prefix}|price_lists",
+                        120.0,
+                        lambda: tezpos_api.get_price_lists(token, server) or [],
+                    )
                 )
-            )
-            sales = fut_s.result()
+            sales = fut_s.result() or []
             products_raw = fut_p.result() if fut_p is not None else []
-            price_lists = fut_pl.result()
+            price_lists = fut_pl.result() if fut_pl is not None else []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
             return JsonResponse({"error": "auth"}, status=401)
-        return JsonResponse({"error": str(exc)}, status=502)
+        api_err = str(exc)
     except (TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=504)
+        api_err = str(exc)
 
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-    products_by_id = {str(p.id): p for p in products}
-    products_by_name = _products_by_name(products)
-    price_lists = [pl for pl in (price_lists or []) if isinstance(pl, dict) and pl.get("is_active", True)]
-    margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0")
+    margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0.25")
 
     sales = [s for s in sales if isinstance(s, dict)]
     sales.sort(
@@ -2707,7 +2926,6 @@ def cabinet_range_stats(request):
         or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    # Faqat tanlangan oralikdagi cheklar
     sales = [
         s
         for s in sales
@@ -2716,84 +2934,31 @@ def cabinet_range_stats(request):
     chart = _chart_pack_for_dates(sales, start, end)
     checks = len(sales)
     gross = float(sum((_dec(s.get("total")) for s in sales), Decimal("0")))
+    profit = gross * float(margin_ratio) if margin_ratio else gross * 0.25
+    margin = (profit / gross * 100.0) if gross > 0 else 0.0
+    lists: list = []
+    if gross > 0:
+        lists = _scale_price_list_stats([], gross, checks)
 
-    if fast or detail_cap <= 0:
-        # Tez rejim: grafik + KPI darhol (foyda taxminiy), narxlar keyin to‘ldiriladi
-        profit = gross * float(margin_ratio) if margin_ratio else gross * 0.25
-        margin = (profit / gross * 100.0) if gross > 0 else 0.0
-        lists: list = []
-        if gross > 0:
-            lists = _scale_price_list_stats([], gross, checks)
-        return JsonResponse(
-            {
-                "range": range_key,
-                "from": start.isoformat(),
-                "to": end.isoformat(),
-                "summary": {
-                    "checks": checks,
-                    "gross": gross,
-                    "profit": profit,
-                    "margin": margin,
-                    "details_used": 0,
-                },
-                "chart": chart,
-                "priceLists": lists,
-                "partial": True,
-                "fast": True,
-            }
-        )
-
-    details = _fetch_sale_details(
-        token,
-        server,
-        [str(s.get("id")) for s in sales if s.get("id")],
-        limit=min(detail_cap, max(checks, 1)),
-    )
-    lists = _aggregate_price_list_stats(
-        list(details.values()), products_by_id, products_by_name, price_lists
-    )
-    # Namunani to'liq davr tushumiga tenglashtirish → Jami = 231 mln kabi
-    lists = _scale_price_list_stats(lists, gross, checks)
-
-    jami = next((r for r in lists if r.get("is_total")), None)
-    if jami and jami.get("revenue", 0) > 0:
-        sample_ratio = jami["profit"] / jami["revenue"] if jami["revenue"] else 0.0
-        profit = float(jami["profit"])
-        margin = float(jami.get("margin") or (sample_ratio * 100.0))
-    else:
-        detail_profit = 0.0
-        detail_gross = 0.0
-        for detail in details.values():
-            total = float(_dec(detail.get("total")))
-            detail_gross += total
-            _, pft = _estimate_sale_profit(
-                detail, products_by_id, _dec(total), products_by_name, margin_ratio
-            )
-            detail_profit += float(pft)
-        if detail_gross > 0 and len(details) >= max(1, int(checks * 0.25)):
-            profit = gross * (detail_profit / detail_gross)
-        else:
-            profit = gross * float(margin_ratio) if margin_ratio else gross * 0.25
-        margin = (profit / gross * 100.0) if gross > 0 else 0.0
-
-    return JsonResponse(
-        {
-            "range": range_key,
-            "from": start.isoformat(),
-            "to": end.isoformat(),
-            "summary": {
-                "checks": checks,
-                "gross": gross,
-                "profit": profit,
-                "margin": margin,
-                "details_used": len(details),
-            },
-            "chart": chart,
-            "priceLists": lists,
-            "partial": len(details) < checks,
-            "fast": False,
-        }
-    )
+    payload = {
+        "range": range_key,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "summary": {
+            "checks": checks,
+            "gross": gross,
+            "profit": profit,
+            "margin": margin,
+            "details_used": 0,
+        },
+        "chart": chart,
+        "priceLists": lists,
+        "partial": True,
+        "fast": bool(fast),
+    }
+    if api_err:
+        payload["error"] = api_err
+    return JsonResponse(payload)
 
 
 def _top_products_from_details(

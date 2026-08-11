@@ -191,9 +191,9 @@
   <div class="cabinet-sidebar-backdrop" id="cabinet-sidebar-backdrop" hidden></div>
   <aside class="cabinet-sidebar" id="cabinet-sidebar">
     <div class="cabinet-side-top">
-      <a class="cabinet-brand" href="/">
-        <img src="/static/img/logo.png" alt="TezPOS" height="28">
-      </a>
+    <a class="cabinet-brand" href="/">
+      <img src="/static/img/logo.png" alt="TezPOS" height="28">
+    </a>
       <button type="button" class="cabinet-side-close" id="cabinet-menu-close" aria-label="Yopish">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>
       </button>
@@ -226,9 +226,9 @@
         <button type="button" class="cabinet-menu-btn" id="cabinet-menu-btn" aria-label="Menyu" aria-controls="cabinet-sidebar" aria-expanded="false">
           <span></span><span></span><span></span>
         </button>
-        <div>
-          <p class="cabinet-kicker">SHAXSIY KABINET</p>
-          <h1>{{ tenant.business_name }}</h1>
+      <div>
+        <p class="cabinet-kicker">SHAXSIY KABINET</p>
+        <h1>{{ tenant.business_name }}</h1>
         </div>
       </div>
       <div class="cabinet-top-meta">
@@ -449,7 +449,7 @@
 
     {% if section == 'tops' %}
     <section class="cabinet-card tops-products-panel">
-      <div class="cabinet-card-head">
+        <div class="cabinet-card-head">
         <div>
           <h3>Top tovar</h3>
           <p class="cabinet-hint" id="tops-period-hint">Tanlangan sana oralig‘idagi eng yaxshi sotilgan mahsulotlar</p>
@@ -493,7 +493,7 @@
             </select>
           </label>
         </div>
-      </div>
+        </div>
       <div class="product-tile-grid product-tile-grid--list product-tile-grid--full" id="tops-products-grid">
         <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
           <span class="sk"></span><span class="sk"></span><span class="sk"></span>
@@ -502,23 +502,23 @@
       </div>
     </section>
     <section class="cabinet-card">
-      <div class="cabinet-card-head">
-        <h3>Top xaridor</h3>
-        <label class="cabinet-select-wrap">
-          <select id="tops-customers-select" class="cabinet-select" aria-label="Top miqdor">
-            <option value="10" selected>Top 10</option>
-            <option value="30">Top 30</option>
-            <option value="50">Top 50</option>
-            <option value="100">Top 100</option>
-          </select>
-        </label>
-      </div>
-      <div class="cabinet-table-wrap">
-        <table>
-          <thead><tr><th>#</th><th>Mijoz</th><th>Buyurtma</th><th>Jami</th></tr></thead>
-          <tbody id="tops-customers-body"></tbody>
-        </table>
-      </div>
+        <div class="cabinet-card-head">
+          <h3>Top xaridor</h3>
+          <label class="cabinet-select-wrap">
+            <select id="tops-customers-select" class="cabinet-select" aria-label="Top miqdor">
+              <option value="10" selected>Top 10</option>
+              <option value="30">Top 30</option>
+              <option value="50">Top 50</option>
+              <option value="100">Top 100</option>
+            </select>
+          </label>
+        </div>
+        <div class="cabinet-table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Mijoz</th><th>Buyurtma</th><th>Jami</th></tr></thead>
+            <tbody id="tops-customers-body"></tbody>
+          </table>
+        </div>
     </section>
     {% endif %}
 
@@ -670,23 +670,23 @@
           <p class="ld-hint" id="ld-tpl-title">Shablon</p>
         </aside>
         <article class="cabinet-card ld-products-card">
-          <div class="cabinet-card-head">
+      <div class="cabinet-card-head">
             <h3>Mahsulotlar</h3>
             <div class="ld-products-actions">
               <button type="button" class="btn-soft" id="ld-select-all">Barchasini tanlash</button>
               <button type="button" class="btn-soft" id="ld-select-none">Bekor qilish</button>
-            </div>
+      </div>
           </div>
           <label class="products-search ld-print-search">
             <input type="search" id="ld-product-search" placeholder="Qidirish…" autocomplete="off">
           </label>
-          <div class="cabinet-table-wrap">
-            <table id="labels-table">
-              <thead>
+      <div class="cabinet-table-wrap">
+        <table id="labels-table">
+          <thead>
                 <tr><th></th><th>Nomi</th><th>Shtrixkod</th><th>Sotuv</th><th>Ulgurji</th></tr>
-              </thead>
-              <tbody>
-                {% for p in products %}
+          </thead>
+          <tbody>
+            {% for p in products %}
                 <tr class="ld-product-row" tabindex="0"
                     data-name="{{ p.name }}"
                     data-price="{{ p.selling_price|unlocalize }}"
@@ -701,16 +701,16 @@
                     data-cost="{{ p.cost_price|default:0|unlocalize }}"
                     data-barcode="{{ p.barcode|default:p.sku }}"
                     data-sku="{{ p.sku|default:p.barcode }}"></td>
-                  <td>{{ p.name }}</td>
-                  <td>{{ p.barcode|default:p.sku|default:"—" }}</td>
+              <td>{{ p.name }}</td>
+              <td>{{ p.barcode|default:p.sku|default:"—" }}</td>
                   <td>{{ p.selling_price }}</td>
                   <td>{{ p.wholesale_price|default:"—" }}</td>
-                </tr>
-                {% empty %}
+            </tr>
+            {% empty %}
                 <tr><td colspan="5">Mahsulot yo‘q</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
+            {% endfor %}
+          </tbody>
+        </table>
           </div>
         </article>
       </div>
@@ -942,7 +942,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr><td colspan="9" class="cabinet-empty" id="day-sales-loading" hidden>Yuklanmoqda…</td></tr>
+              <tr><td colspan="9" class="cabinet-empty" id="day-sales-loading" hidden></td></tr>
               {% for sale in recent_sales %}
               <tr class="is-clickable" data-sale-id="{{ sale.id }}" data-search="{{ sale.id }} {{ sale.customer_name|lower }} {{ cashier_name|lower }}">
                 <td>#{{ sale.id|truncatechars:8 }}</td>
@@ -1045,7 +1045,7 @@
               </tr>
             </thead>
             <tbody id="products-mgmt-tbody" data-dynamic="1">
-              <tr><td colspan="6" class="cabinet-empty">Yuklanmoqda…</td></tr>
+              <tr><td colspan="6" class="cabinet-empty"></td></tr>
             </tbody>
           </table>
         </div>
@@ -1267,6 +1267,9 @@
     salesStats: {{ sales_stats_json|safe }},
     priceListStats: {{ price_list_stats_json|default:"{}"|safe }},
     priceLists: {{ price_lists_json|default:"[]"|safe }},
+    catalogUrl: "{% url 'accounts:cabinet_catalog' %}",
+    warmUrl: "{% url 'accounts:cabinet_warm' %}",
+    daySalesUrl: "{% url 'accounts:cabinet_day_sales' %}",
     rangeStatsUrl: "{% url 'accounts:cabinet_range_stats' %}",
     topStatsUrl: "{% url 'accounts:cabinet_top_stats' %}",
     productsImportUrl: "{% url 'accounts:cabinet_products_import' %}",
@@ -1291,6 +1294,55 @@
     section: "{{ section|default:'overview'|escapejs }}",
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
+  (function () {
+    var P = "tezpos_v2_";
+    function g(k) {
+      try {
+        var s = sessionStorage.getItem(P + k);
+        return s ? JSON.parse(s) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+    var d = window.TEZPOS_CHARTS || {};
+    var cat = g("catalog");
+    if (cat && Array.isArray(cat.products) && cat.products.length) {
+      d.products = cat.products;
+      if (cat.priceLists) d.priceLists = cat.priceLists;
+      if (cat.nearMin) d.nearMin = cat.nearMin;
+    }
+    var ss = g("salesStats");
+    if (ss && typeof ss === "object") {
+      d.salesStats = Object.assign({}, ss, d.salesStats || {});
+    }
+    var pl = g("priceListStats");
+    if (pl && typeof pl === "object") {
+      d.priceListStats = Object.assign({}, pl, d.priceListStats || {});
+    }
+    var tops = g("tops");
+    if (tops && typeof tops === "object") {
+      d._topsCache = tops;
+      var tk = Object.keys(tops);
+      if (tk.length && (!d.topProducts || !d.topProducts.length)) {
+        d.topProducts = tops[tk[0]] || [];
+      }
+    }
+    var ds = g("daySales");
+    if (ds && d.saleDate && ds[d.saleDate]) {
+      var pack = ds[d.saleDate];
+      d.daySales = Array.isArray(pack.sales) ? pack.sales : Array.isArray(pack) ? pack : [];
+      d._daySalesPack = pack;
+    }
+    var deb = g("debtors");
+    if (deb && Array.isArray(deb.debtors)) d._debtorsCache = deb.debtors;
+    window.TEZPOS_CHARTS = d;
+    // Kesh bor — HTML skeletonlarni darhol yashirish (loading flash yo‘q)
+    if ((cat && cat.products && cat.products.length) || (ss && Object.keys(ss).length)) {
+      document.querySelectorAll(".cab-inline-skel").forEach(function (el) {
+        el.style.visibility = "hidden";
+      });
+    }
+  })();
 </script>
-<script src="/static/cabinet.js?v=perf-shell-2" defer></script>
+<script src="/static/cabinet.js?v=instant-nav-1" defer></script>
 {% endblock %}

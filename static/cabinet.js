@@ -7,6 +7,198 @@
     "#0284c7", "#0d9488", "#65a30d", "#ea580c", "#7c3aed",
   ];
 
+  // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
+  const CACHE_P = "tezpos_v2_";
+  const cacheGet = (key) => {
+    try {
+      const raw = sessionStorage.getItem(CACHE_P + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_e) {
+      return null;
+    }
+  };
+  const cacheSet = (key, val) => {
+    try {
+      sessionStorage.setItem(CACHE_P + key, JSON.stringify(val));
+    } catch (_e) {
+      /* quota */
+    }
+  };
+  window.tezposCacheGet = cacheGet;
+  window.tezposCacheSet = cacheSet;
+
+  let catalogInflight = null;
+  let warmStarted = false;
+
+  const applyCatalogPayload = (json, { emit = true } = {}) => {
+    if (!json || json.error) return data;
+    data.products = json.products || [];
+    data.priceLists = json.priceLists || data.priceLists || [];
+    data.nearMin = json.nearMin || data.nearMin || [];
+    window.TEZPOS_CHARTS = data;
+    cacheSet("catalog", {
+      products: data.products,
+      priceLists: data.priceLists,
+      nearMin: data.nearMin,
+      ts: Date.now(),
+    });
+    if (emit) {
+      document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
+    }
+    return data;
+  };
+
+  const fetchCatalog = () => {
+    if (!data.catalogUrl) return Promise.resolve(data);
+    if (catalogInflight) return catalogInflight;
+    catalogInflight = fetch(data.catalogUrl, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then((r) => r.json())
+      .then((json) => applyCatalogPayload(json))
+      .catch(() => data)
+      .finally(() => {
+        catalogInflight = null;
+      });
+    return catalogInflight;
+  };
+
+  // Katalog AJAX — kesh bo‘lsa darhol, yangilash fonida
+  const ensureCatalog = ({ force = false } = {}) => {
+    const need =
+      document.getElementById("products-mgmt-tbody") ||
+      document.getElementById("stock-value-panel") ||
+      document.getElementById("signals-list") ||
+      document.getElementById("label-designer-root") ||
+      document.querySelector(".cabinet-products");
+
+    if (!data.products?.length) {
+      const cached = cacheGet("catalog");
+      if (cached?.products?.length) {
+        applyCatalogPayload(cached, { emit: false });
+      }
+    }
+
+    if (data.products?.length && need) {
+      document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
+    }
+
+    if (!data.catalogUrl) return Promise.resolve(data);
+    if (data.products?.length && !force) {
+      // Foniy yangilash — UI kutmaydi
+      fetchCatalog();
+      return Promise.resolve(data);
+    }
+
+    // Birinchi yuklash — skeleton faqat kesh bo‘lmasa
+    if (need && !data.products?.length) {
+      const skelTargets = [
+        document.getElementById("products-mgmt-tbody"),
+        document.getElementById("stock-value-tbody"),
+        document.getElementById("signals-list"),
+      ].filter(Boolean);
+      skelTargets.forEach((el) => {
+        if (el && !el.dataset.loaded) {
+          el.innerHTML =
+            el.tagName === "TBODY"
+              ? '<tr><td colspan="8" class="cabinet-hint">…</td></tr>'
+              : "";
+        }
+      });
+    }
+    return fetchCatalog();
+  };
+  window.tezposEnsureCatalog = ensureCatalog;
+
+  const warmCabinet = () => {
+    if (warmStarted) {
+      ensureCatalog();
+      return;
+    }
+    warmStarted = true;
+    if (data.warmUrl) {
+      fetch(data.warmUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      }).catch(() => {});
+    }
+    ensureCatalog();
+    // Bugungi range-stats + day-sales oldindan
+    const today = new Date();
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
+      today.getDate()
+    ).padStart(2, "0")}`;
+    if (data.rangeStatsUrl) {
+      const key = `${iso}_${iso}`;
+      const ss = cacheGet("salesStats") || {};
+      if (!ss[key]) {
+        const qs = new URLSearchParams({ from: iso, to: iso, fast: "1" });
+        fetch(`${data.rangeStatsUrl}?${qs}`, {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        })
+          .then((r) => r.json())
+          .then((payload) => {
+            if (!payload || payload.error) return;
+            const chart = payload.chart || {};
+            const next = cacheGet("salesStats") || {};
+            next[key] = {
+              labels: chart.labels || [],
+              totals: chart.totals || [],
+              counts: chart.counts || [],
+              summary: payload.summary || null,
+              partial: Boolean(payload.partial),
+            };
+            cacheSet("salesStats", next);
+            const pl = cacheGet("priceListStats") || {};
+            if (Array.isArray(payload.priceLists)) {
+              pl[key] = payload.priceLists;
+              cacheSet("priceListStats", pl);
+            }
+            data.salesStats = Object.assign({}, data.salesStats || {}, next);
+            data.priceListStats = Object.assign({}, data.priceListStats || {}, pl);
+            window.TEZPOS_CHARTS = data;
+          })
+          .catch(() => {});
+      }
+    }
+    if (data.daySalesUrl) {
+      const ds = cacheGet("daySales") || {};
+      if (!ds[iso]) {
+        fetch(`${data.daySalesUrl}?sale_date=${iso}`, {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        })
+          .then((r) => r.json())
+          .then((json) => {
+            if (!json || json.error) return;
+            const next = cacheGet("daySales") || {};
+            next[iso] = json;
+            cacheSet("daySales", next);
+          })
+          .catch(() => {});
+      }
+    }
+  };
+  window.tezposWarmCabinet = warmCabinet;
+
+  ensureCatalog();
+  warmCabinet();
+
+  // Menyudan bosilishi bilan keshni isitish (sahifa ochilishidan oldin)
+  document.querySelectorAll(".cabinet-nav a").forEach((a) => {
+    const prep = () => {
+      try {
+        sessionStorage.setItem("tezpos_cab_seen", "1");
+      } catch (e) {}
+      warmCabinet();
+    };
+    a.addEventListener("pointerdown", prep, { passive: true });
+    a.addEventListener("mouseenter", prep, { passive: true });
+    a.addEventListener("touchstart", prep, { passive: true });
+  });
+
   const skelHtml = (kind, count = 4) => {
     if (kind === "tiles") {
       return `<div class="cab-inline-skel cab-inline-skel--tiles" aria-hidden="true">${"<div class=\"sk\"></div>".repeat(count)}</div>`;
@@ -127,7 +319,8 @@
   const todayDate = startOfDay(new Date());
   const defaultTo = new Date(todayDate);
   const defaultFrom = new Date(todayDate);
-  defaultFrom.setDate(defaultFrom.getDate() - 6);
+  // Birinchi ochilish: faqat bugun (tez). Oraliqni kalendardan kengaytirish mumkin.
+  // defaultFrom.setDate(defaultFrom.getDate() - 6);
 
   let appliedFrom = toIso(defaultFrom);
   let appliedTo = toIso(defaultTo);
@@ -314,6 +507,15 @@
   let priceListReq = 0;
   let salesChartRef = null;
 
+  const persistRangeCaches = () => {
+    try {
+      if (window.tezposCacheSet) {
+        window.tezposCacheSet("salesStats", data.salesStats || {});
+        window.tezposCacheSet("priceListStats", priceListCache);
+      }
+    } catch (_e) {}
+  };
+
   const applyRangePayload = (key, payload) => {
     if (!data.salesStats) data.salesStats = {};
     if (!data.salesStats[key]) data.salesStats[key] = { labels: [], totals: [], counts: [] };
@@ -343,29 +545,38 @@
     }
     paintSalesSummary(key, data.salesStats[key]);
     refreshOverviewPriceUi();
+    persistRangeCaches();
+  };
+
+  const paintCachedRange = (key) => {
+    const pack = (data.salesStats || {})[key] || {};
+    currentRangeKey = key;
+    currentPriceLists = priceListCache[key] || [];
+    if (salesChartRef) {
+      salesChartRef.data.labels = pack.labels || [];
+      salesChartRef.data.datasets[0].data = pack.totals || [];
+      salesChartRef.update();
+    }
+    paintSalesSummary(key, pack);
+    refreshOverviewPriceUi();
   };
 
   const loadRangeStats = async (fromIso, toIsoVal, { force = false, fast = false } = {}) => {
     const key = rangeCacheKey(fromIso, toIsoVal);
     const pack = (data.salesStats || {})[key] || {};
-    if (
-      !force &&
-      !fast &&
-      priceListCache[key] &&
-      pack.partial !== true &&
-      pack.labels
-    ) {
-      currentRangeKey = key;
-      currentPriceLists = priceListCache[key];
-      if (salesChartRef) {
-        salesChartRef.data.labels = pack.labels || [];
-        salesChartRef.data.datasets[0].data = pack.totals || [];
-        salesChartRef.update();
+    const hasUiCache =
+      (priceListCache[key] && priceListCache[key].length) ||
+      (pack.labels && pack.labels.length) ||
+      pack.summary;
+
+    // Kesh bo‘lsa — darhol chizish, loading yo‘q
+    if (hasUiCache) {
+      paintCachedRange(key);
+      if (!force && !fast && pack.partial !== true && priceListCache[key] && pack.labels) {
+        return;
       }
-      paintSalesSummary(key, pack);
-      refreshOverviewPriceUi();
-      return;
     }
+
     const url = data.rangeStatsUrl;
     if (!url) {
       currentPriceLists = priceListCache[key] || [];
@@ -373,42 +584,50 @@
       return;
     }
     const reqId = ++priceListReq;
-    if (priceListEl && !fast && !(priceListCache[key] || []).length) {
-      priceListEl.innerHTML = skelHtml("stats", 3);
-    }
-    if (document.getElementById("price-list-mix") && !fast) {
-      const mix = document.getElementById("price-list-mix");
-      if (mix && !(priceListCache[key] || []).length) {
-        mix.innerHTML = skelHtml("chips", 5);
+    // Skeleton faqat kesh umuman bo‘lmasa
+    if (!hasUiCache) {
+      if (priceListEl && !(priceListCache[key] || []).length) {
+        priceListEl.innerHTML = skelHtml("stats", 3);
       }
-    }
-    if (salesRangeSummary && !pack.summary) {
-      salesRangeSummary.innerHTML = skelHtml("lines");
+      if (document.getElementById("price-list-mix")) {
+        const mix = document.getElementById("price-list-mix");
+        if (mix && !(priceListCache[key] || []).length) {
+          mix.innerHTML = skelHtml("chips", 5);
+        }
+      }
+      if (salesRangeSummary && !pack.summary) {
+        salesRangeSummary.innerHTML = skelHtml("lines");
+      }
     }
     try {
       const qs = new URLSearchParams({ from: fromIso, to: toIsoVal });
       if (fast) qs.set("fast", "1");
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 12000 : 28000) : null;
       const res = await fetch(`${url}?${qs}`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
+        signal: ctrl ? ctrl.signal : undefined,
       });
+      if (timer) clearTimeout(timer);
       if (!res.ok) throw new Error("fail");
       const payload = await res.json();
       if (reqId !== priceListReq && !fast) return;
-      // Fast javob eski to‘liq so‘rovni yozib yubormasin
       if (!fast && priceListReq !== reqId) return;
       currentRangeKey = key;
       applyRangePayload(key, payload);
-      if (fast || payload.fast) {
-        // Fonida to‘liq Sotuv/Optom (bir marta)
-        loadRangeStats(fromIso, toIsoVal, { force: true, fast: false });
+      if (payload.error && salesRangeSummary && !hasUiCache) {
+        const tip = document.createElement("li");
+        tip.innerHTML =
+          "<span style=\"color:#c2410c\">API sekin yoki ulanmadi. Qayta urinib ko‘ring.</span>";
+        salesRangeSummary.appendChild(tip);
       }
     } catch (_err) {
       if (reqId !== priceListReq) return;
       currentPriceLists = priceListCache[key] || [];
       refreshOverviewPriceUi();
-      if (salesRangeSummary && !((data.salesStats || {})[key] || {}).summary) {
-        salesRangeSummary.innerHTML = `<li>Davr: <strong>${formatRangeLabel(fromIso, toIsoVal)}</strong></li><li>Ma’lumot yuklanmadi. Qayta urinib ko‘ring.</li>`;
+      if (!hasUiCache && salesRangeSummary && !((data.salesStats || {})[key] || {}).summary) {
+        salesRangeSummary.innerHTML = `<li>Davr: <strong>${formatRangeLabel(fromIso, toIsoVal)}</strong></li><li>Ma’lumot yuklanmadi (API timeout). Qayta urinib ko‘ring.</li>`;
       }
     }
   };
@@ -704,10 +923,10 @@
     salesChartRef = salesChart;
     paintSalesSummary(currentRangeKey, initial);
     refreshOverviewPriceUi();
-    loadRangeStats(appliedFrom, appliedTo, { force: true, fast: true });
+    loadRangeStats(appliedFrom, appliedTo, { force: false, fast: true });
   } else if (priceListEl) {
     refreshOverviewPriceUi();
-    loadRangeStats(appliedFrom, appliedTo, { force: true, fast: true });
+    loadRangeStats(appliedFrom, appliedTo, { force: false, fast: true });
   }
 
   const productTileHtml = (item, color, rank, opts = {}) => {
@@ -842,6 +1061,9 @@
     renderSignals(Number(signalsSelect?.value || 10));
     signalsSelect?.addEventListener("change", () => {
       renderSignals(Number(signalsSelect.value));
+    });
+    document.addEventListener("tezpos:catalog", () => {
+      renderSignals(Number(signalsSelect?.value || 10));
     });
   }
 
@@ -997,16 +1219,26 @@
 
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
     const key = `${fromIso}_${toIsoVal}`;
+    if (!Object.keys(topsCache).length && data._topsCache) {
+      Object.assign(topsCache, data._topsCache);
+    }
     if (!force && topsCache[key]) {
       data.topProducts = topsCache[key];
-    renderProducts(Number(productsSelect?.value || 10));
+      renderProducts(Number(productsSelect?.value || 10));
       return;
+    }
+    // Boshqa kalitdan kesh — darhol ko‘rsatish
+    if (!force && !topsCache[key] && (data.topProducts || []).length) {
+      renderProducts(Number(productsSelect?.value || 10));
     }
     const url = data.topStatsUrl;
     if (!url || !productsGrid) return;
     const reqId = ++topsReq;
-    productsGrid.className = "tops-list";
-    productsGrid.innerHTML = skelHtml("lines", 8);
+    const hasCache = Boolean(topsCache[key] || (data.topProducts || []).length);
+    if (!hasCache) {
+      productsGrid.className = "tops-list";
+      productsGrid.innerHTML = skelHtml("lines", 8);
+    }
     try {
       const qs = new URLSearchParams({
         from: fromIso,
@@ -1023,10 +1255,14 @@
       const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
       topsCache[key] = rows;
       data.topProducts = rows;
+      data._topsCache = topsCache;
+      if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
       renderProducts(Number(productsSelect?.value || 10));
     } catch (_err) {
       if (reqId !== topsReq) return;
-      productsGrid.innerHTML = `<p class="cabinet-hint">Top tovarlar yuklanmadi. Qayta urinib ko‘ring.</p>`;
+      if (!hasCache) {
+        productsGrid.innerHTML = `<p class="cabinet-hint">Top tovarlar yuklanmadi. Qayta urinib ko‘ring.</p>`;
+      }
     }
   };
 
@@ -1982,6 +2218,13 @@
     tbody.innerHTML = rows.join("");
   };
   renderProductsTable();
+  document.addEventListener("tezpos:catalog", () => {
+    Object.keys(productsMap).forEach((k) => delete productsMap[k]);
+    (data.products || []).forEach((p) => {
+      productsMap[String(p.id)] = p;
+    });
+    renderProductsTable();
+  });
 
   const barcodeList = document.getElementById("barcode-list");
   const mediaGallery = document.getElementById("media-gallery");
@@ -2942,8 +3185,8 @@
 
 (() => {
   const data = window.TEZPOS_CHARTS || {};
-  const daySales = Array.isArray(data.daySales) ? data.daySales : [];
-  const salesMap = Object.fromEntries(daySales.map((s) => [String(s.id), s]));
+  let daySales = Array.isArray(data.daySales) ? data.daySales : [];
+  let salesMap = Object.fromEntries(daySales.map((s) => [String(s.id), s]));
 
   const parseMoney = (v) => {
     if (v == null || v === "") return 0;
@@ -2963,6 +3206,110 @@
   document.querySelectorAll("[data-fmt-money]").forEach((el) => {
     el.textContent = fmtMoney(el.getAttribute("data-fmt-money"));
   });
+
+  const paintDaySales = (payload) => {
+    const tbody = document.querySelector("#sales-mgmt-table tbody");
+    if (!tbody) return;
+    const rows = payload.sales || [];
+    daySales = rows;
+    salesMap = Object.fromEntries(rows.map((s) => [String(s.id), s]));
+    data.daySales = rows;
+    const kpis = document.querySelectorAll(".sales-kpis .sales-kpi strong");
+    if (kpis[0]) kpis[0].textContent = fmtMoney(payload.gross);
+    if (kpis[1]) kpis[1].innerHTML = fmtMoney((payload.gross || 0) - (payload.profit || 0)) + " <em>SUM</em>";
+    if (kpis[2]) kpis[2].textContent = fmtMoney(payload.gross);
+    if (kpis[3]) kpis[3].textContent = fmtMoney(payload.profit);
+    if (kpis[4]) kpis[4].textContent = String(payload.count || 0);
+    if (!rows.length) {
+      tbody.innerHTML =
+        '<tr><td colspan="9" class="cabinet-empty">Bu kunda chek yo‘q.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows
+      .map((s) => {
+        const id = String(s.id || "");
+        const short = id.length > 8 ? id.slice(0, 8) + "…" : id;
+        return `<tr class="is-clickable" data-sale-id="${id}" data-search="${id} ${(s.customer || "").toLowerCase()}">
+          <td>#${short}</td>
+          <td>${s.time || "—"}</td>
+          <td>—</td>
+          <td>${s.customer || "—"}</td>
+          <td>${fmtMoney(s.total)}</td>
+          <td>Yopilgan</td>
+          <td>${fmtMoney(s.cost)}</td>
+          <td class="is-profit">${fmtMoney(s.profit)}</td>
+          <td>${s.payment_label || s.payment || "—"}</td>
+        </tr>`;
+      })
+      .join("");
+  };
+
+  const loadDaySales = () => {
+    if (!data.daySalesUrl || !document.getElementById("sales-mgmt-table")) return;
+    const dateKey = data.saleDate || "";
+    if (!daySales.length && data._daySalesPack) {
+      paintDaySales(data._daySalesPack);
+    }
+    if (!daySales.length && dateKey && window.tezposCacheGet) {
+      const ds = window.tezposCacheGet("daySales") || {};
+      if (ds[dateKey]) paintDaySales(ds[dateKey]);
+    }
+    if (daySales.length) {
+      // Foniy yangilash — loading yo‘q
+      const qs = new URLSearchParams();
+      if (dateKey) qs.set("sale_date", dateKey);
+      fetch(data.daySalesUrl + (qs.toString() ? "?" + qs : ""), {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
+        .then((r) => r.json())
+        .then((json) => {
+          if (json && !json.error) {
+            paintDaySales(json);
+            if (window.tezposCacheSet && dateKey) {
+              const next = window.tezposCacheGet("daySales") || {};
+              next[dateKey] = json;
+              window.tezposCacheSet("daySales", next);
+            }
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+    const loading = document.getElementById("day-sales-loading");
+    if (loading) {
+      loading.hidden = false;
+      loading.textContent = "…";
+    }
+    const qs = new URLSearchParams();
+    if (dateKey) qs.set("sale_date", dateKey);
+    fetch(data.daySalesUrl + (qs.toString() ? "?" + qs : ""), {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then((r) => r.json())
+      .then((json) => {
+        if (json && !json.error) {
+          paintDaySales(json);
+          if (window.tezposCacheSet && dateKey) {
+            const next = window.tezposCacheGet("daySales") || {};
+            next[dateKey] = json;
+            window.tezposCacheSet("daySales", next);
+          }
+          if (loading) loading.hidden = true;
+        } else if (loading) {
+          loading.hidden = false;
+          loading.textContent = json?.error || "Yuklanmadi";
+        }
+      })
+      .catch(() => {
+        if (loading) {
+          loading.hidden = false;
+          loading.textContent = "API sekin / ulanmadi";
+        }
+      });
+  };
+  loadDaySales();
 
   const dateInput = document.getElementById("sales-date");
   dateInput?.addEventListener("change", () => {
@@ -3543,9 +3890,20 @@
   const load = async () => {
     if (!listUrl) return;
     setError("");
-    listEl.innerHTML =
-      '<div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true"><span class="sk"></span><span class="sk"></span><span class="sk"></span></div>';
-    if (emptyEl) emptyEl.hidden = true;
+    const cached =
+      Array.isArray(data._debtorsCache) && data._debtorsCache.length
+        ? data._debtorsCache
+        : window.tezposCacheGet
+          ? (window.tezposCacheGet("debtors") || {}).debtors
+          : null;
+    if (Array.isArray(cached) && cached.length) {
+      debtors = cached;
+      paint();
+    } else {
+      listEl.innerHTML =
+        '<div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true"><span class="sk"></span><span class="sk"></span><span class="sk"></span></div>';
+      if (emptyEl) emptyEl.hidden = true;
+    }
     try {
       const res = await fetch(listUrl, {
         credentials: "same-origin",
@@ -3553,17 +3911,25 @@
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        debtors = [];
-        paint();
-        setError(json.error || "Qarzdorlar yuklanmadi.");
+        if (!cached?.length) {
+          debtors = [];
+          paint();
+          setError(json.error || "Qarzdorlar yuklanmadi.");
+        }
         return;
       }
       debtors = Array.isArray(json.debtors) ? json.debtors : [];
+      data._debtorsCache = debtors;
+      if (window.tezposCacheSet) {
+        window.tezposCacheSet("debtors", { debtors, ts: Date.now() });
+      }
       paint();
     } catch (err) {
-      debtors = [];
-      paint();
-      setError(err.message || "Tarmoq xatosi");
+      if (!cached?.length) {
+        debtors = [];
+        paint();
+        setError(err.message || "Tarmoq xatosi");
+      }
     }
   };
 
@@ -3681,8 +4047,6 @@
   if (!panel) return;
 
   const data = window.TEZPOS_CHARTS || {};
-  const products = Array.isArray(data.products) ? data.products : [];
-  const priceLists = Array.isArray(data.priceLists) ? data.priceLists : [];
   const fmt = (n) =>
     Number(n || 0).toLocaleString("uz-UZ", {
       maximumFractionDigits: 2,
@@ -3703,7 +4067,10 @@
   const kpisEl = document.getElementById("stock-value-kpis");
 
   // Sotuv ustuni selling_price; qolgan (is_selling bo‘lmagan) ro‘yxatlar list_prices dan
-  const extraLists = priceLists.filter((pl) => pl && pl.id && !pl.is_selling);
+  const getExtraLists = () =>
+    (Array.isArray(data.priceLists) ? data.priceLists : []).filter(
+      (pl) => pl && pl.id && !pl.is_selling
+    );
 
   const listPrice = (p, plId) => {
     const lp = p.list_prices || {};
@@ -3719,6 +4086,8 @@
   };
 
   const paint = () => {
+    const products = Array.isArray(data.products) ? data.products : [];
+    const extraLists = getExtraLists();
     const q = String(searchEl?.value || "")
       .trim()
       .toLowerCase();
@@ -3920,5 +4289,6 @@
 
   searchEl?.addEventListener("input", paint);
   filterEl?.addEventListener("change", paint);
+  document.addEventListener("tezpos:catalog", paint);
   paint();
 })();

@@ -1,11 +1,16 @@
 """TezPOS backend API client for shaxsiy kabinet."""
 from __future__ import annotations
 
+import gzip
+import http.client
 import json
+import socket
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 from django.conf import settings
 
@@ -20,7 +25,7 @@ class TezPosApiError(Exception):
 def normalize_api_base(url: str | None = None) -> str:
     raw = (url or getattr(settings, "TEZPOS_API_URL", "") or "").strip()
     if not raw:
-        raw = "http://127.0.0.1:8000"
+        raw = "http://13.140.146.78:8000"
     if not raw.startswith("http://") and not raw.startswith("https://"):
         raw = "http://" + raw
     return raw.rstrip("/")
@@ -60,6 +65,39 @@ def _parse_error(body: bytes, status: int) -> str:
     return text[:180] or f"HTTP {status}"
 
 
+_tls = threading.local()
+
+
+def _http_conn(base: str) -> tuple[http.client.HTTPConnection | http.client.HTTPSConnection, str]:
+    """Keep-alive ulanish — har so‘rovda yangi TCP ochmaslik (WAN da muhim)."""
+    parsed = urlparse(base)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    key = f"{parsed.scheme}://{host}:{port}"
+    pool = getattr(_tls, "pool", None)
+    if pool is None:
+        pool = {}
+        _tls.pool = pool
+    conn = pool.get(key)
+    if conn is None:
+        if parsed.scheme == "https":
+            conn = http.client.HTTPSConnection(host, port, timeout=30)
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=30)
+        pool[key] = conn
+    return conn, key
+
+
+def _decode_body(raw: bytes, headers: http.client.HTTPMessage) -> bytes:
+    enc = (headers.get("Content-Encoding") or "").lower()
+    if "gzip" in enc:
+        try:
+            return gzip.decompress(raw)
+        except Exception:
+            return raw
+    return raw
+
+
 def api_request(
     method: str,
     path: str,
@@ -68,8 +106,103 @@ def api_request(
     server_name: str | None = None,
     body: dict | list | None = None,
     query: dict | None = None,
-    timeout: float = 45,
+    timeout: float = 20,
 ) -> Any:
+    base = normalize_api_base()
+    path_q = path if path.startswith("/") else f"/{path}"
+    if query:
+        qs = urllib.parse.urlencode(
+            {k: v for k, v in query.items() if v is not None and v != ""},
+            doseq=True,
+        )
+        if qs:
+            path_q = f"{path_q}?{qs}"
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "Connection": "keep-alive",
+        "User-Agent": "TezPOS-Site-Cabinet/1.1",
+        "Host": urlparse(base).netloc,
+    }
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Token {token}"
+    if server_name:
+        headers["X-Server-Name"] = server_name
+
+    conn, pool_key = _http_conn(base)
+    conn.timeout = timeout
+    try:
+        conn.request(method.upper(), path_q, body=data, headers=headers)
+        resp = conn.getresponse()
+        raw = _decode_body(resp.read(), resp.headers)
+        status = resp.status
+        ctype = (resp.getheader("Content-Type") or "").lower()
+    except (TimeoutError, socket.timeout) as exc:
+        # Ulanishni yangilash
+        try:
+            conn.close()
+        except Exception:
+            pass
+        getattr(_tls, "pool", {}).pop(pool_key, None)
+        raise TezPosApiError(
+            f"TezPOS javob bermadi (timeout {timeout:.0f}s). Server: {normalize_api_base()}"
+        ) from exc
+    except (http.client.HTTPException, OSError) as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        getattr(_tls, "pool", {}).pop(pool_key, None)
+        # Bir marta urllib orqali qayta urinish
+        return _api_request_urllib(
+            method,
+            path,
+            token=token,
+            server_name=server_name,
+            body=body,
+            query=query,
+            timeout=timeout,
+        )
+
+    if status >= 400:
+        raise TezPosApiError(_parse_error(raw, status), status=status, payload=raw)
+
+    if not raw:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    if "text/html" in ctype or text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
+        raise TezPosApiError(
+            f"API HTML qaytardi (JSON emas). TEZPOS_API_URL={base} sayt emas, "
+            f"TezPOS backend bo‘lishi kerak. Path: {path}",
+            status=502,
+            payload=raw[:200],
+        )
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise TezPosApiError(
+            f"API JSON emas. TEZPOS_API_URL={base}, path={path}",
+            status=502,
+            payload=raw[:200],
+        ) from exc
+
+
+def _api_request_urllib(
+    method: str,
+    path: str,
+    *,
+    token: str | None = None,
+    server_name: str | None = None,
+    body: dict | list | None = None,
+    query: dict | None = None,
+    timeout: float = 20,
+) -> Any:
+    """Fallback — keep-alive ishlamasa."""
     base = normalize_api_base()
     url = f"{base}{path}"
     if query:
@@ -82,7 +215,8 @@ def api_request(
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "TezPOS-Site-Cabinet/1.0",
+        "Accept-Encoding": "gzip",
+        "User-Agent": "TezPOS-Site-Cabinet/1.1",
     }
     data = None
     if body is not None:
@@ -97,6 +231,12 @@ def api_request(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
+            enc = (resp.headers.get("Content-Encoding") or "").lower()
+            if "gzip" in enc:
+                try:
+                    raw = gzip.decompress(raw)
+                except Exception:
+                    pass
             if not raw:
                 return None
             ctype = (resp.headers.get("Content-Type") or "").lower()
@@ -150,21 +290,22 @@ def login(server_name: str, login: str, password: str) -> dict:
             "login": login.strip(),
             "password": password,
         },
+        timeout=15,
     )
 
 
 def get_me(token: str, server_name: str) -> dict:
-    return api_request("GET", "/api/auth/me/", token=token, server_name=server_name)
+    return api_request("GET", "/api/auth/me/", token=token, server_name=server_name, timeout=10)
 
 
-def get_products(token: str, server_name: str, *, max_pages: int = 8) -> list:
+def get_products(token: str, server_name: str, *, max_pages: int = 4) -> list:
     data = api_request(
         "GET",
         "/api/catalog/products/",
         token=token,
         server_name=server_name,
         query={"all": "true"},
-        timeout=28,
+        timeout=18,
     )
     if isinstance(data, list):
         return data
@@ -179,7 +320,7 @@ def get_products(token: str, server_name: str, *, max_pages: int = 8) -> list:
                 token=token,
                 server_name=server_name,
                 query={"page": page},
-                timeout=30,
+                timeout=15,
             )
             if isinstance(page_data, list):
                 results.extend(page_data)
@@ -202,8 +343,8 @@ def get_sales(
     *,
     date_from: str | None = None,
     date_to: str | None = None,
-    timeout: float = 35,
-    max_pages: int = 5,
+    timeout: float = 18,
+    max_pages: int = 3,
 ) -> list:
     """Sotuvlar ro'yxati. all=true bilan pagination o'chiriladi."""
     data = api_request(
@@ -236,7 +377,7 @@ def get_sales(
                     "date_from": date_from,
                     "date_to": date_to,
                 },
-                timeout=timeout,
+                timeout=min(timeout, 15),
             )
             if isinstance(page_data, list):
                 results.extend(page_data)
@@ -255,7 +396,7 @@ def get_sales(
 
 def get_sales_for_day(token: str, server_name: str, day: str) -> list:
     """Bitta kun uchun sotuvlar (tez)."""
-    return get_sales(token, server_name, date_from=day, date_to=day, timeout=20, max_pages=2)
+    return get_sales(token, server_name, date_from=day, date_to=day, timeout=12, max_pages=1)
 
 
 def get_sale(token: str, server_name: str, sale_id: str) -> dict:
@@ -274,12 +415,12 @@ def get_price_lists(token: str, server_name: str) -> list:
         "/api/catalog/price-lists/",
         token=token,
         server_name=server_name,
-        timeout=20,
+        timeout=12,
     )
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        return data.get("results") or []
+        return list(data.get("results") or data.get("items") or [])
     return []
 
 
@@ -366,7 +507,7 @@ def get_shifts(
 
 
 def get_shift(token: str, server_name: str, shift_id: str) -> dict:
-    """Bitta smena detali — mavjud yo'llarni sinaydi."""
+    """Bitta smena detali тАФ mavjud yo'llarni sinaydi."""
     sid = str(shift_id).strip()
     for path in (
         f"/api/shifts/{sid}/",
@@ -469,7 +610,7 @@ def pay_customer_debt(
         "notify": True,
         "notify_sms": True,
     }
-    # Localhost SMS chekiga yaroqsiz — faqat ochiq domen
+    # Localhost SMS chekiga yaroqsiz тАФ faqat ochiq domen
     if check_base_url and "127.0.0.1" not in check_base_url and "localhost" not in check_base_url:
         body["check_base_url"] = check_base_url
         body["public_check_base"] = check_base_url
@@ -493,15 +634,15 @@ def send_sales_sms(
     customer_id: str | None = None,
 ) -> dict:
     """
-    DevSMS orqali SMS — TezPOS /api/sales/sms/ endpointi.
+    DevSMS orqali SMS тАФ TezPOS /api/sales/sms/ endpointi.
     Backend maydon nomlari farq qilishi mumkin, shuning uchun bir necha variant sinanadi.
     """
     phone = (phone or "").strip()
     message = (message or "").strip()
     if not phone:
-        return {"ok": False, "error": "Mijozda telefon raqam yo‘q — SMS yuborib bo‘lmaydi."}
+        return {"ok": False, "error": "Mijozda telefon raqam yoтАШq тАФ SMS yuborib boтАШlmaydi."}
     if not message:
-        return {"ok": False, "error": "SMS matni bo‘sh."}
+        return {"ok": False, "error": "SMS matni boтАШsh."}
 
     payloads: list[dict] = [
         {"phone": phone, "message": message},
@@ -534,10 +675,10 @@ def send_sales_sms(
                 continue
             return {"ok": True, "result": data, "payload_used": body}
         except TezPosApiError as exc:
-            # 404/405 — endpoint yo'q; boshqa payloadlar foydasiz
+            # 404/405 тАФ endpoint yo'q; boshqa payloadlar foydasiz
             if exc.status in (404, 405):
                 return {"ok": False, "error": "Backendda SMS endpoint topilmadi (/api/sales/sms/)."}
-            # 400 — noto'g'ri maydon, keyingi variant
+            # 400 тАФ noto'g'ri maydon, keyingi variant
             detail = str(exc)
             if isinstance(exc.payload, (bytes, bytearray)):
                 try:
