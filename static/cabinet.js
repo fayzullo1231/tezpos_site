@@ -603,7 +603,7 @@
       const qs = new URLSearchParams({ from: fromIso, to: toIsoVal });
       if (fast) qs.set("fast", "1");
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 12000 : 28000) : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 16000 : 28000) : null;
       const res = await fetch(`${url}?${qs}`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
@@ -621,6 +621,14 @@
         tip.innerHTML =
           "<span style=\"color:#c2410c\">API sekin yoki ulanmadi. Qayta urinib ko‘ring.</span>";
         salesRangeSummary.appendChild(tip);
+      }
+      // Fast javobda Sotuv/Optom bo‘lmasa — fonida to‘liqroq so‘rov
+      if (
+        fast &&
+        Array.isArray(payload.priceLists) &&
+        !payload.priceLists.some((r) => r && !r.is_total && Number(r.revenue) > 0)
+      ) {
+        loadRangeStats(fromIso, toIsoVal, { force: true, fast: false });
       }
     } catch (_err) {
       if (reqId !== priceListReq) return;

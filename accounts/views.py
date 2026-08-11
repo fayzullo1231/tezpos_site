@@ -1366,14 +1366,30 @@ def _refine_summaries_from_details(
             pack["summary"] = summary
 
 
-def _fetch_sale_details(token: str, server: str, sale_ids: list[str], limit: int = 40) -> dict[str, dict]:
+def _fetch_sale_details(
+    token: str,
+    server: str,
+    sale_ids: list[str],
+    limit: int = 40,
+    *,
+    per_sale_timeout: float = 5.0,
+    overall_timeout: float | None = None,
+) -> dict[str, dict]:
     """Fetch sale receipts; never raises — timeouts/errors skip that sale."""
     out: dict[str, dict] = {}
     ids = [str(x) for x in sale_ids[:limit] if x]
 
     def one(sid: str):
         try:
-            return sid, tezpos_api.get_sale(token, server, sid)
+            # get_sale default 5s — tez namuna uchun qisqaroq
+            data = tezpos_api.api_request(
+                "GET",
+                f"/api/sales/{sid}/",
+                token=token,
+                server_name=server,
+                timeout=per_sale_timeout,
+            )
+            return sid, data if isinstance(data, dict) else None
         except (tezpos_api.TezPosApiError, TimeoutError, OSError):
             return sid, None
         except Exception:
@@ -1381,16 +1397,71 @@ def _fetch_sale_details(token: str, server: str, sale_ids: list[str], limit: int
 
     if not ids:
         return out
-    workers = 8 if len(ids) > 40 else 5
+    workers = min(10, max(4, len(ids)))
+    deadline = time.time() + overall_timeout if overall_timeout else None
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(one, sid) for sid in ids]
         for fut in as_completed(futures):
+            if deadline and time.time() > deadline:
+                break
             try:
                 sid, data = fut.result()
             except Exception:
                 continue
             if data:
                 out[sid] = data
+    return out
+
+
+def _fallback_sotuv_only_lists(
+    gross: float,
+    checks: int,
+    margin_ratio: Decimal,
+    price_lists: list[dict] | None = None,
+) -> list[dict]:
+    """Detallar bo‘lmasa — butun tushumni Sotuvga, Optom 0 (tez UI)."""
+    if gross <= 0:
+        return []
+    ratio = float(margin_ratio or 0)
+    if ratio <= 0:
+        ratio = 0.25
+    profit = gross * ratio
+    cost = gross - profit
+    out = [
+        {
+            "id": SELLING_LIST_ID,
+            "name": "Sotuv",
+            "qty": 0.0,
+            "checks": int(checks),
+            "revenue": float(gross),
+            "cost": float(cost),
+            "profit": float(profit),
+            "margin": (profit / gross * 100.0) if gross else 0.0,
+            "markup": (profit / cost * 100.0) if cost > 0 else 0.0,
+            "share": 100.0,
+            "is_total": False,
+            "scaled": True,
+            "estimated": True,
+        }
+    ]
+    # Optom ro‘yxatlari bo‘lsa — 0 bilan emas, faqat Sotuv+Jami (UI faqat revenue>0)
+    out.append(
+        {
+            "id": "__all__",
+            "name": "Jami",
+            "qty": 0.0,
+            "checks": int(checks),
+            "revenue": float(gross),
+            "cost": float(cost),
+            "profit": float(profit),
+            "margin": (profit / gross * 100.0) if gross else 0.0,
+            "markup": (profit / cost * 100.0) if cost > 0 else 0.0,
+            "share": 100.0,
+            "is_total": True,
+            "scaled": True,
+            "estimated": True,
+        }
+    )
     return out
 
 
@@ -2847,22 +2918,19 @@ def cabinet_range_stats(request):
 
     span = (end - start).days + 1
     fast = (request.GET.get("fast") or "").strip() in ("1", "true", "yes")
-    # Detail so‘rovlari o‘chirilgan — Contabo API sekin, 502/timeout oldini olish
-    if fast or span <= 7:
-        max_pages = 1
-        product_pages = 0
-        sales_timeout = 8 if fast else 12
-        skip_lists = True
+    # Contabo WAN: to‘liq detail emas — kichik namuna + scale (Sotuv/Optom tez)
+    if fast or span <= 1:
+        max_pages, product_pages, sales_timeout = 1, 4, 10
+        detail_cap, detail_each, detail_budget = 10, 3.5, 7.0
+    elif span <= 7:
+        max_pages, product_pages, sales_timeout = 1, 4, 12
+        detail_cap, detail_each, detail_budget = 14, 4.0, 9.0
     elif span <= 31:
-        max_pages = 2
-        product_pages = 0
-        sales_timeout = 16
-        skip_lists = True
+        max_pages, product_pages, sales_timeout = 2, 4, 16
+        detail_cap, detail_each, detail_budget = 18, 4.0, 11.0
     else:
-        max_pages = 2
-        product_pages = 0
-        sales_timeout = 18
-        skip_lists = True
+        max_pages, product_pages, sales_timeout = 2, 3, 18
+        detail_cap, detail_each, detail_budget = 16, 4.0, 10.0
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     sales: list = []
@@ -2871,7 +2939,7 @@ def cabinet_range_stats(request):
     api_err = ""
 
     try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=3) as pool:
             fut_s = pool.submit(
                 lambda: _memo_get(
                     f"{memo_prefix}|sales|{start}|{end}|{max_pages}",
@@ -2886,29 +2954,25 @@ def cabinet_range_stats(request):
                     ),
                 )
             )
-            fut_p = None
-            if product_pages > 0:
-                fut_p = pool.submit(
-                    lambda: _memo_get(
-                        f"{memo_prefix}|products|{product_pages}",
-                        90.0,
-                        lambda: tezpos_api.get_products(
-                            token, server, max_pages=product_pages
-                        ),
-                    )
+            fut_p = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|products|{product_pages}",
+                    600.0,
+                    lambda: tezpos_api.get_products(
+                        token, server, max_pages=product_pages
+                    ),
                 )
-            fut_pl = None
-            if not skip_lists:
-                fut_pl = pool.submit(
-                    lambda: _memo_get(
-                        f"{memo_prefix}|price_lists",
-                        120.0,
-                        lambda: tezpos_api.get_price_lists(token, server) or [],
-                    )
+            )
+            fut_pl = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|price_lists",
+                    600.0,
+                    lambda: tezpos_api.get_price_lists(token, server) or [],
                 )
+            )
             sales = fut_s.result() or []
-            products_raw = fut_p.result() if fut_p is not None else []
-            price_lists = fut_pl.result() if fut_pl is not None else []
+            products_raw = fut_p.result() or []
+            price_lists = fut_pl.result() or []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -2918,7 +2982,12 @@ def cabinet_range_stats(request):
         api_err = str(exc)
 
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    products_by_id = {str(p.id): p for p in products}
+    products_by_name = _products_by_name(products)
     margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0.25")
+    price_lists = [
+        pl for pl in price_lists if isinstance(pl, dict) and pl.get("is_active", True)
+    ]
 
     sales = [s for s in sales if isinstance(s, dict)]
     sales.sort(
@@ -2936,9 +3005,53 @@ def cabinet_range_stats(request):
     gross = float(sum((_dec(s.get("total")) for s in sales), Decimal("0")))
     profit = gross * float(margin_ratio) if margin_ratio else gross * 0.25
     margin = (profit / gross * 100.0) if gross > 0 else 0.0
+
     lists: list = []
+    details_used = 0
     if gross > 0:
-        lists = _scale_price_list_stats([], gross, checks)
+        # Allaqachon items bor cheklar (list endpoint nested bersa)
+        embedded = [
+            s for s in sales if isinstance(s.get("items"), list) and s.get("items")
+        ]
+        details: dict[str, dict] = {
+            str(s.get("id")): s for s in embedded if s.get("id")
+        }
+        need_ids = [
+            str(s.get("id"))
+            for s in sales
+            if s.get("id") and str(s.get("id")) not in details
+        ]
+        # Namuna: oxirgi cheklar (eng yangi — allaqachon sort desc)
+        sample_n = min(detail_cap, len(need_ids))
+        if sample_n > 0:
+            fetched = _fetch_sale_details(
+                token,
+                server,
+                need_ids[:sample_n],
+                limit=sample_n,
+                per_sale_timeout=detail_each,
+                overall_timeout=detail_budget,
+            )
+            details.update(fetched)
+        details_used = len(details)
+        if details:
+            lists = _aggregate_price_list_stats(
+                list(details.values()),
+                products_by_id,
+                products_by_name,
+                price_lists,
+            )
+            lists = _scale_price_list_stats(lists, gross, checks)
+            jami = next((r for r in lists if r.get("is_total")), None)
+            if jami and float(jami.get("revenue") or 0) > 0:
+                profit = float(jami.get("profit") or profit)
+                margin = float(jami.get("margin") or margin)
+        else:
+            lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
+            jami = lists[-1] if lists else None
+            if jami:
+                profit = float(jami.get("profit") or profit)
+                margin = float(jami.get("margin") or margin)
 
     payload = {
         "range": range_key,
@@ -2949,11 +3062,11 @@ def cabinet_range_stats(request):
             "gross": gross,
             "profit": profit,
             "margin": margin,
-            "details_used": 0,
+            "details_used": details_used,
         },
         "chart": chart,
         "priceLists": lists,
-        "partial": True,
+        "partial": details_used < max(1, min(checks, detail_cap)),
         "fast": bool(fast),
     }
     if api_err:
