@@ -320,6 +320,134 @@ def cabinet_day_sales(request):
     )
 
 
+def _collect_shifts_payload(token: str, server: str, *, days: int = 21) -> tuple[list[dict], str]:
+    """Smenalar ro‘yxati (API yoki sotuvlardan)."""
+    today = timezone.localdate()
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    date_from = (today - timedelta(days=days)).isoformat()
+    date_to = today.isoformat()
+
+    raw_shifts_api: list = []
+    try:
+        raw_shifts_api = _memo_get(
+            f"{memo_prefix}|shifts|{date_from}|{date_to}",
+            90.0,
+            lambda: tezpos_api.get_shifts(
+                token,
+                server,
+                date_from=date_from,
+                date_to=date_to,
+                timeout=10,
+                max_pages=2,
+            )
+            or [],
+        )
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+        raw_shifts_api = []
+
+    margin_ratio = Decimal("0.25")
+    try:
+        products_raw = _memo_get(
+            f"{memo_prefix}|products|2",
+            600.0,
+            lambda: tezpos_api.get_products(token, server, max_pages=2) or [],
+        )
+        products = [_map_product(p) for p in (products_raw or []) if isinstance(p, dict)]
+        if products:
+            margin_ratio = _catalog_margin_ratio(products) or Decimal("0.25")
+    except Exception:
+        pass
+
+    shifts_payload: list[dict] = []
+    shifts_source = "none"
+    sales_for_shifts: list = []
+
+    if raw_shifts_api:
+        shifts_source = "api"
+        try:
+            sales_for_shifts = _memo_get(
+                f"{memo_prefix}|sales|{date_from}|{date_to}|2",
+                60.0,
+                lambda: tezpos_api.get_sales(
+                    token,
+                    server,
+                    date_from=date_from,
+                    date_to=date_to,
+                    timeout=12,
+                    max_pages=2,
+                )
+                or [],
+            )
+        except Exception:
+            sales_for_shifts = []
+        sales_for_shifts = [s for s in sales_for_shifts if isinstance(s, dict)]
+        for raw in raw_shifts_api:
+            if not isinstance(raw, dict):
+                continue
+            sh = _normalize_api_shift(raw, today)
+            sh = _enrich_shift_with_sales(
+                sh, sales_for_shifts, margin_ratio=margin_ratio
+            )
+            sh.pop("raw", None)
+            shifts_payload.append(sh)
+
+    if not shifts_payload:
+        shifts_source = "sales"
+        if not sales_for_shifts:
+            try:
+                sales_for_shifts = _memo_get(
+                    f"{memo_prefix}|sales|{date_from}|{date_to}|2",
+                    60.0,
+                    lambda: tezpos_api.get_sales(
+                        token,
+                        server,
+                        date_from=date_from,
+                        date_to=date_to,
+                        timeout=12,
+                        max_pages=2,
+                    )
+                    or [],
+                )
+            except Exception:
+                sales_for_shifts = []
+        shifts_payload = _build_shifts_from_sales(
+            [s for s in sales_for_shifts if isinstance(s, dict)],
+            today=today,
+            margin_ratio=margin_ratio,
+        )
+
+    shifts_payload.sort(key=lambda s: s.get("opened_at") or "", reverse=True)
+    return shifts_payload[:60], shifts_source
+
+
+@login_required
+@require_GET
+def cabinet_shifts(request):
+    """Smenalar ro‘yxati (AJAX) — sahifa darhol ochilsin."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    try:
+        shifts, source = _collect_shifts_payload(token, server, days=21)
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        return JsonResponse({"error": str(exc)}, status=502)
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse({"error": str(exc)}, status=504)
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "shifts": shifts,
+            "source": source,
+            "count": len(shifts),
+        }
+    )
+
+
 def _parse_sale_date(raw):
     if not raw:
         return timezone.localdate()
@@ -2152,6 +2280,7 @@ def cabinet_view(request):
         "labels",
         "signals",
         "sales",
+        "shifts",
     }
     if section in FAST_SHELL and request.method != "POST":
         ctx = _cabinet_shell_context(
@@ -2250,26 +2379,19 @@ def cabinet_view(request):
         return _memo_get(key, 120.0, _loader)
 
     def _load_shifts_api():
-        # Oldin 404 bo‘lgan bo‘lsa — qayta 7 ta yo‘lni sinamaymiz (sekinlik)
-        if request.session.get("tezpos_shifts_api_missing"):
-            return []
         key = f"shifts:{server}:{today.isoformat()}"
 
         def _loader():
             try:
-                rows = tezpos_api.get_shifts(
+                return tezpos_api.get_shifts(
                     token,
                     server,
                     date_from=(today - timedelta(days=14)).isoformat(),
                     date_to=today.isoformat(),
                     timeout=10,
-                    max_pages=1,
+                    max_pages=2,
                 )
-                if not rows:
-                    request.session["tezpos_shifts_api_missing"] = True
-                return rows
             except (tezpos_api.TezPosApiError, TimeoutError, OSError):
-                request.session["tezpos_shifts_api_missing"] = True
                 return []
 
         return _memo_get(key, 45.0, _loader)
@@ -3423,13 +3545,15 @@ def cabinet_shift_detail(request):
 
     gross = float(sum((_dec(s.get("total")) for s in matched), Decimal("0")))
     checks = len(matched)
-    # Bir kunlik / ochiq smena — ko‘proq chek detali (keyin scale)
-    detail_cap = 120 if is_open or (opened_dt and date_from == date_to) else 60
+    # Bir kunlik / ochiq smena — tezkor namuna (WAN)
+    detail_cap = 16 if is_open or (opened_dt and date_from == date_to) else 12
     details = _fetch_sale_details(
         token,
         server,
         [str(s.get("id")) for s in matched if s.get("id")],
         limit=detail_cap,
+        per_sale_timeout=3.5,
+        overall_timeout=8.0,
     )
     lists = _aggregate_price_list_stats(
         list(details.values()), products_by_id, products_by_name, price_lists

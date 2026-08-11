@@ -180,6 +180,22 @@
           .catch(() => {});
       }
     }
+    if (data.shiftsUrl && !cacheGet("shifts")) {
+      fetch(data.shiftsUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
+        .then((r) => r.json())
+        .then((json) => {
+          if (!json || json.error) return;
+          cacheSet("shifts", {
+            shifts: json.shifts || [],
+            source: json.source || "none",
+            ts: Date.now(),
+          });
+        })
+        .catch(() => {});
+    }
   };
   window.tezposWarmCabinet = warmCabinet;
 
@@ -3409,19 +3425,21 @@
   const listEl = document.getElementById("shifts-list");
   if (!listEl) return;
 
-  const shifts = Array.isArray(data.shifts) ? data.shifts : [];
+  let shifts = Array.isArray(data.shifts) ? data.shifts.slice() : [];
   const summaryEl = document.getElementById("shifts-summary-kpis");
   const emptyEl = document.getElementById("shifts-empty");
   const countEl = document.getElementById("shifts-total-count");
+  const hintEl = document.getElementById("shifts-source-hint");
   const detailUrl = data.shiftDetailUrl || "";
+  const shiftsUrl = data.shiftsUrl || "";
 
   const fmtMoney = (n) =>
     Math.round(Number(n || 0)).toLocaleString("uz-UZ");
   const fmt = (n) => Number(n || 0).toLocaleString("uz-UZ");
 
-  if (countEl) countEl.textContent = String(shifts.length);
-
-  if (summaryEl) {
+  const paintSummary = () => {
+    if (countEl) countEl.textContent = String(shifts.length);
+    if (!summaryEl) return;
     const openCount = shifts.filter((s) => s.status === "open").length;
     const gross = shifts.reduce((a, s) => a + Number(s.gross || 0), 0);
     const profit = shifts.reduce((a, s) => a + Number(s.profit || 0), 0);
@@ -3434,11 +3452,11 @@
       <div class="sales-kpi"><span>Cheklar</span><strong>${fmt(checks)}</strong></div>
       <div class="sales-kpi"><span>O‘rtacha marja</span><strong>${margin.toFixed(1)}%</strong></div>
     `;
-  }
+  };
 
   const priceListHtml = (rows) => {
     const list = Array.isArray(rows) ? rows.filter((r) => !r.is_total) : [];
-    if (!list.length) return `<p class="cabinet-hint">Narxlar bo‘yicha batafsil yuklanmoqda yoki yo‘q.</p>`;
+    if (!list.length) return `<p class="cabinet-hint">Batafsil uchun «Yangilash» ni bosing.</p>`;
     return `<div class="price-list-stats shifts-pl-grid">${list
       .map(
         (row) => `<article class="price-list-stat">
@@ -3456,6 +3474,7 @@
   };
 
   const paint = () => {
+    paintSummary();
     if (!shifts.length) {
       listEl.innerHTML = "";
       if (emptyEl) emptyEl.hidden = false;
@@ -3490,7 +3509,7 @@
     if (!sh || !detailUrl) return;
     const card = listEl.querySelector(`[data-shift-idx="${idx}"]`);
     const plBox = card?.querySelector("[data-sh-pl]");
-    if (plBox) plBox.innerHTML = `<p class="cabinet-hint">Yuklanmoqda…</p>`;
+    if (plBox) plBox.innerHTML = `<p class="cabinet-hint">…</p>`;
     const isOpen = sh.status === "open" || !sh.closed_at;
     const params = new URLSearchParams({
       id: sh.id || "",
@@ -3498,9 +3517,8 @@
       closed_at: isOpen ? "" : sh.closed_at || "",
       status: isOpen ? "open" : sh.status || "closed",
     });
-    // Ochiq smena: sale_ids yuborilmaydi — server ochilgandan hozirgacha hisoblaydi
     if (!isOpen && Array.isArray(sh.sale_ids) && sh.sale_ids.length) {
-      params.set("sale_ids", sh.sale_ids.slice(0, 200).join(","));
+      params.set("sale_ids", sh.sale_ids.slice(0, 80).join(","));
     }
     try {
       const res = await fetch(`${detailUrl}?${params}`, {
@@ -3526,23 +3544,83 @@
         if (m) m.textContent = `${Number(sh.margin || 0).toFixed(1)}%`;
         if (plBox) plBox.innerHTML = priceListHtml(sh.price_lists);
       }
+      paintSummary();
+      if (window.tezposCacheSet) {
+        window.tezposCacheSet("shifts", { shifts, source: data.shiftsSource || "api", ts: Date.now() });
+      }
     } catch (_err) {
       if (plBox) plBox.innerHTML = priceListHtml(sh.price_lists);
     }
   };
 
-  paint();
+  const applyShiftsPayload = (json) => {
+    shifts = Array.isArray(json.shifts) ? json.shifts : [];
+    data.shifts = shifts;
+    data.shiftsSource = json.source || data.shiftsSource || "none";
+    window.TEZPOS_CHARTS = data;
+    if (hintEl) {
+      if (json.source === "api") {
+        hintEl.textContent = "TezPOS Shifts API dan yuklandi.";
+      } else if (json.source === "sales") {
+        hintEl.textContent =
+          "TezPOS smena endpointi topilmadi — sotuvlar oralig‘idan smenalar yig‘ildi (4 soatlik tanaffus).";
+      } else {
+        hintEl.textContent = "Smenalar.";
+      }
+    }
+    if (window.tezposCacheSet) {
+      window.tezposCacheSet("shifts", {
+        shifts,
+        source: json.source || "none",
+        ts: Date.now(),
+      });
+    }
+    paint();
+  };
+
+  // Keshdan darhol
+  if (!shifts.length && window.tezposCacheGet) {
+    const cached = window.tezposCacheGet("shifts");
+    if (cached && Array.isArray(cached.shifts) && cached.shifts.length) {
+      applyShiftsPayload(cached);
+    }
+  } else {
+    paint();
+  }
+
   listEl.addEventListener("click", (e) => {
     const btn = e.target.closest(".shift-refresh");
     if (!btn) return;
     loadShiftDetail(Number(btn.dataset.shiftIdx));
   });
-  // Birinchi ochiq / oxirgi smenani avtomatik aniqlashtirish
-  const autoIdx = Math.max(
-    0,
-    shifts.findIndex((s) => s.status === "open")
-  );
-  if (shifts.length) loadShiftDetail(autoIdx === -1 ? 0 : autoIdx);
+
+  const loadShiftsList = () => {
+    if (!shiftsUrl) return;
+    if (!shifts.length) {
+      listEl.innerHTML = `<p class="cabinet-hint">…</p>`;
+    }
+    fetch(shiftsUrl, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then((r) => r.json())
+      .then((json) => {
+        if (json && !json.error) applyShiftsPayload(json);
+        else if (!shifts.length && emptyEl) {
+          emptyEl.hidden = false;
+          emptyEl.textContent = json?.error || "Smena yuklanmadi.";
+          listEl.innerHTML = "";
+        }
+      })
+      .catch(() => {
+        if (!shifts.length && emptyEl) {
+          emptyEl.hidden = false;
+          emptyEl.textContent = "API sekin / ulanmadi";
+          listEl.innerHTML = "";
+        }
+      });
+  };
+  loadShiftsList();
 })();
 
 

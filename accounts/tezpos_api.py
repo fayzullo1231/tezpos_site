@@ -426,6 +426,8 @@ def get_price_lists(token: str, server_name: str) -> list:
 
 SHIFT_LIST_PATHS = (
     "/api/shifts/",
+    "/api/accounts/shifts/",
+    "/api/v1/shifts/",
     "/api/cash-shifts/",
     "/api/cash_shifts/",
     "/api/pos/shifts/",
@@ -434,6 +436,8 @@ SHIFT_LIST_PATHS = (
     "/api/cash_sessions/",
 )
 
+_SHIFT_PATH_OK: str | None = None
+
 
 def get_shifts(
     token: str,
@@ -441,12 +445,17 @@ def get_shifts(
     *,
     date_from: str | None = None,
     date_to: str | None = None,
-    timeout: float = 25,
-    max_pages: int = 4,
+    timeout: float = 12,
+    max_pages: int = 2,
 ) -> list:
-    """TezPOS smenalari. Endpoint topilmasa bo'sh ro'yxat."""
-    last_404 = True
-    for path in SHIFT_LIST_PATHS:
+    """TezPOS smenalari. Ishlaydigan endpointni eslab qoladi."""
+    global _SHIFT_PATH_OK
+    paths = list(SHIFT_LIST_PATHS)
+    if _SHIFT_PATH_OK and _SHIFT_PATH_OK in paths:
+        paths = [_SHIFT_PATH_OK] + [p for p in paths if p != _SHIFT_PATH_OK]
+
+    for path in paths:
+        probe_timeout = timeout if path == _SHIFT_PATH_OK else min(timeout, 5.0)
         try:
             data = api_request(
                 "GET",
@@ -458,20 +467,25 @@ def get_shifts(
                     "date_from": date_from,
                     "date_to": date_to,
                 },
-                timeout=timeout,
+                timeout=probe_timeout,
             )
         except TezPosApiError as exc:
             if exc.status in (404, 405):
                 continue
             if exc.status in (401, 403):
                 raise
-            last_404 = False
             continue
         rows: list = []
         if isinstance(data, list):
             rows = data
         elif isinstance(data, dict):
-            rows = list(data.get("results") or data.get("items") or data.get("shifts") or [])
+            rows = list(
+                data.get("results")
+                or data.get("items")
+                or data.get("shifts")
+                or data.get("data")
+                or []
+            )
             next_url = data.get("next")
             page = 2
             while next_url and page <= max_pages:
@@ -486,7 +500,7 @@ def get_shifts(
                             "date_from": date_from,
                             "date_to": date_to,
                         },
-                        timeout=timeout,
+                        timeout=probe_timeout,
                     )
                 except TezPosApiError:
                     break
@@ -495,14 +509,20 @@ def get_shifts(
                     break
                 if not isinstance(page_data, dict):
                     break
-                chunk = page_data.get("results") or page_data.get("items") or []
+                chunk = (
+                    page_data.get("results")
+                    or page_data.get("items")
+                    or page_data.get("shifts")
+                    or []
+                )
                 rows.extend(chunk)
                 next_url = page_data.get("next")
                 if not chunk:
                     break
                 page += 1
-        if rows or data is not None:
-            return [r for r in rows if isinstance(r, dict)]
+        # 200 OK — yo‘l ishlaydi (bo‘sh ro‘yxat ham OK)
+        _SHIFT_PATH_OK = path
+        return [r for r in rows if isinstance(r, dict)]
     return []
 
 

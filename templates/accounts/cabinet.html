@@ -722,11 +722,13 @@
       <div class="cabinet-card-head">
         <div>
           <h3>Smenalar</h3>
-          <p class="cabinet-hint">
+          <p class="cabinet-hint" id="shifts-source-hint">
             {% if shifts_source == 'api' %}
               TezPOS Shifts API dan yuklandi.
-            {% else %}
+            {% elif shifts_source == 'sales' %}
               TezPOS smena endpointi topilmadi — sotuvlar oralig‘idan smenalar yig‘ildi (4 soatlik tanaffus).
+            {% else %}
+              Smenalar yuklanmoqda…
             {% endif %}
           </p>
         </div>
@@ -1270,6 +1272,7 @@
     catalogUrl: "{% url 'accounts:cabinet_catalog' %}",
     warmUrl: "{% url 'accounts:cabinet_warm' %}",
     daySalesUrl: "{% url 'accounts:cabinet_day_sales' %}",
+    shiftsUrl: "{% url 'accounts:cabinet_shifts' %}",
     rangeStatsUrl: "{% url 'accounts:cabinet_range_stats' %}",
     topStatsUrl: "{% url 'accounts:cabinet_top_stats' %}",
     productsImportUrl: "{% url 'accounts:cabinet_products_import' %}",
@@ -1335,6 +1338,11 @@
     }
     var deb = g("debtors");
     if (deb && Array.isArray(deb.debtors)) d._debtorsCache = deb.debtors;
+    var sh = g("shifts");
+    if (sh && Array.isArray(sh.shifts) && sh.shifts.length) {
+      d.shifts = sh.shifts;
+      if (sh.source) d.shiftsSource = sh.source;
+    }
     window.TEZPOS_CHARTS = d;
     // Kesh bor — HTML skeletonlarni darhol yashirish (loading flash yo‘q)
     if ((cat && cat.products && cat.products.length) || (ss && Object.keys(ss).length)) {
@@ -1344,5 +1352,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=sotuv-optom-1" defer></script>
+<script src="/static/cabinet.js?v=shifts-ajax-1" defer></script>
 {% endblock %}
