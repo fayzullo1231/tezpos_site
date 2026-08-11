@@ -50,6 +50,13 @@ if [[ ! -f .env ]]; then
   echo ">>> .env yaratildi — TEZPOS_API_URL ni tekshiring (backend port)."
 fi
 
+# Contabo backend API (foydalanuvchi 127 emas, public IP)
+if grep -q '^TEZPOS_API_URL=' .env; then
+  sed -i 's|^TEZPOS_API_URL=.*|TEZPOS_API_URL=http://13.140.146.78:8000|' .env
+else
+  echo 'TEZPOS_API_URL=http://13.140.146.78:8000' >> .env
+fi
+
 mkdir -p media staticfiles /var/log/tezpos_site
 chown -R www-data:www-data "$APP_DIR" /var/log/tezpos_site 2>/dev/null || true
 
@@ -58,12 +65,20 @@ export DJANGO_SETTINGS_MODULE=tezpos_site.settings
 "$PY" manage.py collectstatic --noinput
 
 cp -f "$APP_DIR/deploy/tezpos-site.service" /etc/systemd/system/tezpos-site.service
+if [[ -f "$APP_DIR/deploy/tezpos-telegram-sync.service" ]]; then
+  cp -f "$APP_DIR/deploy/tezpos-telegram-sync.service" /etc/systemd/system/
+  cp -f "$APP_DIR/deploy/tezpos-telegram-sync.timer" /etc/systemd/system/
+fi
 systemctl daemon-reload
 systemctl enable tezpos-site
 systemctl restart tezpos-site
+if [[ -f /etc/systemd/system/tezpos-telegram-sync.timer ]]; then
+  systemctl enable --now tezpos-telegram-sync.timer || true
+fi
 systemctl reload nginx || true
 
 echo "OK: http://tez-pos.uz (nginx + gunicorn :8001)"
+echo "API: TEZPOS_API_URL=$(grep '^TEZPOS_API_URL=' .env | head -1)"
 systemctl --no-pager status tezpos-site | head -n 15
 ss -lntp | grep 8001 || true
 curl -sI http://127.0.0.1:8001/ | head -n 5 || true
