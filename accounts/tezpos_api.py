@@ -24,6 +24,10 @@ class TezPosApiError(Exception):
 
 def normalize_api_base(url: str | None = None) -> str:
     raw = (url or getattr(settings, "TEZPOS_API_URL", "") or "").strip()
+    # .env dan kelgan qo‘shtirnoq / CRLF
+    raw = raw.strip().strip('"').strip("'").replace("\r", "").strip()
+    # 127/localhost ni production Contabo API ga almashtirmaymiz — foydalanuvchi
+    # TEZPOS_API_URL ni o‘zi Contabo IP qilib qo‘yadi.
     if not raw:
         raw = "http://13.140.146.78:8000"
     if not raw.startswith("http://") and not raw.startswith("https://"):
@@ -123,7 +127,6 @@ def api_request(
         "Accept-Encoding": "gzip",
         "Connection": "keep-alive",
         "User-Agent": "TezPOS-Site-Cabinet/1.1",
-        "Host": urlparse(base).netloc,
     }
     data = None
     if body is not None:

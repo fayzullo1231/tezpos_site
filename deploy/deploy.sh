@@ -50,12 +50,17 @@ if [[ ! -f .env ]]; then
   echo ">>> .env yaratildi — TEZPOS_API_URL ni tekshiring (backend port)."
 fi
 
-# Contabo backend API (foydalanuvchi 127 emas, public IP)
+# Contabo backend API — FAQAT public IP (127.0.0.1 EMAS)
+API_URL="${TEZPOS_API_URL_FORCE:-http://13.140.146.78:8000}"
 if grep -q '^TEZPOS_API_URL=' .env; then
-  sed -i 's|^TEZPOS_API_URL=.*|TEZPOS_API_URL=http://13.140.146.78:8000|' .env
+  sed -i "s|^TEZPOS_API_URL=.*|TEZPOS_API_URL=${API_URL}|" .env
 else
-  echo 'TEZPOS_API_URL=http://13.140.146.78:8000' >> .env
+  echo "TEZPOS_API_URL=${API_URL}" >> .env
 fi
+# Tasodifan qolgan 127/localhost qatorlarini olib tashlash
+sed -i '/^TEZPOS_API_URL=http:\/\/127\.0\.0\.1/d' .env || true
+sed -i '/^TEZPOS_API_URL=http:\/\/localhost/d' .env || true
+grep -q '^TEZPOS_API_URL=' .env || echo "TEZPOS_API_URL=${API_URL}" >> .env
 
 mkdir -p media staticfiles /var/log/tezpos_site
 chown -R www-data:www-data "$APP_DIR" /var/log/tezpos_site 2>/dev/null || true
