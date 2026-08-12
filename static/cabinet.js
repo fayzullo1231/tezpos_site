@@ -45,6 +45,9 @@
     if (emit) {
       document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
     }
+    if (typeof window.tezposPaintShellKpis === "function") {
+      window.tezposPaintShellKpis();
+    }
     return data;
   };
 
@@ -159,6 +162,9 @@
             data.salesStats = Object.assign({}, data.salesStats || {}, next);
             data.priceListStats = Object.assign({}, data.priceListStats || {}, pl);
             window.TEZPOS_CHARTS = data;
+            if (typeof window.tezposPaintShellKpis === "function") {
+              window.tezposPaintShellKpis();
+            }
           })
           .catch(() => {});
       }
@@ -176,6 +182,10 @@
             const next = cacheGet("daySales") || {};
             next[iso] = json;
             cacheSet("daySales", next);
+            data._daySalesPack = json;
+            if (typeof window.tezposPaintShellKpis === "function") {
+              window.tezposPaintShellKpis();
+            }
           })
           .catch(() => {});
       }
@@ -193,6 +203,30 @@
             source: json.source || "none",
             ts: Date.now(),
           });
+        })
+        .catch(() => {});
+    }
+    if (data.reportsUrl && !cacheGet("reports")) {
+      fetch(data.reportsUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
+        .then((r) => r.json())
+        .then((json) => {
+          if (!json || json.error) return;
+          cacheSet("reports", json);
+        })
+        .catch(() => {});
+    }
+    if (data.abcUrl && !cacheGet("abc")) {
+      fetch(data.abcUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
+        .then((r) => r.json())
+        .then((json) => {
+          if (!json || json.error) return;
+          cacheSet("abc", json);
         })
         .catch(() => {});
     }
@@ -395,6 +429,54 @@
     if (opts.some((o) => o.value === selected)) priceListFilter.value = selected;
   };
 
+  const paintShellKpis = () => {
+    const sigEl = document.getElementById("kpi-signals");
+    const todayCountEl = document.getElementById("kpi-today-count");
+    const todayGrossEl = document.getElementById("kpi-today-gross");
+    if (!sigEl && !todayCountEl && !todayGrossEl) return;
+
+    const near = Array.isArray(data.nearMin) ? data.nearMin : [];
+    if (sigEl) sigEl.textContent = fmt(near.length);
+
+    const todayIso = toIso(todayDate);
+    let todayCount = null;
+    let todayGross = null;
+
+    // daySales kesh
+    const dsPack = (window.tezposCacheGet && window.tezposCacheGet("daySales")) || {};
+    const dayPack = data._daySalesPack || dsPack[todayIso];
+    if (dayPack) {
+      if (dayPack.count != null) todayCount = Number(dayPack.count);
+      else if (Array.isArray(dayPack.sales)) todayCount = dayPack.sales.length;
+      if (dayPack.gross != null) todayGross = Number(dayPack.gross);
+    }
+
+    // range-stats bugungi kun
+    const key = `${todayIso}_${todayIso}`;
+    const pack = (data.salesStats || {})[key] || {};
+    const sum = pack.summary || {};
+    if (sum.checks != null && todayCount == null) todayCount = Number(sum.checks);
+    if (sum.gross != null && todayGross == null) todayGross = Number(sum.gross);
+
+    // Tanlangan oralik bugun bo‘lsa
+    if (
+      todayCount == null &&
+      appliedFrom === todayIso &&
+      appliedTo === todayIso &&
+      pack.summary
+    ) {
+      todayCount = Number(pack.summary.checks || 0);
+      todayGross = Number(pack.summary.gross || 0);
+    }
+
+    if (todayCountEl && todayCount != null) todayCountEl.textContent = fmt(todayCount);
+    if (todayGrossEl && todayGross != null) {
+      todayGrossEl.textContent = fmtMoneyKpi(todayGross);
+      todayGrossEl.setAttribute("data-fmt-money", String(todayGross || 0));
+    }
+  };
+  window.tezposPaintShellKpis = paintShellKpis;
+
   const paintOverviewKpis = (key, pack, priceRows) => {
     const summary = (pack && pack.summary) || {};
     const selected = priceListFilter?.value || "all";
@@ -562,6 +644,7 @@
     paintSalesSummary(key, data.salesStats[key]);
     refreshOverviewPriceUi();
     persistRangeCaches();
+    if (typeof paintShellKpis === "function") paintShellKpis();
   };
 
   const paintCachedRange = (key) => {
@@ -952,6 +1035,7 @@
     refreshOverviewPriceUi();
     loadRangeStats(appliedFrom, appliedTo, { force: false, fast: true });
   }
+  if (typeof paintShellKpis === "function") paintShellKpis();
 
   const productTileHtml = (item, color, rank, opts = {}) => {
     const topsMode = Boolean(opts.tops);
@@ -1006,53 +1090,123 @@
 
   const reportEl = document.getElementById("reportLineChart");
   const periodToggle = document.getElementById("period-toggle");
-  if (hasChart && reportEl && data.reports) {
-    const reportChart = new Chart(reportEl, {
-      type: "line",
-      data: {
-        labels: data.reports.daily.labels,
-        datasets: [
-          {
-            label: "Tushum",
-            data: data.reports.daily.totals,
-            borderColor: "#12b3a1",
-            backgroundColor: "rgba(18,179,161,0.14)",
-            fill: true,
-            tension: 0.35,
-            pointRadius: 4,
-            pointBackgroundColor: "#12b3a1",
-          },
-        ],
-      },
-      options: lineOptions,
-    });
+  let reportChartRef = null;
 
+  const paintReportSummary = (summary, pack, periodKey) => {
+    const fmtM = (n) => Math.round(Number(n || 0)).toLocaleString("uz-UZ");
+    const checksEl = document.getElementById("report-checks");
+    const grossEl = document.getElementById("report-gross");
+    const costEl = document.getElementById("report-cost");
+    const profitEl = document.getElementById("report-profit");
+    const marginEl = document.getElementById("report-margin");
+    const todayProfitEl = document.getElementById("report-today-profit");
+    if (summary) {
+      if (checksEl) checksEl.textContent = fmt(summary.checks);
+      if (grossEl) {
+        grossEl.textContent = fmtM(summary.gross);
+        grossEl.setAttribute("data-fmt-money", String(summary.gross || 0));
+      }
+      if (costEl) {
+        costEl.textContent = fmtM(summary.cost);
+        costEl.setAttribute("data-fmt-money", String(summary.cost || 0));
+      }
+      if (profitEl) {
+        profitEl.textContent = fmtM(summary.profit);
+        profitEl.setAttribute("data-fmt-money", String(summary.profit || 0));
+      }
+      if (marginEl) marginEl.textContent = Number(summary.margin || 0).toFixed(1);
+      if (todayProfitEl) {
+        todayProfitEl.textContent = fmtM(summary.today_profit);
+        todayProfitEl.setAttribute("data-fmt-money", String(summary.today_profit || 0));
+      }
+    }
+    const list = document.getElementById("report-summary");
+    if (list && pack) {
+      // period hint — optional, summary list already updated
+    }
+  };
+
+  const applyReportsPayload = (payload) => {
+    if (!payload || !payload.reports) return;
+    data.reports = payload.reports;
+    window.TEZPOS_CHARTS = data;
+    if (window.tezposCacheSet) window.tezposCacheSet("reports", payload);
+    const active =
+      periodToggle?.querySelector("button.active")?.dataset.period || "daily";
+    const pack = data.reports[active] || data.reports.daily;
+    if (hasChart && reportEl) {
+      if (!reportChartRef) {
+        reportChartRef = new Chart(reportEl, {
+          type: "line",
+          data: {
+            labels: pack.labels || [],
+            datasets: [
+              {
+                label: "Tushum",
+                data: pack.totals || [],
+                borderColor: "#12b3a1",
+                backgroundColor: "rgba(18,179,161,0.14)",
+                fill: true,
+                tension: 0.35,
+                pointRadius: 4,
+                pointBackgroundColor: "#12b3a1",
+              },
+            ],
+          },
+          options: lineOptions,
+        });
+      } else {
+        reportChartRef.data.labels = pack.labels || [];
+        reportChartRef.data.datasets[0].data = pack.totals || [];
+        reportChartRef.update();
+      }
+    }
+    paintReportSummary(payload.summary, pack, active);
+    if (payload.summary) {
+      data._daySalesPack = {
+        count: payload.summary.today_count,
+        gross: payload.summary.today_gross,
+        profit: payload.summary.today_profit,
+      };
+      if (typeof paintShellKpis === "function") paintShellKpis();
+    }
+  };
+
+  if (reportEl || document.getElementById("report-summary")) {
+    const cached =
+      window.tezposCacheGet && window.tezposCacheGet("reports");
+    if (cached && cached.reports) applyReportsPayload(cached);
+    else if (data.reports && (data.reports.daily?.labels || []).length) {
+      applyReportsPayload({ reports: data.reports, summary: null });
+    }
+    if (data.reportsUrl) {
+      fetch(data.reportsUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
+        .then((r) => r.json())
+        .then((json) => {
+          if (json && !json.error) applyReportsPayload(json);
+        })
+        .catch(() => {});
+    }
     periodToggle?.querySelectorAll("button").forEach((btn) => {
       btn.addEventListener("click", () => {
         const key = btn.dataset.period;
-        const pack = data.reports[key];
+        const pack = (data.reports || {})[key];
         if (!pack) return;
         periodToggle.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
-        reportChart.data.labels = pack.labels;
-        reportChart.data.datasets[0].data = pack.totals;
-        reportChart.update();
-
-        const summary = document.getElementById("report-summary");
-        if (summary) {
-          const total = pack.totals.reduce((a, b) => a + b, 0);
-          const count = (pack.counts || []).reduce((a, b) => a + b, 0);
-          const periodLabel =
-            key === "weekly" ? "Haftalik" : key === "monthly" ? "Oylik" : "Kunlik";
-          summary.innerHTML = `
-              <li>Davr: <strong>${periodLabel}</strong></li>
-              <li>Cheklar (davr): <strong>${count}</strong></li>
-              <li>Tushum (davr): <strong>${Math.round(total).toLocaleString("uz-UZ")} so'm</strong></li>
-            `;
+        if (reportChartRef) {
+          reportChartRef.data.labels = pack.labels || [];
+          reportChartRef.data.datasets[0].data = pack.totals || [];
+          reportChartRef.update();
         }
       });
     });
   }
+
+  // Eski report chart bloki olib tashlandi (AJAX yuqorida)
 
   const signalsList = document.getElementById("signals-list");
   const signalsSelect = document.getElementById("signals-top-select");
@@ -1088,6 +1242,7 @@
     });
     document.addEventListener("tezpos:catalog", () => {
       renderSignals(Number(signalsSelect?.value || 10));
+      if (typeof paintShellKpis === "function") paintShellKpis();
     });
   }
 
@@ -4377,4 +4532,67 @@
   filterEl?.addEventListener("change", paint);
   document.addEventListener("tezpos:catalog", paint);
   paint();
+})();
+
+(() => {
+  const tbody = document.getElementById("abc-tbody");
+  if (!tbody) return;
+  const data = window.TEZPOS_CHARTS || {};
+  const fmt = (n) => Number(n || 0).toLocaleString("uz-UZ");
+  const esc = (s) =>
+    String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/"/g, "&quot;");
+
+  const paintAbc = (json) => {
+    if (!json) return;
+    const matrix = json.matrix || {};
+    document.querySelectorAll("[data-abc]").forEach((el) => {
+      const k = el.getAttribute("data-abc");
+      el.textContent = String(matrix[k] != null ? matrix[k] : 0);
+    });
+    const totalEl = document.getElementById("abc-total");
+    if (totalEl) totalEl.textContent = fmt(json.total);
+    const rows = Array.isArray(json.rows) ? json.rows : [];
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7">Ma\'lumot yo‘q</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows
+      .map(
+        (row) => `<tr>
+        <td>${esc(row.name)}</td>
+        <td><span class="badge-abc badge-${esc(row.abc)}">${esc(row.abc)}</span></td>
+        <td><span class="badge-xyz badge-${esc(row.xyz)}">${esc(row.xyz)}</span></td>
+        <td>${esc(row.group)}</td>
+        <td>${fmt(row.revenue)}</td>
+        <td>${Number(row.share || 0).toFixed(1)}%</td>
+        <td>${fmt(row.stock)}</td>
+      </tr>`
+      )
+      .join("");
+  };
+
+  const cached = window.tezposCacheGet && window.tezposCacheGet("abc");
+  if (cached && cached.rows) paintAbc(cached);
+
+  if (data.abcUrl) {
+    fetch(data.abcUrl, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then((r) => r.json())
+      .then((json) => {
+        if (json && !json.error) {
+          if (window.tezposCacheSet) window.tezposCacheSet("abc", json);
+          paintAbc(json);
+        }
+      })
+      .catch(() => {
+        if (!cached) {
+          tbody.innerHTML = '<tr><td colspan="7">Yuklanmadi</td></tr>';
+        }
+      });
+  }
 })();

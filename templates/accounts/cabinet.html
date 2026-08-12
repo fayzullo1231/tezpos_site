@@ -274,13 +274,13 @@
       </article>
       <article>
         <p>Faol signallar</p>
-        <h2>{{ active_signals_count }}</h2>
+        <h2 id="kpi-signals">{{ active_signals_count }}</h2>
         <small><a href="?section=signals">Ko‘rish →</a></small>
       </article>
       <article>
         <p>Bugungi sotuv</p>
-        <h2>{{ today_count }}</h2>
-        <small><span data-fmt-money="{{ today_gross }}">0</span> so'm</small>
+        <h2 id="kpi-today-count">{{ today_count }}</h2>
+        <small><span id="kpi-today-gross" data-fmt-money="{{ today_gross }}">0</span> so'm</small>
       </article>
     </section>
 
@@ -361,19 +361,19 @@
     <section class="cabinet-card">
       <div class="cabinet-card-head">
         <h3>ABC-XYZ matritsa</h3>
-        <span>Jami daromad: {{ abc_total|floatformat:0 }} so'm</span>
+        <span id="abc-total-label">Jami daromad: <strong id="abc-total">{{ abc_total|floatformat:0 }}</strong> so'm</span>
       </div>
       <p class="cabinet-hint">A/B/C — daromad (Pareto 80/15/5). X/Y/Z — sotuv barqarorligi (o‘zgaruvchanlik koeffitsienti).</p>
-      <div class="abc-matrix">
-        <div class="abc-cell"><strong>AX</strong><b>{{ abc_matrix.AX|default:0 }}</b><span>barqaror + yuqori</span></div>
-        <div class="abc-cell"><strong>AY</strong><b>{{ abc_matrix.AY|default:0 }}</b><span>o‘rtacha + yuqori</span></div>
-        <div class="abc-cell"><strong>AZ</strong><b>{{ abc_matrix.AZ|default:0 }}</b><span>beqaror + yuqori</span></div>
-        <div class="abc-cell"><strong>BX</strong><b>{{ abc_matrix.BX|default:0 }}</b><span>barqaror + o‘rta</span></div>
-        <div class="abc-cell"><strong>BY</strong><b>{{ abc_matrix.BY|default:0 }}</b><span>o‘rtacha + o‘rta</span></div>
-        <div class="abc-cell"><strong>BZ</strong><b>{{ abc_matrix.BZ|default:0 }}</b><span>beqaror + o‘rta</span></div>
-        <div class="abc-cell"><strong>CX</strong><b>{{ abc_matrix.CX|default:0 }}</b><span>barqaror + past</span></div>
-        <div class="abc-cell"><strong>CY</strong><b>{{ abc_matrix.CY|default:0 }}</b><span>o‘rtacha + past</span></div>
-        <div class="abc-cell"><strong>CZ</strong><b>{{ abc_matrix.CZ|default:0 }}</b><span>beqaror + past</span></div>
+      <div class="abc-matrix" id="abc-matrix">
+        <div class="abc-cell"><strong>AX</strong><b data-abc="AX">{{ abc_matrix.AX|default:0 }}</b><span>barqaror + yuqori</span></div>
+        <div class="abc-cell"><strong>AY</strong><b data-abc="AY">{{ abc_matrix.AY|default:0 }}</b><span>o‘rtacha + yuqori</span></div>
+        <div class="abc-cell"><strong>AZ</strong><b data-abc="AZ">{{ abc_matrix.AZ|default:0 }}</b><span>beqaror + yuqori</span></div>
+        <div class="abc-cell"><strong>BX</strong><b data-abc="BX">{{ abc_matrix.BX|default:0 }}</b><span>barqaror + o‘rta</span></div>
+        <div class="abc-cell"><strong>BY</strong><b data-abc="BY">{{ abc_matrix.BY|default:0 }}</b><span>o‘rtacha + o‘rta</span></div>
+        <div class="abc-cell"><strong>BZ</strong><b data-abc="BZ">{{ abc_matrix.BZ|default:0 }}</b><span>beqaror + o‘rta</span></div>
+        <div class="abc-cell"><strong>CX</strong><b data-abc="CX">{{ abc_matrix.CX|default:0 }}</b><span>barqaror + past</span></div>
+        <div class="abc-cell"><strong>CY</strong><b data-abc="CY">{{ abc_matrix.CY|default:0 }}</b><span>o‘rtacha + past</span></div>
+        <div class="abc-cell"><strong>CZ</strong><b data-abc="CZ">{{ abc_matrix.CZ|default:0 }}</b><span>beqaror + past</span></div>
       </div>
     </section>
 
@@ -386,7 +386,7 @@
           <thead>
             <tr><th>Tovar</th><th>ABC</th><th>XYZ</th><th>Guruh</th><th>Daromad</th><th>Ulush %</th><th>Qoldiq</th></tr>
           </thead>
-          <tbody>
+          <tbody id="abc-tbody">
             {% for row in abc_rows %}
             <tr>
               <td>{{ row.product.name }}</td>
@@ -398,7 +398,7 @@
               <td>{{ row.product.stock_qty }}</td>
             </tr>
             {% empty %}
-            <tr><td colspan="7">Ma'lumot yo‘q</td></tr>
+            <tr><td colspan="7" class="cabinet-hint">…</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -437,12 +437,12 @@
       </div>
       <canvas id="reportLineChart" height="110"></canvas>
       <ul class="cabinet-report-list" id="report-summary">
-        <li>Jami cheklar: <strong>{{ total_sales }}</strong></li>
-        <li>Jami tushum: <strong><span data-fmt-money="{{ gross }}">0</span> so'm</strong></li>
-        <li>Jami tannarx: <strong><span data-fmt-money="{{ cost }}">0</span> so'm</strong></li>
-        <li>Sof foyda: <strong class="is-profit"><span data-fmt-money="{{ profit }}">0</span> so'm</strong></li>
-        <li>O‘rtacha marja: <strong>{{ margin|floatformat:1 }}%</strong></li>
-        <li>Bugungi foyda: <strong class="is-profit"><span data-fmt-money="{{ today_profit }}">0</span> so'm</strong></li>
+        <li>Jami cheklar: <strong id="report-checks">{{ total_sales }}</strong></li>
+        <li>Jami tushum: <strong><span id="report-gross" data-fmt-money="{{ gross }}">0</span> so'm</strong></li>
+        <li>Jami tannarx: <strong><span id="report-cost" data-fmt-money="{{ cost }}">0</span> so'm</strong></li>
+        <li>Sof foyda: <strong class="is-profit"><span id="report-profit" data-fmt-money="{{ profit }}">0</span> so'm</strong></li>
+        <li>O‘rtacha marja: <strong id="report-margin">{{ margin|floatformat:1 }}</strong>%</li>
+        <li>Bugungi foyda: <strong class="is-profit"><span id="report-today-profit" data-fmt-money="{{ today_profit }}">0</span> so'm</strong></li>
       </ul>
     </section>
     {% endif %}
@@ -1273,6 +1273,8 @@
     warmUrl: "{% url 'accounts:cabinet_warm' %}",
     daySalesUrl: "{% url 'accounts:cabinet_day_sales' %}",
     shiftsUrl: "{% url 'accounts:cabinet_shifts' %}",
+    reportsUrl: "{% url 'accounts:cabinet_reports' %}",
+    abcUrl: "{% url 'accounts:cabinet_abc' %}",
     rangeStatsUrl: "{% url 'accounts:cabinet_range_stats' %}",
     topStatsUrl: "{% url 'accounts:cabinet_top_stats' %}",
     productsImportUrl: "{% url 'accounts:cabinet_products_import' %}",
@@ -1352,5 +1354,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=shifts-ajax-1" defer></script>
+<script src="/static/cabinet.js?v=kpi-nav-1" defer></script>
 {% endblock %}

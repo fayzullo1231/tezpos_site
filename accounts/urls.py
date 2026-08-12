@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    cabinet_abc,
     cabinet_bot_chats,
     cabinet_bot_settings_save,
     cabinet_catalog,
@@ -10,6 +11,7 @@ from .views import (
     cabinet_products_export,
     cabinet_products_import,
     cabinet_range_stats,
+    cabinet_reports,
     cabinet_shift_detail,
     cabinet_shifts,
     cabinet_telegram_sync,
@@ -31,6 +33,8 @@ urlpatterns = [
     path("cabinet/warm/", cabinet_warm, name="cabinet_warm"),
     path("cabinet/day-sales/", cabinet_day_sales, name="cabinet_day_sales"),
     path("cabinet/shifts/", cabinet_shifts, name="cabinet_shifts"),
+    path("cabinet/reports/", cabinet_reports, name="cabinet_reports"),
+    path("cabinet/abc/", cabinet_abc, name="cabinet_abc"),
     path("cabinet/shift-detail/", cabinet_shift_detail, name="cabinet_shift_detail"),
     path("cabinet/products-import/", cabinet_products_import, name="cabinet_products_import"),
     path("cabinet/products-export/", cabinet_products_export, name="cabinet_products_export"),

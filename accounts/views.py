@@ -448,6 +448,197 @@ def cabinet_shifts(request):
     )
 
 
+@login_required
+@require_GET
+def cabinet_reports(request):
+    """Hisobotlar grafigi (AJAX) — sahifa kutmasin."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    today = timezone.localdate()
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    start = today - timedelta(days=29)
+    try:
+        sales = _memo_get(
+            f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|2",
+            90.0,
+            lambda: tezpos_api.get_sales(
+                token,
+                server,
+                date_from=start.isoformat(),
+                date_to=today.isoformat(),
+                timeout=14,
+                max_pages=2,
+            )
+            or [],
+        )
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        return JsonResponse({"error": str(exc)}, status=502)
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse({"error": str(exc)}, status=504)
+
+    sales = [s for s in (sales or []) if isinstance(s, dict)]
+    charts = _build_charts_from_sales(sales, today)
+    d_pack = charts.get("d7") or {"labels": [], "totals": [], "counts": []}
+    # Hisobot UI: daily = soatlik bugun, weekly = 7 kun, monthly = 6 oy
+    daily = _chart_pack_for_dates(
+        [s for s in sales if _sale_day(s) == today], today, today
+    )
+    weekly = _chart_pack_for_dates(sales, today - timedelta(days=6), today)
+    monthly = charts.get("m6") or charts.get("m3") or d_pack
+
+    margin_ratio = Decimal("0.25")
+    try:
+        products_raw = _memo_get(
+            f"{memo_prefix}|products|2",
+            600.0,
+            lambda: tezpos_api.get_products(token, server, max_pages=2) or [],
+        )
+        products = [_map_product(p) for p in (products_raw or []) if isinstance(p, dict)]
+        if products:
+            margin_ratio = _catalog_margin_ratio(products) or Decimal("0.25")
+    except Exception:
+        pass
+
+    gross = float(sum((_dec(s.get("total")) for s in sales), Decimal("0")))
+    checks = len(sales)
+    profit = gross * float(margin_ratio)
+    today_sales = [s for s in sales if _sale_day(s) == today]
+    today_gross = float(sum((_dec(s.get("total")) for s in today_sales), Decimal("0")))
+    today_profit = today_gross * float(margin_ratio)
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "reports": {
+                "daily": daily,
+                "weekly": weekly,
+                "monthly": {
+                    "labels": monthly.get("labels") or [],
+                    "totals": monthly.get("totals") or [],
+                    "counts": monthly.get("counts") or [],
+                },
+            },
+            "summary": {
+                "checks": checks,
+                "gross": gross,
+                "cost": gross - profit,
+                "profit": profit,
+                "margin": (profit / gross * 100.0) if gross else 0.0,
+                "today_profit": today_profit,
+                "today_count": len(today_sales),
+                "today_gross": today_gross,
+            },
+        }
+    )
+
+
+@login_required
+@require_GET
+def cabinet_abc(request):
+    """ABC-XYZ (AJAX)."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    today = timezone.localdate()
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    start = today - timedelta(days=14)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_p = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|products|4",
+                    600.0,
+                    lambda: tezpos_api.get_products(token, server, max_pages=4) or [],
+                )
+            )
+            fut_s = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|2",
+                    90.0,
+                    lambda: tezpos_api.get_sales(
+                        token,
+                        server,
+                        date_from=start.isoformat(),
+                        date_to=today.isoformat(),
+                        timeout=14,
+                        max_pages=2,
+                    )
+                    or [],
+                )
+            )
+            products_raw = fut_p.result() or []
+            sales = fut_s.result() or []
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        return JsonResponse({"error": str(exc)}, status=502)
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse({"error": str(exc)}, status=504)
+
+    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    sales = [s for s in sales if isinstance(s, dict)]
+    item_rows = []
+    sale_ids = [str(s.get("id")) for s in sales if s.get("id")][:24]
+    details = _fetch_sale_details(
+        token,
+        server,
+        sale_ids,
+        limit=24,
+        per_sale_timeout=3.0,
+        overall_timeout=8.0,
+    )
+    for detail in details.values():
+        for item in detail.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("product_id") or item.get("product") or "")
+            if not pid or pid.startswith("{"):
+                name = (item.get("product_name") or item.get("name") or "").strip()
+                if not name:
+                    continue
+                pid = f"name:{name.casefold()}"
+            qty = _dec(item.get("quantity"))
+            unit_price = _dec(item.get("unit_price"))
+            item_rows.append(
+                {
+                    "product_id": pid,
+                    "quantity": qty,
+                    "unit_price": unit_price,
+                    "day": _sale_day(detail) or today,
+                }
+            )
+    abc_rows, abc_matrix, abc_total = _build_abc_xyz(products, item_rows, today)
+    rows_out = []
+    for row in abc_rows[:200]:
+        p = row.get("product")
+        rows_out.append(
+            {
+                "name": getattr(p, "name", None) or row.get("name") or "—",
+                "abc": row.get("abc"),
+                "xyz": row.get("xyz"),
+                "group": row.get("group"),
+                "revenue": float(row.get("revenue") or 0),
+                "share": float(row.get("share") or 0),
+                "stock": float(getattr(p, "stock_qty", 0) or 0),
+            }
+        )
+    return JsonResponse(
+        {
+            "ok": True,
+            "rows": rows_out,
+            "matrix": abc_matrix,
+            "total": float(abc_total or 0),
+        }
+    )
+
+
 def _parse_sale_date(raw):
     if not raw:
         return timezone.localdate()
@@ -2281,6 +2472,8 @@ def cabinet_view(request):
         "signals",
         "sales",
         "shifts",
+        "reports",
+        "abc",
     }
     if section in FAST_SHELL and request.method != "POST":
         ctx = _cabinet_shell_context(
