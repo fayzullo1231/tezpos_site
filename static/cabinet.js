@@ -27,6 +27,47 @@
   window.tezposCacheGet = cacheGet;
   window.tezposCacheSet = cacheSet;
 
+  const showApiBanner = (msg, ok = false) => {
+    const el = document.getElementById("cabinet-api-banner");
+    if (!el) return;
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.classList.toggle("is-ok", Boolean(ok));
+    el.textContent = msg;
+  };
+  window.tezposShowApiBanner = showApiBanner;
+
+  // API ulanishini tekshirish — 0 lar o‘rniga aniq xabar
+  if (data.apiStatusUrl) {
+    fetch(data.apiStatusUrl, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then(async (r) => {
+        const json = await r.json().catch(() => ({}));
+        if (r.status === 401 || json.error === "auth") {
+          showApiBanner("Sessiya tugagan. Qayta kiring.");
+          return;
+        }
+        if (!json.ok) {
+          showApiBanner(
+            `TezPOS API ulanmadi (${json.api || "noma’lum"}). ` +
+              (json.error || "Backend (port 8000) o‘chiq yoki sekin.") +
+              " Contabo da backendni yoqing."
+          );
+          return;
+        }
+        showApiBanner("", true);
+      })
+      .catch(() => {
+        showApiBanner("TezPOS API tekshiruvi muvaffaqiyatsiz. Backend ishlayotganini tekshiring.");
+      });
+  }
+
   let catalogInflight = null;
   let warmStarted = false;
 
@@ -58,8 +99,18 @@
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     })
-      .then((r) => r.json())
-      .then((json) => applyCatalogPayload(json))
+      .then(async (r) => {
+        const json = await r.json().catch(() => ({}));
+        if (!r.ok || json.error) {
+          if (typeof window.tezposShowApiBanner === "function") {
+            window.tezposShowApiBanner(
+              `Katalog yuklanmadi: ${json.error || r.status}. TezPOS API (13.140.146.78:8000) ni tekshiring.`
+            );
+          }
+          throw new Error(json.error || "catalog fail");
+        }
+        return applyCatalogPayload(json);
+      })
       .catch(() => data)
       .finally(() => {
         catalogInflight = null;

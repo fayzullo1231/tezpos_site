@@ -141,6 +141,59 @@ def _products_payload_list(products: list) -> list[dict]:
 
 @login_required
 @require_GET
+def cabinet_api_status(request):
+    """Kabinet: TezPOS API ulanishini tekshirish (diagnostika)."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"ok": False, "error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    base = tezpos_api.normalize_api_base()
+    t0 = time.time()
+    try:
+        # Engil so‘rov — price-lists yoki products 1 page
+        tezpos_api.api_request(
+            "GET",
+            "/api/catalog/price-lists/",
+            token=token,
+            server_name=server,
+            timeout=8,
+        )
+        ms = int((time.time() - t0) * 1000)
+        return JsonResponse(
+            {
+                "ok": True,
+                "api": base,
+                "server": server,
+                "ms": ms,
+            }
+        )
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"ok": False, "error": "auth", "api": base}, status=401)
+        return JsonResponse(
+            {
+                "ok": False,
+                "api": base,
+                "error": str(exc),
+                "ms": int((time.time() - t0) * 1000),
+            },
+            status=502,
+        )
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse(
+            {
+                "ok": False,
+                "api": base,
+                "error": f"Timeout / ulanish: {exc}",
+                "ms": int((time.time() - t0) * 1000),
+            },
+            status=504,
+        )
+
+
+@login_required
+@require_GET
 def cabinet_catalog(request):
     """Mahsulotlar + narxlar ro‘yxati (AJAX) — SSR o‘rniga, kesh bilan."""
     if not session_has_tezpos(request):

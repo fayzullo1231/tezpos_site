@@ -261,6 +261,7 @@
     <div class="cabinet-content" id="cabinet-content">
 
     {% if section == 'overview' %}
+    <div class="cabinet-api-banner" id="cabinet-api-banner" hidden role="alert"></div>
     <section class="cabinet-kpi" id="overview-kpi">
       <article>
         <p id="kpi-period-label">Tanlangan davr</p>
@@ -1270,6 +1271,7 @@
     priceListStats: {{ price_list_stats_json|default:"{}"|safe }},
     priceLists: {{ price_lists_json|default:"[]"|safe }},
     catalogUrl: "{% url 'accounts:cabinet_catalog' %}",
+    apiStatusUrl: "{% url 'accounts:cabinet_api_status' %}",
     warmUrl: "{% url 'accounts:cabinet_warm' %}",
     daySalesUrl: "{% url 'accounts:cabinet_day_sales' %}",
     shiftsUrl: "{% url 'accounts:cabinet_shifts' %}",
@@ -1354,5 +1356,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=range-seed-1" defer></script>
+<script src="/static/cabinet.js?v=api-banner-1" defer></script>
 {% endblock %}

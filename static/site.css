@@ -2090,6 +2090,22 @@ html.cabinet-ready .cabinet-content {
 }
 .cabinet-card-head span { color: #8b97ab; font-size: .8rem; font-weight: 600; }
 .cabinet-hint { margin: 0 0 1rem; color: #5b6b85; font-size: .9rem; line-height: 1.45; }
+.cabinet-api-banner {
+  margin: 0 0 1rem;
+  padding: .85rem 1rem;
+  border-radius: 12px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+  font-size: .92rem;
+  line-height: 1.45;
+}
+.cabinet-api-banner[hidden] { display: none !important; }
+.cabinet-api-banner.is-ok {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #065f46;
+}
 .cabinet-empty { color: #8b97ab; margin: .5rem 0; }
 .cabinet-table-wrap {
   overflow-x: auto;

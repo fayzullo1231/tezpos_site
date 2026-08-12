@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     cabinet_abc,
+    cabinet_api_status,
     cabinet_bot_chats,
     cabinet_bot_settings_save,
     cabinet_catalog,
@@ -29,6 +30,7 @@ urlpatterns = [
     path("download/", download_installer, name="download_installer"),
     path("cabinet/range-stats/", cabinet_range_stats, name="cabinet_range_stats"),
     path("cabinet/top-stats/", cabinet_top_stats, name="cabinet_top_stats"),
+    path("cabinet/api-status/", cabinet_api_status, name="cabinet_api_status"),
     path("cabinet/catalog/", cabinet_catalog, name="cabinet_catalog"),
     path("cabinet/warm/", cabinet_warm, name="cabinet_warm"),
     path("cabinet/day-sales/", cabinet_day_sales, name="cabinet_day_sales"),
