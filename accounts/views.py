@@ -3233,19 +3233,23 @@ def cabinet_range_stats(request):
 
     span = (end - start).days + 1
     fast = (request.GET.get("fast") or "").strip() in ("1", "true", "yes")
-    # Contabo WAN: to‘liq detail emas — kichik namuna + scale (Sotuv/Optom tez)
-    if fast or span <= 1:
-        max_pages, product_pages, sales_timeout = 1, 4, 10
-        detail_cap, detail_each, detail_budget = 10, 3.5, 7.0
-    elif span <= 7:
-        max_pages, product_pages, sales_timeout = 1, 4, 12
-        detail_cap, detail_each, detail_budget = 14, 4.0, 9.0
+    # Contabo: bir kunlik — day-sales memo; detail/namuna ixtiyoriy (timeout bo‘lmasin)
+    single_day = span <= 1
+    if fast and single_day:
+        max_pages, product_pages, sales_timeout = 1, 0, 12
+        detail_cap, detail_each, detail_budget = 0, 0.0, 0.0
+    elif single_day:
+        max_pages, product_pages, sales_timeout = 1, 2, 14
+        detail_cap, detail_each, detail_budget = 8, 3.0, 5.0
+    elif fast or span <= 7:
+        max_pages, product_pages, sales_timeout = 1, 2, 12
+        detail_cap, detail_each, detail_budget = 8, 3.0, 6.0
     elif span <= 31:
-        max_pages, product_pages, sales_timeout = 2, 4, 16
-        detail_cap, detail_each, detail_budget = 18, 4.0, 11.0
+        max_pages, product_pages, sales_timeout = 2, 2, 16
+        detail_cap, detail_each, detail_budget = 12, 3.5, 8.0
     else:
-        max_pages, product_pages, sales_timeout = 2, 3, 18
-        detail_cap, detail_each, detail_budget = 16, 4.0, 10.0
+        max_pages, product_pages, sales_timeout = 2, 2, 18
+        detail_cap, detail_each, detail_budget = 12, 3.5, 8.0
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     sales: list = []
@@ -3253,31 +3257,43 @@ def cabinet_range_stats(request):
     price_lists: list = []
     api_err = ""
 
+    def _load_sales():
+        if single_day:
+            day = start.isoformat()
+            return _memo_get(
+                f"{memo_prefix}|day|{day}",
+                90.0,
+                lambda: tezpos_api.get_sales_for_day(token, server, day) or [],
+            )
+        return _memo_get(
+            f"{memo_prefix}|sales|{start}|{end}|{max_pages}",
+            60.0,
+            lambda: tezpos_api.get_sales(
+                token,
+                server,
+                date_from=start.isoformat(),
+                date_to=end.isoformat(),
+                timeout=sales_timeout,
+                max_pages=max_pages,
+            )
+            or [],
+        )
+
     try:
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            fut_s = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|sales|{start}|{end}|{max_pages}",
-                    60.0,
-                    lambda: tezpos_api.get_sales(
-                        token,
-                        server,
-                        date_from=start.isoformat(),
-                        date_to=end.isoformat(),
-                        timeout=sales_timeout,
-                        max_pages=max_pages,
-                    ),
+        workers = 1 + (1 if product_pages > 0 else 0) + 1
+        with ThreadPoolExecutor(max_workers=max(2, workers)) as pool:
+            fut_s = pool.submit(_load_sales)
+            fut_p = None
+            if product_pages > 0:
+                fut_p = pool.submit(
+                    lambda: _memo_get(
+                        f"{memo_prefix}|products|{product_pages}",
+                        600.0,
+                        lambda: tezpos_api.get_products(
+                            token, server, max_pages=product_pages
+                        ),
+                    )
                 )
-            )
-            fut_p = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|products|{product_pages}",
-                    600.0,
-                    lambda: tezpos_api.get_products(
-                        token, server, max_pages=product_pages
-                    ),
-                )
-            )
             fut_pl = pool.submit(
                 lambda: _memo_get(
                     f"{memo_prefix}|price_lists",
@@ -3286,8 +3302,11 @@ def cabinet_range_stats(request):
                 )
             )
             sales = fut_s.result() or []
-            products_raw = fut_p.result() or []
-            price_lists = fut_pl.result() or []
+            products_raw = fut_p.result() if fut_p is not None else []
+            try:
+                price_lists = fut_pl.result() or []
+            except Exception:
+                price_lists = []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -3296,10 +3315,20 @@ def cabinet_range_stats(request):
     except (TimeoutError, OSError) as exc:
         api_err = str(exc)
 
+    # Mahsulot memo bo‘lsa — marja aniqroq (kutmasdan)
+    if not products_raw:
+        hit = _TEZPOS_MEMO.get(f"{memo_prefix}|products|4") or _TEZPOS_MEMO.get(
+            f"{memo_prefix}|products|2"
+        )
+        if hit:
+            products_raw = hit[1] if isinstance(hit[1], list) else []
+
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     products_by_id = {str(p.id): p for p in products}
     products_by_name = _products_by_name(products)
     margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0.25")
+    if margin_ratio <= 0:
+        margin_ratio = Decimal("0.25")
     price_lists = [
         pl for pl in price_lists if isinstance(pl, dict) and pl.get("is_active", True)
     ]
@@ -3318,55 +3347,51 @@ def cabinet_range_stats(request):
     chart = _chart_pack_for_dates(sales, start, end)
     checks = len(sales)
     gross = float(sum((_dec(s.get("total")) for s in sales), Decimal("0")))
-    profit = gross * float(margin_ratio) if margin_ratio else gross * 0.25
+    profit = gross * float(margin_ratio)
     margin = (profit / gross * 100.0) if gross > 0 else 0.0
 
     lists: list = []
     details_used = 0
     if gross > 0:
-        # Allaqachon items bor cheklar (list endpoint nested bersa)
-        embedded = [
-            s for s in sales if isinstance(s.get("items"), list) and s.get("items")
-        ]
-        details: dict[str, dict] = {
-            str(s.get("id")): s for s in embedded if s.get("id")
-        }
-        need_ids = [
-            str(s.get("id"))
-            for s in sales
-            if s.get("id") and str(s.get("id")) not in details
-        ]
-        # Namuna: oxirgi cheklar (eng yangi — allaqachon sort desc)
-        sample_n = min(detail_cap, len(need_ids))
-        if sample_n > 0:
-            fetched = _fetch_sale_details(
-                token,
-                server,
-                need_ids[:sample_n],
-                limit=sample_n,
-                per_sale_timeout=detail_each,
-                overall_timeout=detail_budget,
-            )
-            details.update(fetched)
-        details_used = len(details)
-        if details:
-            lists = _aggregate_price_list_stats(
-                list(details.values()),
-                products_by_id,
-                products_by_name,
-                price_lists,
-            )
-            lists = _scale_price_list_stats(lists, gross, checks)
-            jami = next((r for r in lists if r.get("is_total")), None)
-            if jami and float(jami.get("revenue") or 0) > 0:
-                profit = float(jami.get("profit") or profit)
-                margin = float(jami.get("margin") or margin)
-        else:
-            lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
-            jami = lists[-1] if lists else None
-            if jami:
-                profit = float(jami.get("profit") or profit)
-                margin = float(jami.get("margin") or margin)
+        # Avval tez Jami/Sotuv — UI bo‘sh qolmasin
+        lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
+        if detail_cap > 0:
+            embedded = [
+                s for s in sales if isinstance(s.get("items"), list) and s.get("items")
+            ]
+            details: dict[str, dict] = {
+                str(s.get("id")): s for s in embedded if s.get("id")
+            }
+            need_ids = [
+                str(s.get("id"))
+                for s in sales
+                if s.get("id") and str(s.get("id")) not in details
+            ]
+            sample_n = min(detail_cap, len(need_ids))
+            if sample_n > 0:
+                fetched = _fetch_sale_details(
+                    token,
+                    server,
+                    need_ids[:sample_n],
+                    limit=sample_n,
+                    per_sale_timeout=detail_each,
+                    overall_timeout=detail_budget,
+                )
+                details.update(fetched)
+            details_used = len(details)
+            if details:
+                refined = _aggregate_price_list_stats(
+                    list(details.values()),
+                    products_by_id,
+                    products_by_name,
+                    price_lists,
+                )
+                if refined:
+                    lists = _scale_price_list_stats(refined, gross, checks)
+                    jami = next((r for r in lists if r.get("is_total")), None)
+                    if jami and float(jami.get("revenue") or 0) > 0:
+                        profit = float(jami.get("profit") or profit)
+                        margin = float(jami.get("margin") or margin)
 
     payload = {
         "range": range_key,
@@ -3381,7 +3406,7 @@ def cabinet_range_stats(request):
         },
         "chart": chart,
         "priceLists": lists,
-        "partial": details_used < max(1, min(checks, detail_cap)),
+        "partial": bool(detail_cap > 0 and details_used < max(1, min(checks, detail_cap))),
         "fast": bool(fast),
     }
     if api_err:

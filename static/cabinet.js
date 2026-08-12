@@ -186,6 +186,7 @@
             if (typeof window.tezposPaintShellKpis === "function") {
               window.tezposPaintShellKpis();
             }
+            document.dispatchEvent(new CustomEvent("tezpos:daySales", { detail: json }));
           })
           .catch(() => {});
       }
@@ -660,20 +661,85 @@
     refreshOverviewPriceUi();
   };
 
+  const seedRangeFromDaySales = () => {
+    const todayIso = toIso(todayDate);
+    if (appliedFrom !== todayIso || appliedTo !== todayIso) return false;
+    const dsAll = (window.tezposCacheGet && window.tezposCacheGet("daySales")) || {};
+    const pack = data._daySalesPack || dsAll[todayIso];
+    if (!pack) return false;
+    const count = Number(
+      pack.count != null
+        ? pack.count
+        : Array.isArray(pack.sales)
+          ? pack.sales.length
+          : 0
+    );
+    const gross = Number(pack.gross || 0);
+    if (!count && !gross) return false;
+    const profit = Number(pack.profit != null ? pack.profit : gross * 0.25);
+    const margin = gross > 0 ? (profit / gross) * 100 : 0;
+    const key = rangeCacheKey(todayIso, todayIso);
+    // Bo‘sh/eskirgan keshni yozib yubormasin
+    const existing = (data.salesStats || {})[key];
+    if (existing?.summary && Number(existing.summary.checks || 0) > 0) return false;
+    applyRangePayload(key, {
+      summary: { checks: count, gross, profit, margin },
+      chart: {
+        labels: ["Bugun"],
+        totals: [gross],
+        counts: [count],
+      },
+      priceLists: [
+        {
+          id: "__selling__",
+          name: "Sotuv",
+          checks: count,
+          revenue: gross,
+          cost: Math.max(0, gross - profit),
+          profit,
+          margin,
+          markup: margin,
+          share: 100,
+          is_total: false,
+        },
+        {
+          id: "__all__",
+          name: "Jami",
+          checks: count,
+          revenue: gross,
+          cost: Math.max(0, gross - profit),
+          profit,
+          margin,
+          markup: margin,
+          share: 100,
+          is_total: true,
+        },
+      ],
+      partial: true,
+      fast: true,
+    });
+    return true;
+  };
+
   const loadRangeStats = async (fromIso, toIsoVal, { force = false, fast = false } = {}) => {
     const key = rangeCacheKey(fromIso, toIsoVal);
     const pack = (data.salesStats || {})[key] || {};
+    const hasRealSummary =
+      pack.summary &&
+      (Number(pack.summary.checks || 0) > 0 || Number(pack.summary.gross || 0) > 0);
     const hasUiCache =
-      (priceListCache[key] && priceListCache[key].length) ||
-      (pack.labels && pack.labels.length) ||
-      pack.summary;
+      (priceListCache[key] &&
+        priceListCache[key].some((r) => Number(r.revenue || 0) > 0)) ||
+      (pack.labels && pack.labels.length && (pack.totals || []).some((n) => Number(n) > 0)) ||
+      hasRealSummary;
 
-    // Kesh bo‘lsa — darhol chizish, loading yo‘q
     if (hasUiCache) {
       paintCachedRange(key);
       if (!force && !fast && pack.partial !== true && priceListCache[key] && pack.labels) {
         return;
       }
+    } else {
+      seedRangeFromDaySales();
     }
 
     const url = data.rangeStatsUrl;
@@ -683,8 +749,7 @@
       return;
     }
     const reqId = ++priceListReq;
-    // Skeleton faqat kesh umuman bo‘lmasa
-    if (!hasUiCache) {
+    if (!hasUiCache && !((data.salesStats || {})[key] || {}).summary) {
       if (priceListEl && !(priceListCache[key] || []).length) {
         priceListEl.innerHTML = skelHtml("stats", 3);
       }
@@ -702,7 +767,7 @@
       const qs = new URLSearchParams({ from: fromIso, to: toIsoVal });
       if (fast) qs.set("fast", "1");
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 16000 : 28000) : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 22000 : 35000) : null;
       const res = await fetch(`${url}?${qs}`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
@@ -713,6 +778,10 @@
       const payload = await res.json();
       if (reqId !== priceListReq && !fast) return;
       if (!fast && priceListReq !== reqId) return;
+      // Bo‘sh javobni eski yaxshi ma’lumot ustiga yozmaslik
+      const inChecks = Number(payload?.summary?.checks || 0);
+      const inGross = Number(payload?.summary?.gross || 0);
+      if (!inChecks && !inGross && hasRealSummary) return;
       currentRangeKey = key;
       applyRangePayload(key, payload);
       if (payload.error && salesRangeSummary && !hasUiCache) {
@@ -721,20 +790,23 @@
           "<span style=\"color:#c2410c\">API sekin yoki ulanmadi. Qayta urinib ko‘ring.</span>";
         salesRangeSummary.appendChild(tip);
       }
-      // Fast javobda Sotuv/Optom bo‘lmasa — fonida to‘liqroq so‘rov
       if (
         fast &&
         Array.isArray(payload.priceLists) &&
-        !payload.priceLists.some((r) => r && !r.is_total && Number(r.revenue) > 0)
+        !payload.priceLists.some((r) => r && !r.is_total && Number(r.revenue) > 0) &&
+        (inChecks > 0 || inGross > 0)
       ) {
         loadRangeStats(fromIso, toIsoVal, { force: true, fast: false });
       }
     } catch (_err) {
       if (reqId !== priceListReq) return;
+      seedRangeFromDaySales();
       currentPriceLists = priceListCache[key] || [];
       refreshOverviewPriceUi();
-      if (!hasUiCache && salesRangeSummary && !((data.salesStats || {})[key] || {}).summary) {
-        salesRangeSummary.innerHTML = `<li>Davr: <strong>${formatRangeLabel(fromIso, toIsoVal)}</strong></li><li>Ma’lumot yuklanmadi (API timeout). Qayta urinib ko‘ring.</li>`;
+      if (!hasUiCache && !((data.salesStats || {})[key] || {}).summary) {
+        if (salesRangeSummary) {
+          salesRangeSummary.innerHTML = `<li>Davr: <strong>${formatRangeLabel(fromIso, toIsoVal)}</strong></li><li>Ma’lumot yuklanmadi (API timeout). Qayta urinib ko‘ring.</li>`;
+        }
       }
     }
   };
@@ -1036,6 +1108,10 @@
     loadRangeStats(appliedFrom, appliedTo, { force: false, fast: true });
   }
   if (typeof paintShellKpis === "function") paintShellKpis();
+  seedRangeFromDaySales();
+  document.addEventListener("tezpos:daySales", () => {
+    seedRangeFromDaySales();
+  });
 
   const productTileHtml = (item, color, rank, opts = {}) => {
     const topsMode = Boolean(opts.tops);
