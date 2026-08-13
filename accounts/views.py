@@ -298,9 +298,9 @@ def cabinet_catalog(request):
     if page_raw.isdigit():
         page_n = max(1, int(page_raw))
         try:
-            page_size = max(50, min(int(request.GET.get("page_size") or 200), 200))
+            page_size = max(20, min(int(request.GET.get("page_size") or 100), 100))
         except (TypeError, ValueError):
-            page_size = 200
+            page_size = 100
         skip_pl = (request.GET.get("skip_pl") or "").strip() in ("1", "true", "yes")
         try:
             pack = tezpos_api.get_products_page(
@@ -341,9 +341,15 @@ def cabinet_catalog(request):
                 ]
             except Exception:
                 price_lists_payload = []
-        full_page = len(products) >= int(pack.get("page_size") or page_size)
-        has_more = bool(pack.get("has_more")) or full_page
+        actual = len(products)
+        total = int(pack.get("total") or 0)
+        if page_n == 1 and total and total <= actual and actual >= 50:
+            total = 0
+        loaded = (page_n - 1) * page_size + actual
+        has_more = bool(pack.get("has_more")) or actual >= 100 or (total > 0 and loaded < total)
         if not products:
+            has_more = False
+        elif total > 0 and loaded >= total:
             has_more = False
         return JsonResponse(
             {
@@ -351,10 +357,10 @@ def cabinet_catalog(request):
                 "products": _products_payload_list(products),
                 "priceLists": price_lists_payload,
                 "page": page_n,
-                "page_size": int(pack.get("page_size") or page_size),
-                "total": int(pack.get("total") or 0),
+                "page_size": actual if actual else page_size,
+                "total": total,
                 "has_more": has_more,
-                "count": len(products),
+                "count": actual,
                 "complete": not has_more,
                 "partial": has_more,
                 "api": tezpos_api.normalize_api_base(),

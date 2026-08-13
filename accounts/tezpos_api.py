@@ -477,13 +477,14 @@ def get_products_page(
     server_name: str,
     *,
     page: int = 1,
-    page_size: int = 200,
+    page_size: int = 100,
     timeout: float = 45,
     retries: int = 3,
 ) -> dict:
     """Bitta katalog sahifasi — timeout bo‘lsa qayta urinib, to‘liq ro‘yxat yig‘iladi."""
     page = max(1, int(page or 1))
-    size = max(50, min(int(page_size or 200), 200))
+    size = max(20, min(int(page_size or 100), 100))
+    offset = (page - 1) * size
 
     def _rows(payload) -> list:
         if isinstance(payload, list):
@@ -506,7 +507,12 @@ def get_products_page(
         except (TypeError, ValueError):
             return 0
 
-    query = {"page": str(page), "page_size": str(size)}
+    query = {
+        "page": str(page),
+        "page_size": str(size),
+        "limit": str(size),
+        "offset": str(offset),
+    }
     data = None
     last_err: TezPosApiError | None = None
     for attempt in range(max(1, int(retries or 1))):
@@ -533,16 +539,22 @@ def get_products_page(
     rows = _rows(data)
     total = _count(data)
     nxt = data.get("next") if isinstance(data, dict) else None
-    full_page = len(rows) >= size
-    has_more = bool(nxt) or (total > 0 and page * size < total) or full_page
-    if not rows:
+    actual = len(rows)
+    # TezPOS ko‘pincha max 100 qaytaradi; count=100 bo‘lsa ham davom etamiz.
+    if page == 1 and total and total <= actual and actual >= 50:
+        total = 0
+    loaded = (page - 1) * size + actual
+    has_more = bool(nxt) or (total > 0 and loaded < total) or actual >= size
+    if actual == 0:
+        has_more = False
+    elif total > 0 and loaded >= total:
         has_more = False
     return {
         "rows": rows,
         "total": total,
         "has_more": has_more,
         "page": page,
-        "page_size": size,
+        "page_size": actual if actual else size,
     }
 
 

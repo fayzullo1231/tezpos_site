@@ -95,15 +95,17 @@
       }
       if (json.priceLists) data.priceLists = json.priceLists;
       if (json.nearMin) data.nearMin = json.nearMin;
-      data.catalogCount = Number(json.total || json.count || data.products.length) || data.products.length;
-      data.catalogComplete = Boolean(json.complete);
+      const reportedTotal = Number(json.total || 0);
+      if (reportedTotal > (data.catalogCount || 0)) data.catalogCount = reportedTotal;
+      else data.catalogCount = Math.max(Number(data.catalogCount || 0), data.products.length);
+      if ("complete" in json) data.catalogComplete = Boolean(json.complete);
       window.TEZPOS_CHARTS = data;
       cacheSet("catalog", {
         products: data.products,
         priceLists: data.priceLists,
         nearMin: data.nearMin,
         ts: Date.now(),
-        complete: data.catalogComplete,
+        complete: Boolean(data.catalogComplete) && data.products.length >= 500,
         total: data.catalogCount,
       });
     }
@@ -117,7 +119,8 @@
   };
 
   const incomingOk = (json) => Array.isArray(json?.products);
-  const CATALOG_PAGE_SIZE = 200;
+  const CATALOG_PAGE_SIZE = 100;
+  const CATALOG_MAX_PAGES = 40;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -125,6 +128,7 @@
     const params = new URLSearchParams({
       page: String(page),
       page_size: String(CATALOG_PAGE_SIZE),
+      offset: String((page - 1) * CATALOG_PAGE_SIZE),
     });
     if (data.section === "labels") params.set("skip_pl", "1");
     const url = `${data.catalogUrl}?${params}`;
@@ -160,16 +164,26 @@
       try {
         let page = 1;
         let total = 0;
-        while (page <= 80) {
+        let chunkSize = CATALOG_PAGE_SIZE;
+        while (page <= CATALOG_MAX_PAGES) {
           const json = await fetchCatalogPage(page);
           const before = (data.products || []).length;
           applyCatalogPayload(json, { emit: true, merge: true });
           const got = (json.products || []).length;
-          const pageSize = Number(json.page_size || CATALOG_PAGE_SIZE);
-          total = Number(json.total || total) || 0;
+          if (page === 1 && got > 0) chunkSize = got;
+          const reported = Number(json.total || 0);
+          if (reported > total && !(page === 1 && reported <= got && got >= 50)) {
+            total = reported;
+          }
           const after = (data.products || []).length;
-          const fullPage = got >= pageSize;
-          const more = json.has_more === true || fullPage;
+          const fullPage = got >= chunkSize && got >= 50;
+          if (!got) {
+            applyCatalogPayload(
+              { products: data.products, complete: true, total: total || after, count: after },
+              { emit: true, merge: false }
+            );
+            break;
+          }
           if (total && after >= total) {
             applyCatalogPayload(
               { products: data.products, complete: true, total, count: after },
@@ -177,7 +191,14 @@
             );
             break;
           }
-          if (!got || more === false || !fullPage || (page > 1 && after === before)) {
+          if (page > 1 && after === before) {
+            applyCatalogPayload(
+              { products: data.products, complete: true, total: total || after, count: after },
+              { emit: true, merge: false }
+            );
+            break;
+          }
+          if (!fullPage) {
             applyCatalogPayload(
               { products: data.products, complete: true, total: total || after, count: after },
               { emit: true, merge: false }
@@ -186,6 +207,13 @@
           }
           if (lite) return data;
           page += 1;
+        }
+        const have = (data.products || []).length;
+        if (have && !data.catalogComplete) {
+          applyCatalogPayload(
+            { products: data.products, complete: true, total: total || have, count: have },
+            { emit: true, merge: false }
+          );
         }
       } catch (err) {
         if (err && err.message === "auth") return data;
@@ -2591,9 +2619,8 @@
         .join("");
       const countEl = document.getElementById("ld-products-count");
       if (countEl) {
-        const total = Number(data.catalogCount || all.length);
         if (q) countEl.textContent = `${list.length} / ${all.length} ta`;
-        else if (!data.catalogComplete && total > all.length) countEl.textContent = `${all.length} / ${total} ta`;
+        else if (!data.catalogComplete) countEl.textContent = `${all.length} ta yuklanmoqda…`;
         else countEl.textContent = `${all.length} ta`;
       }
     };
