@@ -2620,12 +2620,14 @@
         alert("Kamida bitta tovarni belgilang.");
         return;
       }
-      const cols = Math.max(1, Number(document.getElementById("ld-print-cols")?.value || 1));
       const priceType = document.getElementById("ld-print-price-type")?.value || "selling";
-      const wMm = state.widthMm;
-      const hMm = state.heightMm;
-      const labels = checks.map((el) => buildLabelHtml(productFromEl(el), priceType)).join("");
-      const win = window.open("", "_blank", "width=920,height=800");
+      const wMm = Number(state.widthMm) || 38;
+      const hMm = Number(state.heightMm) || 58;
+      const orient = wMm <= hMm ? "portrait" : "landscape";
+      const labels = checks
+        .map((el) => `<section class="page">${buildLabelHtml(productFromEl(el), priceType)}</section>`)
+        .join("");
+      const win = window.open("", "_blank", "width=720,height=900");
       if (!win) {
         alert("Brauzer yangi oynani blokladi. Popup-ni ruxsat bering.");
         return;
@@ -2633,61 +2635,90 @@
       win.document.open();
       win.document.write("<!doctype html><html><head><meta charset='utf-8'><title>Narx yorliqlari</title>");
       win.document.write(`<style>
-          @page { size: ${wMm}mm ${hMm}mm; margin: 0; }
-          * { box-sizing: border-box; }
+          @page { size: ${wMm}mm ${hMm}mm ${orient}; margin: 0; }
+          * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           html, body { margin: 0; padding: 0; }
-          body { font-family: Arial, Helvetica, sans-serif; background: #f3f5f9; color: #000; }
+          body { font-family: Arial, Helvetica, sans-serif; background: #e8edf4; color: #000; }
           .bar {
-            position: sticky; top: 0; z-index: 10; display: flex; justify-content: flex-end; gap: 8px;
+            position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 8px;
             padding: 10px 14px; background: #fff; border-bottom: 1px solid #e2e8f2;
           }
+          .bar-hint { font-size: 12px; color: #475569; line-height: 1.35; }
+          .bar-hint strong { color: #0f172a; }
+          .bar-actions { display: flex; gap: 8px; }
           .bar button {
             width: 40px; height: 40px; border: 0; border-radius: 10px; cursor: pointer; color: #fff; font-size: 18px;
           }
           .btn-print { background: #2c86e0; }
           .btn-close { background: #94a3b8; }
-          .meta { padding: 10px 14px; color: #64748b; font-size: 13px; background: #fff; }
-          .sheet {
-            padding: 12px; display: grid;
-            grid-template-columns: repeat(${cols}, ${wMm}mm);
-            gap: 2mm; justify-content: start; align-content: start; align-items: start;
-            background: #fff; margin: 12px; border-radius: 12px;
+          .roll {
+            display: flex; flex-direction: column; align-items: center; gap: 12px;
+            padding: 16px 12px 28px;
+          }
+          .page {
+            width: ${wMm}mm;
+            height: ${hMm}mm;
+            background: #fff;
+            overflow: hidden;
+            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
           }
           .label {
-            width: ${wMm}mm; height: ${hMm}mm;
-            margin: 0; overflow: hidden;
-            break-inside: avoid; page-break-inside: avoid;
+            width: ${wMm}mm !important;
+            height: ${hMm}mm !important;
+            margin: 0;
+            overflow: hidden;
+            border: 0 !important;
           }
           @media print {
-            @page { size: ${wMm}mm ${hMm}mm; margin: 0; }
-            html, body { width: ${wMm}mm; background: #fff !important; }
-            .bar, .meta { display: none !important; }
-            .sheet {
-              display: block; margin: 0 !important; padding: 0 !important;
-              border-radius: 0; background: #fff; gap: 0;
+            @page { size: ${wMm}mm ${hMm}mm ${orient}; margin: 0 !important; }
+            html, body {
+              width: ${wMm}mm !important;
+              min-height: ${hMm}mm !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              background: #fff !important;
             }
-            .label {
+            .bar { display: none !important; }
+            .roll {
+              display: block !important;
+              padding: 0 !important;
+              margin: 0 !important;
+              gap: 0 !important;
+            }
+            .page {
               width: ${wMm}mm !important;
               height: ${hMm}mm !important;
               margin: 0 !important;
-              border: 0 !important;
+              padding: 0 !important;
+              box-shadow: none !important;
+              overflow: hidden;
               page-break-after: always;
               break-after: page;
               page-break-inside: avoid;
               break-inside: avoid;
             }
-            .label:last-child {
+            .page:last-child {
               page-break-after: auto;
               break-after: auto;
+            }
+            .label {
+              width: ${wMm}mm !important;
+              height: ${hMm}mm !important;
+              border: 0 !important;
             }
           }
         </style></head><body>
           <div class="bar">
-            <button type="button" class="btn-print" onclick="window.print()" title="Chop etish">&#128424;</button>
-            <button type="button" class="btn-close" onclick="window.close()" title="Yopish">&#10005;</button>
+            <div class="bar-hint">
+              <strong>Qog‘oz: ${wMm}×${hMm} mm</strong><br>
+              Printerda shu o‘lchamni tanlang · Chekka: Yo‘q · Masshtab: 100%
+            </div>
+            <div class="bar-actions">
+              <button type="button" class="btn-print" onclick="window.print()" title="Chop etish">&#128424;</button>
+              <button type="button" class="btn-close" onclick="window.close()" title="Yopish">&#10005;</button>
+            </div>
           </div>
-          <div class="meta">${escHtml(state.name)} · ${checks.length} ta yorliq · ${wMm}×${hMm} mm</div>
-          <div class="sheet">${labels}</div>
+          <div class="roll">${labels}</div>
         </body></html>`);
       win.document.close();
     });
