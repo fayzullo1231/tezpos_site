@@ -208,42 +208,56 @@ def cabinet_api_status(request):
 @login_required
 @require_GET
 def cabinet_catalog(request):
-    """Mahsulotlar + narxlar ro‘yxati (AJAX) — SSR o‘rniga, kesh bilan."""
+    """Mahsulotlar + narxlar ro‘yxati (AJAX) — barcha tovarlar (1483+)."""
     if not session_has_tezpos(request):
         return JsonResponse({"error": "auth"}, status=401)
     token = request.session[SESSION_TOKEN]
     server = request.session[SESSION_SERVER]
     memo_prefix = f"{server}|{(token or '')[-12:]}"
-    products_key = f"{memo_prefix}|products|4"
+    full_key = f"{memo_prefix}|products|all"
+    lite_key = f"{memo_prefix}|products|lite"
     lite = (request.GET.get("lite") or "").strip() in ("1", "true", "yes")
     api_err = ""
     raw_products: list = []
     raw_pl: list = []
+    complete = False
 
-    # Tez javob: oldingi muvaffaqiyatli kesh
-    cached_products = _memo_peek(products_key)
+    cached_full = _memo_peek(full_key)
+    cached_lite = _memo_peek(lite_key)
     cached_pl = _memo_peek(f"{memo_prefix}|price_lists")
-    if lite and isinstance(cached_products, list) and cached_products:
-        raw_products = cached_products
-        raw_pl = cached_pl if isinstance(cached_pl, list) else []
-    else:
 
-        def _load_products():
-            return tezpos_api.get_products(
-                token,
-                server,
-                max_pages=1 if lite else 8,
-                timeout=14 if lite else 20,
-                page_size=50 if lite else 80,
-            )
+    def _load_full():
+        return tezpos_api.get_products(
+            token, server, max_pages=80, timeout=12, page_size=100
+        )
 
-        try:
+    def _load_lite():
+        return tezpos_api.get_products(
+            token, server, max_pages=1, timeout=12, page_size=100
+        )
+
+    try:
+        if (not lite) and isinstance(cached_full, list) and len(cached_full) >= 200:
+            raw_products = cached_full
+            complete = True
+
+            def _bg_full() -> None:
+                try:
+                    _memo_get(full_key, 180.0, _load_full, skip_empty=True)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_bg_full, daemon=True, name="tezpos-catalog-full").start()
+            try:
+                raw_pl = _memo_get(
+                    f"{memo_prefix}|price_lists",
+                    600.0,
+                    lambda: tezpos_api.get_price_lists(token, server) or [],
+                ) or []
+            except Exception:
+                raw_pl = cached_pl or []
+        else:
             with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_p = pool.submit(
-                    lambda: _memo_get(
-                        products_key, 600.0, _load_products, skip_empty=True
-                    )
-                )
                 fut_pl = pool.submit(
                     lambda: _memo_get(
                         f"{memo_prefix}|price_lists",
@@ -251,27 +265,41 @@ def cabinet_catalog(request):
                         lambda: tezpos_api.get_price_lists(token, server) or [],
                     )
                 )
-                wait_p = 18.0 if lite else 45.0
-                try:
-                    raw_products = fut_p.result(timeout=wait_p) or []
-                except FuturesTimeoutError:
-                    api_err = "Katalog so‘rovi vaqt limiti"
-                    raw_products = cached_products or []
+                if lite and isinstance(cached_full, list) and len(cached_full) >= 200:
+                    raw_products = cached_full
+                    complete = True
+                    fut_p = None
+                elif lite:
+                    fut_p = pool.submit(
+                        lambda: _memo_get(lite_key, 120.0, _load_lite, skip_empty=True)
+                    )
+                else:
+                    fut_p = pool.submit(
+                        lambda: _memo_get(full_key, 180.0, _load_full, skip_empty=True)
+                    )
+
+                wait_p = 16.0 if lite else 75.0
+                if fut_p is not None:
+                    try:
+                        raw_products = fut_p.result(timeout=wait_p) or []
+                    except FuturesTimeoutError:
+                        api_err = "Katalog so‘rovi vaqt limiti"
+                        raw_products = cached_full or cached_lite or []
                 try:
                     raw_pl = fut_pl.result(timeout=8) or []
                 except Exception:
                     raw_pl = cached_pl or []
-        except tezpos_api.TezPosApiError as exc:
-            if getattr(exc, "status", None) in (401, 403):
-                clear_tezpos_session(request)
-                return JsonResponse({"error": "auth"}, status=401)
-            api_err = str(exc)
-            raw_products = cached_products or []
-            raw_pl = cached_pl or []
-        except (TimeoutError, OSError) as exc:
-            api_err = str(exc)
-            raw_products = cached_products or []
-            raw_pl = cached_pl or []
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        api_err = str(exc)
+        raw_products = cached_full or cached_lite or []
+        raw_pl = cached_pl or []
+    except (TimeoutError, OSError) as exc:
+        api_err = str(exc)
+        raw_products = cached_full or cached_lite or []
+        raw_pl = cached_pl or []
 
     if not isinstance(raw_products, list):
         raw_products = []
@@ -287,6 +315,13 @@ def cabinet_catalog(request):
         except Exception:
             continue
     products.sort(key=lambda p: (not p.is_active, p.name.lower()))
+    if not complete:
+        complete = (not lite) and len(products) >= 200 and not api_err
+        if isinstance(cached_full, list) and len(products) >= len(cached_full) >= 200:
+            complete = True
+    if complete and products:
+        _TEZPOS_MEMO[full_key] = (time.time(), raw_products)
+
     price_lists = [
         pl for pl in raw_pl if isinstance(pl, dict) and pl.get("is_active", True)
     ]
@@ -304,8 +339,9 @@ def cabinet_catalog(request):
             if str(pl.get("id") or "")
         ],
         "nearMin": near_min,
-        "cached": bool(lite and cached_products),
-        "partial": bool(api_err or lite),
+        "cached": bool(complete and cached_full),
+        "partial": bool(lite and not complete),
+        "complete": bool(complete),
         "api": tezpos_api.normalize_api_base(),
         "count": len(products),
     }
@@ -329,10 +365,10 @@ def cabinet_warm(request):
     def _warm() -> None:
         try:
             _memo_get(
-                f"{memo_prefix}|products|4",
-                600.0,
+                f"{memo_prefix}|products|all",
+                180.0,
                 lambda: tezpos_api.get_products(
-                    token, server, max_pages=12, timeout=10, page_size=80
+                    token, server, max_pages=80, timeout=12, page_size=100
                 ),
                 skip_empty=True,
             )

@@ -81,16 +81,22 @@
       return data;
     }
     if (incoming.length) {
-      data.products = incoming;
-      data.priceLists = json.priceLists || data.priceLists || [];
-      data.nearMin = json.nearMin || data.nearMin || [];
-      window.TEZPOS_CHARTS = data;
-      cacheSet("catalog", {
-        products: data.products,
-        priceLists: data.priceLists,
-        nearMin: data.nearMin,
-        ts: Date.now(),
-      });
+      const have = Array.isArray(data.products) ? data.products.length : 0;
+      if (incoming.length >= have || json.complete === true) {
+        data.products = incoming;
+        data.priceLists = json.priceLists || data.priceLists || [];
+        data.nearMin = json.nearMin || data.nearMin || [];
+        data.catalogCount = Number(json.count || incoming.length) || incoming.length;
+        data.catalogComplete = Boolean(json.complete);
+        window.TEZPOS_CHARTS = data;
+        cacheSet("catalog", {
+          products: data.products,
+          priceLists: data.priceLists,
+          nearMin: data.nearMin,
+          ts: Date.now(),
+          complete: data.catalogComplete,
+        });
+      }
     }
     if (emit) {
       document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
@@ -188,11 +194,8 @@
     }
     // Avval 1-sahifa (tez), keyin to‘liq katalog
     return fetchCatalog({ lite: true }).then((d) => {
-      if (d?.products?.length && !force) {
-        fetchCatalog();
-        return d;
-      }
-      return fetchCatalog();
+      fetchCatalog();
+      return d;
     });
   };
   window.tezposEnsureCatalog = ensureCatalog;
@@ -2445,6 +2448,10 @@
           </tr>`;
         })
         .join("");
+      const countEl = document.getElementById("ld-products-count");
+      if (countEl) {
+        countEl.textContent = `${list.length} ta`;
+      }
       filterLabelProducts();
     };
 

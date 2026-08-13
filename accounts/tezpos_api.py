@@ -6,6 +6,7 @@ import http.client
 import json
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -316,16 +317,14 @@ def get_products(
     token: str,
     server_name: str,
     *,
-    max_pages: int = 8,
+    max_pages: int = 80,
     timeout: float = 12,
-    page_size: int = 80,
+    page_size: int = 100,
     all_at_once: bool = False,
 ) -> list:
-    """
-    Mahsulotlar. Avval 1-sahifa (tez), keyin qolgan sahifalar.
-    all=true katta katalogda sekin — faqat sahifa bo‘sh bo‘lsa yoki so‘ralsa.
-    """
+    """Barcha mahsulotlar — sahifalab, count tugaguncha (1483+)."""
     results: list = []
+    seen: set[str] = set()
 
     def _rows(payload) -> list:
         if isinstance(payload, list):
@@ -340,6 +339,26 @@ def get_products(
             )
         return []
 
+    def _count(payload) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        try:
+            return int(payload.get("count") or payload.get("total") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _add(chunk: list) -> None:
+        for row in chunk:
+            if not isinstance(row, dict):
+                results.append(row)
+                continue
+            pid = str(row.get("id") or "")
+            if pid and pid in seen:
+                continue
+            if pid:
+                seen.add(pid)
+            results.append(row)
+
     def _fetch(query: dict, wait: float):
         return api_request(
             "GET",
@@ -352,7 +371,7 @@ def get_products(
 
     if all_at_once:
         try:
-            data = _fetch({"all": "true"}, max(timeout, 40))
+            data = _fetch({"all": "true"}, max(timeout, 55))
             rows = _rows(data)
             if rows:
                 return rows
@@ -360,19 +379,21 @@ def get_products(
             if exc.status in (401, 403):
                 raise
 
-    first_queries = (
-        {"page": "1"},
-        {"page": "1", "page_size": str(min(int(page_size or 80), 100))},
-        {"limit": str(min(int(page_size or 80), 100))},
-    )
+    size = max(20, min(int(page_size or 100), 200))
     data = None
     last_err: TezPosApiError | None = None
-    for query in first_queries:
+    total = 0
+    for query in (
+        {"page": "1", "page_size": str(size)},
+        {"page": "1"},
+        {"limit": str(size), "offset": "0"},
+    ):
         try:
             data = _fetch(query, timeout)
             chunk = _rows(data)
             if chunk:
-                results.extend(chunk)
+                _add(chunk)
+                total = _count(data) or len(chunk)
                 break
         except TezPosApiError as exc:
             last_err = exc
@@ -382,7 +403,7 @@ def get_products(
 
     if not results:
         try:
-            data = _fetch({"all": "true"}, max(timeout, 35))
+            data = _fetch({"all": "true"}, max(timeout, 55))
             chunk = _rows(data)
             if chunk:
                 return chunk
@@ -390,24 +411,38 @@ def get_products(
             if exc.status in (401, 403):
                 raise
             last_err = exc
-        if last_err and not results:
+        if last_err:
             raise last_err
         return results
 
-    # Keyingi sahifalar — timeout bo‘lsa qisman qaytaramiz
+    # Ro‘yxat to‘liq kelsa (list) — tugadi
+    if isinstance(data, list):
+        return results
+
     next_url = data.get("next") if isinstance(data, dict) else None
     page = 2
-    while next_url and page <= max_pages:
+    deadline = time.time() + max(20.0, min(70.0, max_pages * 2.5))
+    while page <= max_pages and time.time() < deadline:
+        if total and len(results) >= total:
+            break
+        if not next_url and page > 2 and not total:
+            break
         try:
-            page_data = _fetch({"page": str(page)}, timeout)
+            page_data = _fetch({"page": str(page), "page_size": str(size)}, timeout)
         except TezPosApiError:
             break
         chunk = _rows(page_data)
         if not chunk:
             break
-        results.extend(chunk)
-        next_url = page_data.get("next") if isinstance(page_data, dict) else None
+        _add(chunk)
+        if isinstance(page_data, dict):
+            total = _count(page_data) or total
+            next_url = page_data.get("next")
+        else:
+            next_url = None
         page += 1
+        if not next_url and (not total or len(results) >= total):
+            break
     return results
 
 
