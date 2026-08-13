@@ -472,6 +472,86 @@ def get_products(
     return results
 
 
+def get_products_page(
+    token: str,
+    server_name: str,
+    *,
+    page: int = 1,
+    page_size: int = 100,
+    timeout: float = 20,
+) -> dict:
+    """Bitta katalog sahifasi — brauzer sahifalab 1483 tani yig‘adi."""
+    page = max(1, int(page or 1))
+    size = max(20, min(int(page_size or 100), 200))
+    offset = (page - 1) * size
+
+    def _rows(payload) -> list:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            return list(
+                payload.get("results")
+                or payload.get("items")
+                or payload.get("products")
+                or payload.get("data")
+                or []
+            )
+        return []
+
+    def _count(payload) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        try:
+            return int(payload.get("count") or payload.get("total") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    data = None
+    last_err: TezPosApiError | None = None
+    queries = (
+        (
+            {"limit": str(size), "offset": str(offset)},
+            {"page": str(page), "page_size": str(size)},
+        )
+        if page > 1
+        else (
+            {"page": str(page), "page_size": str(size)},
+            {"limit": str(size), "offset": str(offset)},
+        )
+    )
+    for query in queries:
+        try:
+            data = api_request(
+                "GET",
+                "/api/catalog/products/",
+                token=token,
+                server_name=server_name,
+                query=query,
+                timeout=timeout,
+            )
+            break
+        except TezPosApiError as exc:
+            last_err = exc
+            if exc.status in (401, 403):
+                raise
+            continue
+    if data is None and last_err:
+        raise last_err
+    rows = _rows(data)
+    total = _count(data)
+    nxt = data.get("next") if isinstance(data, dict) else None
+    has_more = bool(nxt) or (total > 0 and page * size < total) or (len(rows) >= size)
+    if not rows:
+        has_more = False
+    return {
+        "rows": rows,
+        "total": total,
+        "has_more": has_more,
+        "page": page,
+        "page_size": size,
+    }
+
+
 def get_sales(
     token: str,
     server_name: str,

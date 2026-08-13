@@ -208,12 +208,71 @@ def cabinet_api_status(request):
 @login_required
 @require_GET
 def cabinet_catalog(request):
-    """Mahsulotlar + narxlar ro‘yxati (AJAX) — barcha tovarlar (1483+)."""
+    """Mahsulotlar AJAX. ?page=N — tez sahifa; brauzer hammasi yig‘adi."""
     if not session_has_tezpos(request):
         return JsonResponse({"error": "auth"}, status=401)
     token = request.session[SESSION_TOKEN]
     server = request.session[SESSION_SERVER]
     memo_prefix = f"{server}|{(token or '')[-12:]}"
+
+    page_raw = (request.GET.get("page") or "").strip()
+    if page_raw.isdigit():
+        page_n = max(1, int(page_raw))
+        try:
+            pack = tezpos_api.get_products_page(
+                token, server, page=page_n, page_size=100, timeout=20
+            )
+        except tezpos_api.TezPosApiError as exc:
+            if getattr(exc, "status", None) in (401, 403):
+                clear_tezpos_session(request)
+                return JsonResponse({"error": "auth"}, status=401)
+            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=502)
+        except (TimeoutError, OSError) as exc:
+            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=504)
+
+        products = []
+        for row in pack.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                products.append(_map_product(row))
+            except Exception:
+                continue
+        price_lists_payload = []
+        if page_n == 1:
+            try:
+                raw_pl = _memo_get(
+                    f"{memo_prefix}|price_lists",
+                    600.0,
+                    lambda: tezpos_api.get_price_lists(token, server) or [],
+                ) or []
+                price_lists_payload = [
+                    {
+                        "id": str(pl.get("id") or ""),
+                        "name": (pl.get("name") or "").strip() or "Narxlar",
+                        "is_selling": bool(pl.get("is_selling")),
+                    }
+                    for pl in raw_pl
+                    if isinstance(pl, dict) and pl.get("is_active", True) and str(pl.get("id") or "")
+                ]
+            except Exception:
+                price_lists_payload = []
+        return JsonResponse(
+            {
+                "ok": True,
+                "products": _products_payload_list(products),
+                "priceLists": price_lists_payload,
+                "page": page_n,
+                "total": int(pack.get("total") or 0),
+                "has_more": bool(pack.get("has_more")),
+                "count": len(products),
+                "complete": not bool(pack.get("has_more")),
+                "partial": bool(pack.get("has_more")),
+                "api": tezpos_api.normalize_api_base(),
+            }
+        )
+
+    # Eski to‘liq so‘rov (orqaga mos)
     full_key = f"{memo_prefix}|products|all"
     lite_key = f"{memo_prefix}|products|lite"
     lite = (request.GET.get("lite") or "").strip() in ("1", "true", "yes")

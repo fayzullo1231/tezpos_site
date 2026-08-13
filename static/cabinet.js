@@ -71,7 +71,7 @@
   let catalogInflight = null;
   let warmStarted = false;
 
-  const applyCatalogPayload = (json, { emit = true } = {}) => {
+  const applyCatalogPayload = (json, { emit = true, merge = false } = {}) => {
     if (!json) return data;
     const incoming = Array.isArray(json.products) ? json.products : [];
     if (json.error && !incoming.length) {
@@ -81,22 +81,31 @@
       return data;
     }
     if (incoming.length) {
-      const have = Array.isArray(data.products) ? data.products.length : 0;
-      if (incoming.length >= have || json.complete === true) {
-        data.products = incoming;
-        data.priceLists = json.priceLists || data.priceLists || [];
-        data.nearMin = json.nearMin || data.nearMin || [];
-        data.catalogCount = Number(json.count || incoming.length) || incoming.length;
-        data.catalogComplete = Boolean(json.complete) && incoming.length >= 500;
-        window.TEZPOS_CHARTS = data;
-        cacheSet("catalog", {
-          products: data.products,
-          priceLists: data.priceLists,
-          nearMin: data.nearMin,
-          ts: Date.now(),
-          complete: data.catalogComplete,
+      if (merge) {
+        const map = new Map((data.products || []).map((p) => [String(p.id), p]));
+        incoming.forEach((p) => {
+          if (p && p.id != null) map.set(String(p.id), p);
         });
+        data.products = Array.from(map.values());
+      } else {
+        const have = Array.isArray(data.products) ? data.products.length : 0;
+        if (incoming.length >= have || json.complete === true) {
+          data.products = incoming;
+        }
       }
+      if (json.priceLists) data.priceLists = json.priceLists;
+      if (json.nearMin) data.nearMin = json.nearMin;
+      data.catalogCount = Number(json.total || json.count || data.products.length) || data.products.length;
+      data.catalogComplete = Boolean(json.complete);
+      window.TEZPOS_CHARTS = data;
+      cacheSet("catalog", {
+        products: data.products,
+        priceLists: data.priceLists,
+        nearMin: data.nearMin,
+        ts: Date.now(),
+        complete: data.catalogComplete,
+        total: data.catalogCount,
+      });
     }
     if (emit) {
       document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
@@ -107,36 +116,84 @@
     return data;
   };
 
+  const incomingOk = (json) => Array.isArray(json?.products) && json.products.length > 0;
+
+  const fetchCatalogPage = (page) => {
+    const url = `${data.catalogUrl}?page=${page}`;
+    return fetch(url, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    }).then(async (r) => {
+      const json = await r.json().catch(() => ({}));
+      if (json.error === "auth" || r.status === 401) {
+        window.location.href = "/login/";
+        throw new Error("auth");
+      }
+      if (!incomingOk(json) && (json.error || !r.ok)) {
+        throw new Error(json.error || "catalog fail");
+      }
+      return json;
+    });
+  };
+
   const fetchCatalog = ({ lite = false } = {}) => {
     if (!data.catalogUrl) return Promise.resolve(data);
     if (catalogInflight && !lite) return catalogInflight;
-    const qs = lite ? "?lite=1" : `?t=${Date.now()}`;
-    const run = fetch(`${data.catalogUrl}${qs}`, {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    })
-      .then(async (r) => {
-        const json = await r.json().catch(() => ({}));
-        if (json.error === "auth" || r.status === 401) {
-          window.location.href = "/login/";
-          throw new Error("auth");
+    const run = (async () => {
+      try {
+        const first = await fetchCatalogPage(1);
+        applyCatalogPayload(first, { emit: true, merge: true });
+        if (lite) return data;
+        let page = 2;
+        let total = Number(first.total || 0);
+        const firstLen = (first.products || []).length;
+        if (first.has_more === false && firstLen < 50) {
+          applyCatalogPayload(
+            { products: data.products, complete: true, total: firstLen, count: firstLen },
+            { emit: true, merge: false }
+          );
+          return data;
         }
-        if (!incomingOk(json) && (json.error || !r.ok)) {
-          if (typeof window.tezposShowApiBanner === "function") {
-            window.tezposShowApiBanner(
-              `Katalog yuklanmadi: ${json.error || r.status}. TezPOS API (13.140.146.78:8000) ni tekshiring.`
+        while (page <= 80) {
+          const json = await fetchCatalogPage(page);
+          const before = (data.products || []).length;
+          applyCatalogPayload(json, { emit: true, merge: true });
+          const after = (data.products || []).length;
+          total = Number(json.total || total);
+          if (json.has_more === false || !(json.products || []).length) {
+            applyCatalogPayload(
+              { products: data.products, complete: true, total: after, count: after },
+              { emit: true, merge: false }
             );
+            break;
           }
-          document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
-          throw new Error(json.error || "catalog fail");
+          if (after === before) {
+            applyCatalogPayload(
+              { products: data.products, complete: true, total: after, count: after },
+              { emit: true, merge: false }
+            );
+            break;
+          }
+          if (total && after >= total) {
+            applyCatalogPayload(
+              { products: data.products, complete: true, total, count: after },
+              { emit: true, merge: false }
+            );
+            break;
+          }
+          page += 1;
         }
-        return applyCatalogPayload(json);
-      })
-      .catch((err) => {
+      } catch (err) {
         if (err && err.message === "auth") return data;
+        if (typeof window.tezposShowApiBanner === "function" && !(data.products || []).length) {
+          window.tezposShowApiBanner(
+            `Katalog yuklanmadi: ${err.message || err}. TezPOS API (13.140.146.78:8000) ni tekshiring.`
+          );
+        }
         document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
-        return data;
-      });
+      }
+      return data;
+    })();
     if (!lite) {
       catalogInflight = run.finally(() => {
         catalogInflight = null;
@@ -145,8 +202,6 @@
     }
     return run;
   };
-
-  const incomingOk = (json) => Array.isArray(json?.products) && json.products.length > 0;
 
   // Katalog AJAX — kesh bo‘lsa darhol, yangilash fonida
   const ensureCatalog = ({ force = false } = {}) => {
@@ -195,11 +250,7 @@
         }
       });
     }
-    // Avval 1-sahifa (tez), keyin to‘liq katalog
-    return fetchCatalog({ lite: true }).then((d) => {
-      fetchCatalog();
-      return d;
-    });
+    return fetchCatalog();
   };
   window.tezposEnsureCatalog = ensureCatalog;
 
@@ -2371,38 +2422,27 @@
       return Math.round(v).toLocaleString("uz-UZ");
     };
 
-    const rowSearchHay = (row) => {
-      const name = String(row.dataset.name || "").toLowerCase();
-      const sku = String(row.dataset.sku || "").toLowerCase();
-      const codes = String(row.dataset.codes || row.dataset.barcode || "")
-        .toLowerCase()
-        .replace(/\s/g, "");
-      return { name, sku, codes };
+    const productMatchesQuery = (p, q, qCompact) => {
+      if (!q) return true;
+      const name = String(p.name || "").toLowerCase();
+      const sku = String(p.sku || "").toLowerCase();
+      const codes = [p.barcode, p.sku, ...(Array.isArray(p.barcodes) ? p.barcodes : [])]
+        .map((c) => String(c || "").toLowerCase().replace(/\s/g, ""))
+        .join(" ");
+      return name.includes(q) || sku.includes(q) || Boolean(qCompact && codes.includes(qCompact));
     };
 
     const filterLabelProducts = () => {
-      const raw = String(document.getElementById("ld-product-search")?.value || "");
-      const q = raw.trim().toLowerCase();
-      const qCompact = q.replace(/\s/g, "");
-      document.querySelectorAll(".ld-product-row").forEach((row) => {
-        if (!q) {
-          row.hidden = false;
-          return;
-        }
-        const { name, sku, codes } = rowSearchHay(row);
-        const byName = name.includes(q) || sku.includes(q);
-        const byCode = Boolean(qCompact) && codes.includes(qCompact);
-        row.hidden = !(byName || byCode);
-      });
+      renderLabelsTable();
     };
 
     const renderLabelsTable = () => {
       const table = document.getElementById("labels-table");
       const tbody = table?.querySelector("tbody");
       if (!tbody) return;
-      const list = data.products || [];
+      const all = data.products || [];
       tbody.dataset.loaded = "1";
-      if (!list.length) {
+      if (!all.length) {
         tbody.innerHTML =
           '<tr><td colspan="5" class="cabinet-hint">Mahsulotlar yuklanmadi. <button type="button" id="ld-catalog-retry" style="margin-left:6px;border:0;background:none;color:#0369a1;text-decoration:underline;cursor:pointer;font:inherit;padding:0">Qayta urinish</button></td></tr>';
         document.getElementById("ld-catalog-retry")?.addEventListener("click", () => {
@@ -2413,6 +2453,17 @@
             window.tezposEnsureCatalog({ force: true });
           }
         });
+        return;
+      }
+      const raw = String(document.getElementById("ld-product-search")?.value || "");
+      const q = raw.trim().toLowerCase();
+      const qCompact = q.replace(/\s/g, "");
+      const list = q ? all.filter((p) => productMatchesQuery(p, q, qCompact)) : all;
+      if (!list.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="5" class="cabinet-hint">Bu qidiruvga mos mahsulot yo‘q.</td></tr>';
+        const countEl = document.getElementById("ld-products-count");
+        if (countEl) countEl.textContent = `0 / ${all.length} ta`;
         return;
       }
       tbody.innerHTML = list
@@ -2453,9 +2504,11 @@
         .join("");
       const countEl = document.getElementById("ld-products-count");
       if (countEl) {
-        countEl.textContent = `${list.length} ta`;
+        const total = Number(data.catalogCount || all.length);
+        if (q) countEl.textContent = `${list.length} / ${all.length} ta`;
+        else if (!data.catalogComplete && total > all.length) countEl.textContent = `${all.length} / ${total} ta`;
+        else countEl.textContent = `${all.length} ta`;
       }
-      filterLabelProducts();
     };
 
     // Event delegation — AJAX qayta renderdan keyin ham ishlaydi
@@ -2509,18 +2562,24 @@
       filterLabelProducts();
       const qCompact = String(e.target.value || "").trim().replace(/\s/g, "");
       if (!qCompact) return;
-      const match = [...document.querySelectorAll(".ld-product-row")].find((row) => {
-        if (row.hidden) return false;
-        const codes = String(row.dataset.codes || row.dataset.barcode || "").replace(/\s/g, "");
-        return codes.split(/[^0-9A-Za-z]+/).includes(qCompact) || codes.endsWith(qCompact);
+      const hit = (data.products || []).find((p) => {
+        const codes = [p.barcode, p.sku, ...(Array.isArray(p.barcodes) ? p.barcodes : [])]
+          .map((c) => String(c || "").replace(/\s/g, ""));
+        return codes.includes(qCompact) || codes.some((c) => c.endsWith(qCompact));
       });
-      if (match) {
-        const check = match.querySelector(".label-check");
-        if (check) check.checked = true;
-        match.scrollIntoView({ block: "nearest" });
-        match.classList.add("is-preview");
-        state.sample = productFromEl(match);
-        renderPreview();
+      if (hit) {
+        const row = [...document.querySelectorAll(".ld-product-row")].find(
+          (r) => (r.dataset.barcode || "") === String(hit.barcode || "").replace(/\s/g, "")
+            || (r.dataset.codes || "").includes(qCompact)
+        );
+        if (row) {
+          const check = row.querySelector(".label-check");
+          if (check) check.checked = true;
+          row.scrollIntoView({ block: "nearest" });
+          row.classList.add("is-preview");
+          state.sample = productFromEl(row);
+          renderPreview();
+        }
       }
     });
 
