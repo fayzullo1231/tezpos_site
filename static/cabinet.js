@@ -2591,6 +2591,33 @@
       return Math.round(v).toLocaleString("uz-UZ");
     };
 
+    const selectedKeys = new Set();
+
+    const productKey = (p) => {
+      const id = p?.id != null && String(p.id).trim();
+      if (id) return `id:${id}`;
+      const bc = String(p?.barcode || "").replace(/\s/g, "");
+      if (bc) return `bc:${bc}`;
+      return `nm:${String(p?.name || "").trim().toLowerCase()}`;
+    };
+
+    const keyFromCheck = (el) => {
+      const id = String(el?.dataset?.id || "").trim();
+      if (id) return `id:${id}`;
+      const bc = String(el?.dataset?.barcode || "").replace(/\s/g, "");
+      if (bc) return `bc:${bc}`;
+      return `nm:${String(el?.dataset?.name || "").trim().toLowerCase()}`;
+    };
+
+    const productFromCatalog = (p) => ({
+      name: p.name || "",
+      price: Number(p.selling_price || 0),
+      wholesale: Number(p.wholesale_price || 0),
+      cost: Number(p.cost_price || 0),
+      barcode: p.barcode || "",
+      sku: p.sku || p.barcode || "",
+    });
+
     const productMatchesQuery = (p, q, qCompact) => {
       if (!q) return true;
       const name = String(p.name || "").toLowerCase();
@@ -2599,6 +2626,26 @@
         .map((c) => String(c || "").toLowerCase().replace(/\s/g, ""))
         .join(" ");
       return name.includes(q) || sku.includes(q) || Boolean(qCompact && codes.includes(qCompact));
+    };
+
+    const currentLabelQuery = () => {
+      const raw = String(document.getElementById("ld-product-search")?.value || "");
+      const q = raw.trim().toLowerCase();
+      return { q, qCompact: q.replace(/\s/g, "") };
+    };
+
+    const currentLabelList = () => {
+      const all = data.products || [];
+      const { q, qCompact } = currentLabelQuery();
+      return q ? all.filter((p) => productMatchesQuery(p, q, qCompact)) : all;
+    };
+
+    const selectedCountHint = (allLen, listLen, q) => {
+      const sel = selectedKeys.size;
+      const selTxt = sel ? ` · ${sel} tanlandi` : "";
+      if (q) return `${listLen} / ${allLen} ta${selTxt}`;
+      if (!data.catalogComplete) return `${allLen} ta yuklanmoqda…${selTxt}`;
+      return `${allLen} ta${selTxt}`;
     };
 
     const filterLabelProducts = () => {
@@ -2624,15 +2671,13 @@
         });
         return;
       }
-      const raw = String(document.getElementById("ld-product-search")?.value || "");
-      const q = raw.trim().toLowerCase();
-      const qCompact = q.replace(/\s/g, "");
+      const { q, qCompact } = currentLabelQuery();
       const list = q ? all.filter((p) => productMatchesQuery(p, q, qCompact)) : all;
       if (!list.length) {
         tbody.innerHTML =
           '<tr><td colspan="5" class="cabinet-hint">Bu qidiruvga mos mahsulot yo‘q.</td></tr>';
         const countEl = document.getElementById("ld-products-count");
-        if (countEl) countEl.textContent = `0 / ${all.length} ta`;
+        if (countEl) countEl.textContent = selectedCountHint(all.length, 0, q);
         return;
       }
       tbody.innerHTML = list
@@ -2646,10 +2691,13 @@
           const barcode = escHtml(uniq[0] || "");
           const sku = escHtml(p.sku || p.barcode || "");
           const codesAttr = escHtml(uniq.join(" "));
+          const pid = escHtml(p.id || "");
           const selling = Number(p.selling_price || 0);
           const wholesale = Number(p.wholesale_price || 0);
           const cost = Number(p.cost_price || 0);
+          const checked = selectedKeys.has(productKey(p)) ? " checked" : "";
           return `<tr class="ld-product-row" tabindex="0"
+              data-id="${pid}"
               data-name="${name}"
               data-price="${selling}"
               data-wholesale="${wholesale}"
@@ -2657,7 +2705,8 @@
               data-barcode="${barcode}"
               data-codes="${codesAttr}"
               data-sku="${sku}">
-            <td><input type="checkbox" class="label-check"
+            <td><input type="checkbox" class="label-check"${checked}
+              data-id="${pid}"
               data-name="${name}"
               data-price="${selling}"
               data-wholesale="${wholesale}"
@@ -2672,11 +2721,7 @@
         })
         .join("");
       const countEl = document.getElementById("ld-products-count");
-      if (countEl) {
-        if (q) countEl.textContent = `${list.length} / ${all.length} ta`;
-        else if (!data.catalogComplete) countEl.textContent = `${all.length} ta yuklanmoqda…`;
-        else countEl.textContent = `${all.length} ta`;
-      }
+      if (countEl) countEl.textContent = selectedCountHint(all.length, list.length, q);
     };
 
     // Event delegation — AJAX qayta renderdan keyin ham ishlaydi
@@ -2688,6 +2733,20 @@
       document.querySelectorAll(".ld-product-row").forEach((r) => r.classList.remove("is-preview"));
       row.classList.add("is-preview");
       renderPreview();
+    });
+    document.getElementById("labels-table")?.addEventListener("change", (e) => {
+      const check = e.target.closest?.(".label-check");
+      if (!check) return;
+      const key = keyFromCheck(check);
+      if (check.checked) selectedKeys.add(key);
+      else selectedKeys.delete(key);
+      const countEl = document.getElementById("ld-products-count");
+      if (countEl) {
+        const all = data.products || [];
+        const list = currentLabelList();
+        const { q } = currentLabelQuery();
+        countEl.textContent = selectedCountHint(all.length, list.length, q);
+      }
     });
 
     document.addEventListener("tezpos:catalog", () => {
@@ -2713,14 +2772,14 @@
     }
 
     document.getElementById("ld-select-all")?.addEventListener("click", () => {
-      document.querySelectorAll(".label-check").forEach((c) => {
-        if (!c.closest("tr")?.hidden) c.checked = true;
-      });
+      currentLabelList().forEach((p) => selectedKeys.add(productKey(p)));
+      renderLabelsTable();
     });
     document.getElementById("ld-select-none")?.addEventListener("click", () => {
-      document.querySelectorAll(".label-check").forEach((c) => {
-        c.checked = false;
-      });
+      const { q } = currentLabelQuery();
+      if (q) currentLabelList().forEach((p) => selectedKeys.delete(productKey(p)));
+      else selectedKeys.clear();
+      renderLabelsTable();
     });
     document.getElementById("ld-product-search")?.addEventListener("input", filterLabelProducts);
     document.getElementById("ld-product-search")?.addEventListener("keydown", (e) => {
@@ -2735,13 +2794,14 @@
         return codes.includes(qCompact) || codes.some((c) => c.endsWith(qCompact));
       });
       if (hit) {
+        selectedKeys.add(productKey(hit));
+        renderLabelsTable();
         const row = [...document.querySelectorAll(".ld-product-row")].find(
-          (r) => (r.dataset.barcode || "") === String(hit.barcode || "").replace(/\s/g, "")
+          (r) => (r.dataset.id && String(hit.id) === r.dataset.id)
+            || (r.dataset.barcode || "") === String(hit.barcode || "").replace(/\s/g, "")
             || (r.dataset.codes || "").includes(qCompact)
         );
         if (row) {
-          const check = row.querySelector(".label-check");
-          if (check) check.checked = true;
           row.scrollIntoView({ block: "nearest" });
           row.classList.add("is-preview");
           state.sample = productFromEl(row);
@@ -2780,10 +2840,8 @@
       EL_KEYS.forEach((k) => {
         state.styles[k] = normalizeStyle(k, state.styles[k]);
       });
-      const checks = [...document.querySelectorAll(".label-check:checked")].filter(
-        (el) => !el.closest("tr")?.hidden
-      );
-      if (!checks.length) {
+      const selectedProducts = (data.products || []).filter((p) => selectedKeys.has(productKey(p)));
+      if (!selectedProducts.length) {
         alert("Kamida bitta tovarni belgilang.");
         return;
       }
@@ -2791,8 +2849,8 @@
       const wMm = Number(state.widthMm) || 38;
       const hMm = Number(state.heightMm) || 58;
       const orient = wMm <= hMm ? "portrait" : "landscape";
-      const labels = checks
-        .map((el) => `<section class="page">${buildLabelHtml(productFromEl(el), priceType)}</section>`)
+      const labels = selectedProducts
+        .map((p) => `<section class="page">${buildLabelHtml(productFromCatalog(p), priceType)}</section>`)
         .join("");
       const win = window.open("", "_blank", "width=720,height=900");
       if (!win) {
