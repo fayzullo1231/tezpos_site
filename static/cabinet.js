@@ -41,8 +41,8 @@
   };
   window.tezposShowApiBanner = showApiBanner;
 
-  // API ulanishini tekshirish — 0 lar o‘rniga aniq xabar
-  if (data.apiStatusUrl) {
+  // API ulanishini tekshirish — yorliqlarda katalogni to‘xtatmasin
+  if (data.apiStatusUrl && data.section !== "labels") {
     fetch(data.apiStatusUrl, {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
@@ -116,24 +116,41 @@
     return data;
   };
 
-  const incomingOk = (json) => Array.isArray(json?.products) && json.products.length > 0;
+  const incomingOk = (json) => Array.isArray(json?.products);
+  const CATALOG_PAGE_SIZE = 200;
 
-  const fetchCatalogPage = (page) => {
-    const url = `${data.catalogUrl}?page=${page}`;
-    return fetch(url, {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    }).then(async (r) => {
-      const json = await r.json().catch(() => ({}));
-      if (json.error === "auth" || r.status === 401) {
-        window.location.href = "/login/";
-        throw new Error("auth");
-      }
-      if (!incomingOk(json) && (json.error || !r.ok)) {
-        throw new Error(json.error || "catalog fail");
-      }
-      return json;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const fetchCatalogPage = async (page, tries = 3) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(CATALOG_PAGE_SIZE),
     });
+    if (data.section === "labels") params.set("skip_pl", "1");
+    const url = `${data.catalogUrl}?${params}`;
+    let lastErr = new Error("catalog fail");
+    for (let i = 0; i < tries; i += 1) {
+      try {
+        const r = await fetch(url, {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+        const json = await r.json().catch(() => ({}));
+        if (json.error === "auth" || r.status === 401) {
+          window.location.href = "/login/";
+          throw new Error("auth");
+        }
+        if (incomingOk(json) && (r.ok || (json.products || []).length)) {
+          return json;
+        }
+        lastErr = new Error(json.error || `catalog HTTP ${r.status}`);
+      } catch (err) {
+        if (err && err.message === "auth") throw err;
+        lastErr = err;
+      }
+      await sleep(400 * (i + 1));
+    }
+    throw lastErr;
   };
 
   const fetchCatalog = ({ lite = false } = {}) => {
@@ -141,39 +158,18 @@
     if (catalogInflight && !lite) return catalogInflight;
     const run = (async () => {
       try {
-        const first = await fetchCatalogPage(1);
-        applyCatalogPayload(first, { emit: true, merge: true });
-        if (lite) return data;
-        let page = 2;
-        let total = Number(first.total || 0);
-        const firstLen = (first.products || []).length;
-        if (first.has_more === false && firstLen < 50) {
-          applyCatalogPayload(
-            { products: data.products, complete: true, total: firstLen, count: firstLen },
-            { emit: true, merge: false }
-          );
-          return data;
-        }
+        let page = 1;
+        let total = 0;
         while (page <= 80) {
           const json = await fetchCatalogPage(page);
           const before = (data.products || []).length;
           applyCatalogPayload(json, { emit: true, merge: true });
+          const got = (json.products || []).length;
+          const pageSize = Number(json.page_size || CATALOG_PAGE_SIZE);
+          total = Number(json.total || total) || 0;
           const after = (data.products || []).length;
-          total = Number(json.total || total);
-          if (json.has_more === false || !(json.products || []).length) {
-            applyCatalogPayload(
-              { products: data.products, complete: true, total: after, count: after },
-              { emit: true, merge: false }
-            );
-            break;
-          }
-          if (after === before) {
-            applyCatalogPayload(
-              { products: data.products, complete: true, total: after, count: after },
-              { emit: true, merge: false }
-            );
-            break;
-          }
+          const fullPage = got >= pageSize;
+          const more = json.has_more === true || fullPage;
           if (total && after >= total) {
             applyCatalogPayload(
               { products: data.products, complete: true, total, count: after },
@@ -181,11 +177,20 @@
             );
             break;
           }
+          if (!got || more === false || !fullPage || (page > 1 && after === before)) {
+            applyCatalogPayload(
+              { products: data.products, complete: true, total: total || after, count: after },
+              { emit: true, merge: false }
+            );
+            break;
+          }
+          if (lite) return data;
           page += 1;
         }
       } catch (err) {
         if (err && err.message === "auth") return data;
-        if (typeof window.tezposShowApiBanner === "function" && !(data.products || []).length) {
+        const have = (data.products || []).length;
+        if (typeof window.tezposShowApiBanner === "function" && !have) {
           window.tezposShowApiBanner(
             `Katalog yuklanmadi: ${err.message || err}. TezPOS API (13.140.146.78:8000) ni tekshiring.`
           );
@@ -218,7 +223,10 @@
       const cached = cacheGet("catalog");
       if (cached?.products?.length) {
         applyCatalogPayload(
-          { ...cached, complete: Boolean(cached.complete) && cached.products.length >= 500 },
+          {
+            ...cached,
+            complete: Boolean(cached.complete) && cached.products.length >= 500,
+          },
           { emit: false }
         );
       }
@@ -229,12 +237,15 @@
     }
 
     if (!data.catalogUrl) return Promise.resolve(data);
-    if (data.products?.length && !force) {
+    const have = data.products?.length || 0;
+    const total = Number(data.catalogCount || 0);
+    const done = Boolean(data.catalogComplete) && have > 0 && (!total || have >= total);
+    if (have && !force && done && data.section !== "labels") {
       fetchCatalog();
       return Promise.resolve(data);
     }
 
-    if (need && !data.products?.length) {
+    if (need && !have) {
       const skelTargets = [
         document.getElementById("products-mgmt-tbody"),
         document.getElementById("stock-value-tbody"),
@@ -250,11 +261,15 @@
         }
       });
     }
-    return fetchCatalog();
+    return fetchCatalog({ lite: false });
   };
   window.tezposEnsureCatalog = ensureCatalog;
 
   const warmCabinet = () => {
+    if (data.section === "labels") {
+      ensureCatalog({ force: !data.catalogComplete });
+      return;
+    }
     if (warmStarted) {
       ensureCatalog();
       return;
@@ -1927,40 +1942,96 @@
       };
     };
 
+    const dumpTpl = () => ({
+      name: state.name,
+      widthMm: state.widthMm,
+      heightMm: state.heightMm,
+      formatPrice: state.formatPrice,
+      priceSuffix: state.priceSuffix,
+      enabled: state.enabled,
+      styles: state.styles,
+    });
+
+    const applyTplData = (tpl) => {
+      if (!tpl || typeof tpl !== "object") return false;
+      if (tpl.name) state.name = tpl.name;
+      if (tpl.widthMm) state.widthMm = Number(tpl.widthMm);
+      if (tpl.heightMm) state.heightMm = Number(tpl.heightMm);
+      if (typeof tpl.formatPrice === "boolean") state.formatPrice = tpl.formatPrice;
+      if (typeof tpl.priceSuffix === "string") state.priceSuffix = tpl.priceSuffix;
+      if (tpl.enabled) state.enabled = { ...DEFAULT_ENABLED, ...tpl.enabled };
+      if (tpl.styles) {
+        EL_KEYS.forEach((k) => {
+          state.styles[k] = normalizeStyle(k, { ...DEFAULT_STYLES[k], ...(tpl.styles[k] || {}) });
+        });
+      }
+      return true;
+    };
+
+    const hasTplBody = (tpl) =>
+      Boolean(tpl && typeof tpl === "object" && (tpl.styles || tpl.widthMm || tpl.name));
+
     const loadTpl = () => {
+      const serverTpl = (window.TEZPOS_CHARTS || {}).labelTemplate;
+      if (hasTplBody(serverTpl)) {
+        applyTplData(serverTpl);
+        return;
+      }
       try {
         const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("tezpos_label_template_v1");
         if (!raw) return;
-        const data = JSON.parse(raw);
-        if (data.name) state.name = data.name;
-        if (data.widthMm) state.widthMm = Number(data.widthMm);
-        if (data.heightMm) state.heightMm = Number(data.heightMm);
-        if (typeof data.formatPrice === "boolean") state.formatPrice = data.formatPrice;
-        if (typeof data.priceSuffix === "string") state.priceSuffix = data.priceSuffix;
-        if (data.enabled) state.enabled = { ...DEFAULT_ENABLED, ...data.enabled };
-        if (data.styles) {
-          EL_KEYS.forEach((k) => {
-            state.styles[k] = normalizeStyle(k, { ...DEFAULT_STYLES[k], ...(data.styles[k] || {}) });
-          });
-        }
+        applyTplData(JSON.parse(raw));
       } catch (_e) {
         /* ignore */
       }
     };
 
+    const csrfToken = () => {
+      const m = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+      if (m) return decodeURIComponent(m[1]);
+      return document.querySelector("[name=csrfmiddlewaretoken]")?.value || "";
+    };
+
+    const saveTplLocal = () => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(dumpTpl()));
+      } catch (_e) {
+        /* quota */
+      }
+    };
+
     const saveTpl = () => {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          name: state.name,
-          widthMm: state.widthMm,
-          heightMm: state.heightMm,
-          formatPrice: state.formatPrice,
-          priceSuffix: state.priceSuffix,
-          enabled: state.enabled,
-          styles: state.styles,
+      const payload = dumpTpl();
+      saveTplLocal();
+      const url = (window.TEZPOS_CHARTS || {}).labelTemplateUrl;
+      if (!url) return Promise.resolve({ ok: true, local: true });
+      return fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-CSRFToken": csrfToken(),
+        },
+        body: JSON.stringify(payload),
+      })
+        .then((r) => r.json().catch(() => ({ ok: false })))
+        .catch(() => ({ ok: false }));
+    };
+
+    const fetchSharedTpl = () => {
+      const url = (window.TEZPOS_CHARTS || {}).labelTemplateUrl;
+      if (!url) return;
+      fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } })
+        .then((r) => r.json())
+        .then((res) => {
+          if (res && res.has_template && hasTplBody(res.template)) {
+            applyTplData(res.template);
+            saveTplLocal();
+            syncForm();
+          }
         })
-      );
+        .catch(() => {});
     };
 
     const fmtPrice = (n) => {
@@ -2165,6 +2236,7 @@
       state.styles[k] = normalizeStyle(k, state.styles[k]);
     });
     syncForm();
+    fetchSharedTpl();
     showMode("hub");
 
     document.getElementById("ld-open-design")?.addEventListener("click", () => showMode("design"));
@@ -2386,10 +2458,24 @@
       renderPreview();
     });
     document.getElementById("ld-save-btn")?.addEventListener("click", () => {
-      saveTpl();
-      alert("Shablon saqlandi. Chop etishda shu ko‘rinishda chiqadi.");
+      const btn = document.getElementById("ld-save-btn");
+      if (btn) btn.disabled = true;
+      saveTpl()
+        .then((res) => {
+          if (res && res.ok !== false) {
+            alert("Shablon saqlandi. Shu do‘kondagi barcha foydalanuvchilar chop etishda shu ko‘rinishdan foydalanadi.");
+          } else {
+            alert("Shablon shu qurilmada saqlandi, lekin serverga yozilmadi. Qayta urinib ko‘ring.");
+          }
+        })
+        .finally(() => {
+          if (btn) btn.disabled = false;
+        });
     });
     document.getElementById("ld-reset-btn")?.addEventListener("click", () => {
+      if (!confirm("Standart shablonga qaytarilsinmi? Shu do‘kondagi barcha foydalanuvchilar uchun o‘zgaradi.")) {
+        return;
+      }
       state.name = "Cennik 38x58";
       state.widthMm = 38;
       state.heightMm = 58;
@@ -2401,6 +2487,7 @@
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem("tezpos_label_template_v1");
       syncForm();
+      saveTpl();
     });
 
     const productFromEl = (el) => {
@@ -2524,7 +2611,6 @@
 
     document.addEventListener("tezpos:catalog", () => {
       renderLabelsTable();
-      // Birinchi mahsulotni mini-preview uchun
       const first = (data.products || [])[0];
       if (first) {
         state.sample = {
@@ -2538,11 +2624,11 @@
         renderPreview();
       }
     });
-    // Kesh / allaqachon yuklangan katalog
     if ((data.products || []).length) {
       renderLabelsTable();
-    } else if (typeof window.tezposEnsureCatalog === "function") {
-      window.tezposEnsureCatalog({ force: true });
+    }
+    if (typeof window.tezposEnsureCatalog === "function") {
+      window.tezposEnsureCatalog({ force: !data.catalogComplete });
     }
 
     document.getElementById("ld-select-all")?.addEventListener("click", () => {

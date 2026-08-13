@@ -33,7 +33,7 @@ from .auth_views import (
     clear_tezpos_session,
     session_has_tezpos,
 )
-from .models import DesktopInstaller, TenantProfile
+from .models import DesktopInstaller, LabelTemplate, TenantProfile
 
 
 PAYMENT_LABELS = {
@@ -52,6 +52,85 @@ def get_tenant_for_user(user):
         user=user, defaults={"business_name": user.get_full_name() or user.username}
     )
     return tenant
+
+
+_LABEL_EL_KEYS = (
+    "name",
+    "price",
+    "old_price",
+    "wholesale",
+    "sku",
+    "created",
+    "custom1",
+    "custom2",
+    "custom3",
+    "old_label",
+    "print_date",
+    "barcode",
+    "logo",
+)
+
+
+def _label_shop_key(request) -> str:
+    server = (request.session.get(SESSION_SERVER) or "").strip()
+    if server:
+        return server.lower()
+    return f"user:{request.user.pk}"
+
+
+def _label_num(value, default=0.0) -> float:
+    try:
+        n = float(value)
+        if n != n:  # NaN
+            return float(default)
+        return n
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _sanitize_label_template(body: dict) -> dict:
+    if not isinstance(body, dict):
+        return {}
+    out = {}
+    name = str(body.get("name") or "").strip()[:80]
+    if name:
+        out["name"] = name
+    out["widthMm"] = max(10, min(200, _label_num(body.get("widthMm"), 38)))
+    out["heightMm"] = max(10, min(200, _label_num(body.get("heightMm"), 58)))
+    out["formatPrice"] = bool(body.get("formatPrice", True))
+    out["priceSuffix"] = str(body.get("priceSuffix") or "")[:24]
+    enabled_in = body.get("enabled") if isinstance(body.get("enabled"), dict) else {}
+    out["enabled"] = {k: bool(enabled_in.get(k, False)) for k in _LABEL_EL_KEYS}
+    styles_in = body.get("styles") if isinstance(body.get("styles"), dict) else {}
+    styles = {}
+    for key in _LABEL_EL_KEYS:
+        st = styles_in.get(key) if isinstance(styles_in.get(key), dict) else {}
+        align = str(st.get("align") or "center").strip().lower()[:16]
+        if align not in ("left", "center", "right"):
+            align = "center"
+        styles[key] = {
+            "x": _label_num(st.get("x"), 6),
+            "y": _label_num(st.get("y"), 6),
+            "w": _label_num(st.get("w"), 88),
+            "h": _label_num(st.get("h"), 12),
+            "size": _label_num(st.get("size"), 14),
+            "weight": int(_label_num(st.get("weight"), 700)),
+            "rotate": _label_num(st.get("rotate"), 0),
+            "align": align,
+            "text": str(st.get("text") or "")[:200],
+        }
+    out["styles"] = styles
+    return out
+
+
+def _label_template_payload(request) -> dict:
+    row = LabelTemplate.objects.filter(shop_key=_label_shop_key(request)).first()
+    data = row.data if row and isinstance(row.data, dict) else {}
+    return data or {}
+
+
+def _label_template_json(request) -> str:
+    return json.dumps(_label_template_payload(request), ensure_ascii=False)
 
 
 @require_GET
@@ -169,7 +248,7 @@ def cabinet_api_status(request):
             "/api/catalog/price-lists/",
             token=token,
             server_name=server,
-            timeout=8,
+            timeout=20,
         )
         ms = int((time.time() - t0) * 1000)
         return JsonResponse(
@@ -219,8 +298,13 @@ def cabinet_catalog(request):
     if page_raw.isdigit():
         page_n = max(1, int(page_raw))
         try:
+            page_size = max(50, min(int(request.GET.get("page_size") or 200), 200))
+        except (TypeError, ValueError):
+            page_size = 200
+        skip_pl = (request.GET.get("skip_pl") or "").strip() in ("1", "true", "yes")
+        try:
             pack = tezpos_api.get_products_page(
-                token, server, page=page_n, page_size=100, timeout=20
+                token, server, page=page_n, page_size=page_size, timeout=45, retries=3
             )
         except tezpos_api.TezPosApiError as exc:
             if getattr(exc, "status", None) in (401, 403):
@@ -239,7 +323,7 @@ def cabinet_catalog(request):
             except Exception:
                 continue
         price_lists_payload = []
-        if page_n == 1:
+        if page_n == 1 and not skip_pl:
             try:
                 raw_pl = _memo_get(
                     f"{memo_prefix}|price_lists",
@@ -257,17 +341,22 @@ def cabinet_catalog(request):
                 ]
             except Exception:
                 price_lists_payload = []
+        full_page = len(products) >= int(pack.get("page_size") or page_size)
+        has_more = bool(pack.get("has_more")) or full_page
+        if not products:
+            has_more = False
         return JsonResponse(
             {
                 "ok": True,
                 "products": _products_payload_list(products),
                 "priceLists": price_lists_payload,
                 "page": page_n,
+                "page_size": int(pack.get("page_size") or page_size),
                 "total": int(pack.get("total") or 0),
-                "has_more": bool(pack.get("has_more")),
+                "has_more": has_more,
                 "count": len(products),
-                "complete": not bool(pack.get("has_more")),
-                "partial": bool(pack.get("has_more")),
+                "complete": not has_more,
+                "partial": has_more,
                 "api": tezpos_api.normalize_api_base(),
             }
         )
@@ -435,17 +524,7 @@ def cabinet_warm(request):
     today = timezone.localdate().isoformat()
 
     def _warm() -> None:
-        try:
-            _memo_get(
-                f"{memo_prefix}|products|all",
-                180.0,
-                lambda: tezpos_api.get_products(
-                    token, server, max_pages=80, timeout=12, page_size=100
-                ),
-                skip_empty=True,
-            )
-        except Exception:
-            pass
+        # To‘liq katalogni shu yerda tortmang — /catalog/?page=N o‘zi yig‘adi.
         try:
             _memo_get(
                 f"{memo_prefix}|price_lists",
@@ -2630,6 +2709,7 @@ def _cabinet_shell_context(request, tenant, section, *, form=None, sale_date=Non
             },
             ensure_ascii=False,
         ),
+        "label_template_json": _label_template_json(request),
         "report_charts_json": json.dumps(
             {
                 "daily": empty_chart,
@@ -3405,6 +3485,7 @@ def cabinet_view(request):
                 },
                 ensure_ascii=False,
             ),
+            "label_template_json": _label_template_json(request),
             "report_charts_json": json.dumps(
                 {
                     "daily": {
@@ -4312,6 +4393,45 @@ def _shift_report_bundle(
             sold_product_rows=sold_product_rows,
         ),
     }
+
+
+@login_required
+def cabinet_label_template(request):
+    """Do‘kon bo‘yicha umumiy narx belgisi shabloni (GET/POST)."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    shop_key = _label_shop_key(request)
+    if request.method == "GET":
+        row = LabelTemplate.objects.filter(shop_key=shop_key).first()
+        data = row.data if row and isinstance(row.data, dict) else {}
+        return JsonResponse(
+            {
+                "ok": True,
+                "has_template": bool(row and data),
+                "template": data or {},
+            }
+        )
+    if request.method != "POST":
+        return JsonResponse({"error": "method"}, status=405)
+
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
+    if not isinstance(body, dict):
+        return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
+
+    display = (request.session.get(SESSION_DISPLAY) or request.user.get_username() or "")[:180]
+    if body.get("reset"):
+        LabelTemplate.objects.filter(shop_key=shop_key).delete()
+        return JsonResponse({"ok": True, "has_template": False, "template": {}})
+
+    template = _sanitize_label_template(body)
+    LabelTemplate.objects.update_or_create(
+        shop_key=shop_key,
+        defaults={"data": template, "updated_by": display},
+    )
+    return JsonResponse({"ok": True, "has_template": True, "template": template})
 
 
 @login_required

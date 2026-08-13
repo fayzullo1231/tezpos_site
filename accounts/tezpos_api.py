@@ -477,13 +477,13 @@ def get_products_page(
     server_name: str,
     *,
     page: int = 1,
-    page_size: int = 100,
-    timeout: float = 20,
+    page_size: int = 200,
+    timeout: float = 45,
+    retries: int = 3,
 ) -> dict:
-    """Bitta katalog sahifasi — brauzer sahifalab 1483 tani yig‘adi."""
+    """Bitta katalog sahifasi — timeout bo‘lsa qayta urinib, to‘liq ro‘yxat yig‘iladi."""
     page = max(1, int(page or 1))
-    size = max(20, min(int(page_size or 100), 200))
-    offset = (page - 1) * size
+    size = max(50, min(int(page_size or 200), 200))
 
     def _rows(payload) -> list:
         if isinstance(payload, list):
@@ -506,20 +506,10 @@ def get_products_page(
         except (TypeError, ValueError):
             return 0
 
+    query = {"page": str(page), "page_size": str(size)}
     data = None
     last_err: TezPosApiError | None = None
-    queries = (
-        (
-            {"limit": str(size), "offset": str(offset)},
-            {"page": str(page), "page_size": str(size)},
-        )
-        if page > 1
-        else (
-            {"page": str(page), "page_size": str(size)},
-            {"limit": str(size), "offset": str(offset)},
-        )
-    )
-    for query in queries:
+    for attempt in range(max(1, int(retries or 1))):
         try:
             data = api_request(
                 "GET",
@@ -529,18 +519,22 @@ def get_products_page(
                 query=query,
                 timeout=timeout,
             )
+            last_err = None
             break
         except TezPosApiError as exc:
             last_err = exc
             if exc.status in (401, 403):
                 raise
-            continue
+            if attempt + 1 < retries:
+                time.sleep(0.4 * (attempt + 1))
+                continue
     if data is None and last_err:
         raise last_err
     rows = _rows(data)
     total = _count(data)
     nxt = data.get("next") if isinstance(data, dict) else None
-    has_more = bool(nxt) or (total > 0 and page * size < total) or (len(rows) >= size)
+    full_page = len(rows) >= size
+    has_more = bool(nxt) or (total > 0 and page * size < total) or full_page
     if not rows:
         has_more = False
     return {

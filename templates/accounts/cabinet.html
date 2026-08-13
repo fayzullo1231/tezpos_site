@@ -1268,11 +1268,13 @@
     shiftsSource: "{{ shifts_source|default:'none' }}",
     shiftDetailUrl: "{% url 'accounts:cabinet_shift_detail' %}",
     botSettingsUrl: "{% url 'accounts:cabinet_bot_settings_save' %}",
+    labelTemplateUrl: "{% url 'accounts:cabinet_label_template' %}",
     botChatsUrl: "{% url 'accounts:cabinet_bot_chats' %}",
     telegramSyncUrl: "{% url 'accounts:cabinet_telegram_sync' %}",
     debtorsUrl: "{% url 'accounts:cabinet_debtors' %}",
     debtorPayUrl: "{% url 'accounts:cabinet_debtor_pay' %}",
     botSettings: {{ bot_settings_json|default:"{}"|safe }},
+    labelTemplate: {{ label_template_json|default:"{}"|safe }},
     daySales: {{ day_sales_json|default:"[]"|safe }},
     saleDate: "{{ sale_date_iso|default:'' }}",
     section: "{{ section|default:'overview'|escapejs }}",
@@ -1333,5 +1335,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=label-print-mm-1" defer></script>
+<script src="/static/cabinet.js?v=label-catalog-all-1" defer></script>
 {% endblock %}

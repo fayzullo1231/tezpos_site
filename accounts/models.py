@@ -31,6 +31,22 @@ class TenantProfile(models.Model):
         return self.business_name
 
 
+class LabelTemplate(models.Model):
+    """Narx belgisi shabloni — bir TezPOS do‘koni (server_name) uchun umumiy."""
+
+    shop_key = models.CharField(max_length=140, unique=True, db_index=True)
+    data = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=180, blank=True, default="")
+
+    class Meta:
+        verbose_name = "Narx belgisi shabloni"
+        verbose_name_plural = "Narx belgisi shablonlari"
+
+    def __str__(self) -> str:
+        return f"Label template {self.shop_key}"
+
+
 class DesktopInstaller(models.Model):
     """Saytdagi Install tugmasi uchun .exe — Django admin orqali yuklanadi."""
 
