@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from statistics import mean, pstdev
@@ -99,6 +99,11 @@ def _memo_get(key: str, ttl: float, loader):
         for k, _ in oldest:
             _TEZPOS_MEMO.pop(k, None)
     return val
+
+
+def _memo_peek(key: str):
+    hit = _TEZPOS_MEMO.get(key)
+    return hit[1] if hit else None
 
 
 def _products_payload_list(products: list) -> list[dict]:
@@ -201,14 +206,20 @@ def cabinet_catalog(request):
     token = request.session[SESSION_TOKEN]
     server = request.session[SESSION_SERVER]
     memo_prefix = f"{server}|{(token or '')[-12:]}"
+    products_key = f"{memo_prefix}|products|4"
+    api_err = ""
+    raw_products: list = []
+    raw_pl: list = []
+
+    def _load_products():
+        return tezpos_api.get_products(
+            token, server, max_pages=12, timeout=10, page_size=80
+        )
+
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             fut_p = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|products|4",
-                    600.0,
-                    lambda: tezpos_api.get_products(token, server, max_pages=4),
-                )
+                lambda: _memo_get(products_key, 600.0, _load_products)
             )
             fut_pl = pool.submit(
                 lambda: _memo_get(
@@ -217,15 +228,31 @@ def cabinet_catalog(request):
                     lambda: tezpos_api.get_price_lists(token, server) or [],
                 )
             )
-            raw_products = fut_p.result() or []
-            raw_pl = fut_pl.result() or []
+            try:
+                raw_products = fut_p.result(timeout=22) or []
+            except FuturesTimeoutError:
+                api_err = "Katalog so‘rovi vaqt limiti"
+                raw_products = _memo_peek(products_key) or []
+            try:
+                raw_pl = fut_pl.result(timeout=8) or []
+            except Exception:
+                raw_pl = _memo_peek(f"{memo_prefix}|price_lists") or []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
             return JsonResponse({"error": "auth"}, status=401)
-        return JsonResponse({"error": str(exc)}, status=502)
+        api_err = str(exc)
+        raw_products = _memo_peek(products_key) or []
+        raw_pl = _memo_peek(f"{memo_prefix}|price_lists") or []
     except (TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=504)
+        api_err = str(exc)
+        raw_products = _memo_peek(products_key) or []
+        raw_pl = _memo_peek(f"{memo_prefix}|price_lists") or []
+
+    if not isinstance(raw_products, list):
+        raw_products = []
+    if not isinstance(raw_pl, list):
+        raw_pl = []
 
     products = [_map_product(p) for p in raw_products if isinstance(p, dict)]
     products.sort(key=lambda p: (not p.is_active, p.name.lower()))
@@ -233,23 +260,28 @@ def cabinet_catalog(request):
         pl for pl in raw_pl if isinstance(pl, dict) and pl.get("is_active", True)
     ]
     near_min = _build_near_min_stock(products)
-    return JsonResponse(
-        {
-            "ok": True,
-            "products": _products_payload_list(products),
-            "priceLists": [
-                {
-                    "id": str(pl.get("id") or ""),
-                    "name": (pl.get("name") or "").strip() or "Narxlar",
-                    "is_selling": bool(pl.get("is_selling")),
-                }
-                for pl in price_lists
-                if str(pl.get("id") or "")
-            ],
-            "nearMin": near_min,
-            "cached": True,
-        }
-    )
+    payload = {
+        "ok": True,
+        "products": _products_payload_list(products),
+        "priceLists": [
+            {
+                "id": str(pl.get("id") or ""),
+                "name": (pl.get("name") or "").strip() or "Narxlar",
+                "is_selling": bool(pl.get("is_selling")),
+            }
+            for pl in price_lists
+            if str(pl.get("id") or "")
+        ],
+        "nearMin": near_min,
+        "cached": True,
+        "partial": bool(api_err),
+        "api": tezpos_api.normalize_api_base(),
+    }
+    # Mahsulot bo‘lsa — banner chiqmasin (qisman ham OK)
+    if api_err and not products:
+        payload["error"] = api_err
+        payload["ok"] = False
+    return JsonResponse(payload)
 
 
 @login_required
@@ -268,7 +300,9 @@ def cabinet_warm(request):
             _memo_get(
                 f"{memo_prefix}|products|4",
                 600.0,
-                lambda: tezpos_api.get_products(token, server, max_pages=4),
+                lambda: tezpos_api.get_products(
+                    token, server, max_pages=12, timeout=10, page_size=80
+                ),
             )
         except Exception:
             pass
@@ -2060,6 +2094,8 @@ def _build_near_min_stock(products):
                 {
                     "id": p.id,
                     "name": p.name,
+                    "barcode": getattr(p, "barcode", "") or "",
+                    "unit": getattr(p, "unit", None) or "dona",
                     "stock": float(p.stock_qty),
                     "min_stock": float(min_qty),
                     "title": "Kam qoldiq",
@@ -2316,7 +2352,9 @@ def cabinet_products_export(request):
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             fut_p = pool.submit(
-                lambda: tezpos_api.get_products(token, server, max_pages=80)
+                lambda: tezpos_api.get_products(
+                    token, server, max_pages=80, timeout=12, page_size=100
+                )
             )
             fut_pl = pool.submit(
                 lambda: tezpos_api.get_price_lists(token, server) or []
@@ -3265,6 +3303,7 @@ def cabinet_range_stats(request):
     token = request.session[SESSION_TOKEN]
     server = request.session[SESSION_SERVER]
     today = timezone.localdate()
+    t_start = time.time()
 
     custom_from = _parse_iso_date(request.GET.get("from"))
     custom_to = _parse_iso_date(request.GET.get("to"))
@@ -3286,23 +3325,28 @@ def cabinet_range_stats(request):
 
     span = (end - start).days + 1
     fast = (request.GET.get("fast") or "").strip() in ("1", "true", "yes")
-    # Contabo: bir kunlik — day-sales memo; detail/namuna ixtiyoriy (timeout bo‘lmasin)
+    # Tez javob — brauzer abort (22–35s) va gunicorn oldidan
     single_day = span <= 1
     if fast and single_day:
-        max_pages, product_pages, sales_timeout = 1, 0, 12
+        max_pages, product_pages, sales_timeout = 1, 0, 8
         detail_cap, detail_each, detail_budget = 0, 0.0, 0.0
+        hard_deadline = 14.0
     elif single_day:
-        max_pages, product_pages, sales_timeout = 1, 2, 14
-        detail_cap, detail_each, detail_budget = 8, 3.0, 5.0
+        max_pages, product_pages, sales_timeout = 1, 0, 10
+        detail_cap, detail_each, detail_budget = 6, 2.5, 4.0
+        hard_deadline = 18.0
     elif fast or span <= 7:
-        max_pages, product_pages, sales_timeout = 1, 2, 12
-        detail_cap, detail_each, detail_budget = 8, 3.0, 6.0
+        max_pages, product_pages, sales_timeout = 1, 0, 10
+        detail_cap, detail_each, detail_budget = 6, 2.5, 5.0
+        hard_deadline = 16.0
     elif span <= 31:
-        max_pages, product_pages, sales_timeout = 2, 2, 16
-        detail_cap, detail_each, detail_budget = 12, 3.5, 8.0
+        max_pages, product_pages, sales_timeout = 1, 0, 12
+        detail_cap, detail_each, detail_budget = 8, 2.5, 5.0
+        hard_deadline = 18.0
     else:
-        max_pages, product_pages, sales_timeout = 2, 2, 18
-        detail_cap, detail_each, detail_budget = 12, 3.5, 8.0
+        max_pages, product_pages, sales_timeout = 2, 0, 14
+        detail_cap, detail_each, detail_budget = 8, 2.5, 5.0
+        hard_deadline = 20.0
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     sales: list = []
@@ -3316,7 +3360,15 @@ def cabinet_range_stats(request):
             return _memo_get(
                 f"{memo_prefix}|day|{day}",
                 90.0,
-                lambda: tezpos_api.get_sales_for_day(token, server, day) or [],
+                lambda: tezpos_api.get_sales(
+                    token,
+                    server,
+                    date_from=day,
+                    date_to=day,
+                    timeout=sales_timeout,
+                    max_pages=1,
+                )
+                or [],
             )
         return _memo_get(
             f"{memo_prefix}|sales|{start}|{end}|{max_pages}",
@@ -3332,32 +3384,29 @@ def cabinet_range_stats(request):
             or [],
         )
 
+    def _load_price_lists():
+        return _memo_get(
+            f"{memo_prefix}|price_lists",
+            600.0,
+            lambda: tezpos_api.get_price_lists(token, server) or [],
+        )
+
     try:
-        workers = 1 + (1 if product_pages > 0 else 0) + 1
-        with ThreadPoolExecutor(max_workers=max(2, workers)) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             fut_s = pool.submit(_load_sales)
-            fut_p = None
-            if product_pages > 0:
-                fut_p = pool.submit(
-                    lambda: _memo_get(
-                        f"{memo_prefix}|products|{product_pages}",
-                        600.0,
-                        lambda: tezpos_api.get_products(
-                            token, server, max_pages=product_pages
-                        ),
-                    )
-                )
-            fut_pl = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|price_lists",
-                    600.0,
-                    lambda: tezpos_api.get_price_lists(token, server) or [],
-                )
-            )
-            sales = fut_s.result() or []
-            products_raw = fut_p.result() if fut_p is not None else []
+            fut_pl = pool.submit(_load_price_lists)
+            # Hard deadline — uzoq kutmaslik
+            remain = max(1.0, hard_deadline - (time.time() - t_start))
             try:
-                price_lists = fut_pl.result() or []
+                sales = fut_s.result(timeout=remain) or []
+            except FuturesTimeoutError:
+                api_err = api_err or "Savdo so‘rovi vaqt limiti"
+                sales = []
+            remain = max(0.5, hard_deadline - (time.time() - t_start))
+            try:
+                price_lists = fut_pl.result(timeout=remain) or []
+            except FuturesTimeoutError:
+                price_lists = []
             except Exception:
                 price_lists = []
     except tezpos_api.TezPosApiError as exc:
@@ -3368,13 +3417,12 @@ def cabinet_range_stats(request):
     except (TimeoutError, OSError) as exc:
         api_err = str(exc)
 
-    # Mahsulot memo bo‘lsa — marja aniqroq (kutmasdan)
-    if not products_raw:
-        hit = _TEZPOS_MEMO.get(f"{memo_prefix}|products|4") or _TEZPOS_MEMO.get(
-            f"{memo_prefix}|products|2"
-        )
-        if hit:
-            products_raw = hit[1] if isinstance(hit[1], list) else []
+    # Mahsulot — faqat kesh (bloklamaslik; Contabo da products sekin)
+    hit = _TEZPOS_MEMO.get(f"{memo_prefix}|products|4") or _TEZPOS_MEMO.get(
+        f"{memo_prefix}|products|2"
+    )
+    if hit:
+        products_raw = hit[1] if isinstance(hit[1], list) else []
 
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     products_by_id = {str(p.id): p for p in products}
@@ -3405,10 +3453,11 @@ def cabinet_range_stats(request):
 
     lists: list = []
     details_used = 0
+    remain_budget = hard_deadline - (time.time() - t_start)
     if gross > 0:
         # Avval tez Jami/Sotuv — UI bo‘sh qolmasin
         lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
-        if detail_cap > 0:
+        if detail_cap > 0 and remain_budget >= 3.0:
             embedded = [
                 s for s in sales if isinstance(s.get("items"), list) and s.get("items")
             ]
@@ -3428,7 +3477,7 @@ def cabinet_range_stats(request):
                     need_ids[:sample_n],
                     limit=sample_n,
                     per_sale_timeout=detail_each,
-                    overall_timeout=detail_budget,
+                    overall_timeout=min(detail_budget, max(2.0, remain_budget - 1.0)),
                 )
                 details.update(fetched)
             details_used = len(details)
@@ -3459,11 +3508,17 @@ def cabinet_range_stats(request):
         },
         "chart": chart,
         "priceLists": lists,
-        "partial": bool(detail_cap > 0 and details_used < max(1, min(checks, detail_cap))),
+        "partial": bool(
+            (detail_cap > 0 and details_used < max(1, min(checks, detail_cap)))
+            or bool(api_err)
+        ),
         "fast": bool(fast),
+        "ms": int((time.time() - t_start) * 1000),
+        "api": tezpos_api.normalize_api_base(),
     }
     if api_err:
         payload["error"] = api_err
+    # Har doim 200 — brauzer "API timeout" catch ga tushmasin
     return JsonResponse(payload)
 
 
@@ -3997,6 +4052,47 @@ def _shift_report_bundle(
     ]
     credit_total = sum(v["total"] for v in credit_rows)
 
+    # Sotilgan mahsulotlar (Excel — nom kesilmasin)
+    sold_agg: dict[str, dict] = {}
+    for detail in details.values():
+        if not isinstance(detail, dict):
+            continue
+        for item in detail.get("items") or detail.get("lines") or []:
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("product_id") or item.get("product") or "").strip()
+            name = (item.get("product_name") or item.get("name") or "").strip()
+            p = products_by_id.get(pid) if pid else None
+            if not name and p:
+                name = p.name
+            if not name:
+                name = "Mahsulot"
+            key = pid or name.lower()
+            qty = float(_dec(item.get("quantity")))
+            unit_price = float(_dec(item.get("unit_price")))
+            line_total = float(_dec(item.get("total"), str(qty * unit_price)))
+            unit_cost = float(_resolve_item_unit_cost(item, products_by_id, products_by_name))
+            line_profit = line_total - (qty * unit_cost if unit_cost > 0 else 0.0)
+            bucket = sold_agg.setdefault(
+                key,
+                {
+                    "name": name,
+                    "barcode": (p.barcode if p else "") or (item.get("barcode") or ""),
+                    "unit": (p.unit if p else None) or (item.get("unit") or "dona"),
+                    "qty": 0.0,
+                    "revenue": 0.0,
+                    "profit": 0.0,
+                },
+            )
+            bucket["qty"] += qty
+            bucket["revenue"] += line_total
+            bucket["profit"] += line_profit
+            if not bucket.get("barcode") and p:
+                bucket["barcode"] = p.barcode or ""
+    sold_product_rows = sorted(
+        sold_agg.values(), key=lambda r: r.get("revenue") or 0, reverse=True
+    )
+
     # To'liq qarzdorlar ro'yxati (API)
     debtors_rows: list[dict] = []
     debtors_total = Decimal("0")
@@ -4024,13 +4120,26 @@ def _shift_report_bundle(
     # Kam qoldiq
     low_stock_rows = _build_near_min_stock(products)
 
+    opened_disp = shift.get("opened_display") or shift.get("opened_at") or ""
+    closed_disp = shift.get("closed_display") or shift.get("closed_at") or ""
+    # Namuna: 09.08.2026 · 10:17
+    if opened_disp and " · " not in str(opened_disp):
+        opened_disp = str(opened_disp).replace(" ", " · ", 1)
+    if closed_disp and closed_disp != "—" and " · " not in str(closed_disp):
+        closed_disp = str(closed_disp).replace(" ", " · ", 1)
+
+    duration_label = tg.format_duration(
+        str(shift.get("opened_at") or ""),
+        str(shift.get("closed_at") or ""),
+    )
+
     enriched = {
         **shift,
         "checks": checks,
         "gross": gross,
         "profit": profit,
         "margin": margin,
-        "selling_revenue": selling_rev,
+        "selling_revenue": selling_rev if selling_rev > 0 else gross,
         "wholesale_revenue": wholesale_rev,
         "credit_total": credit_total,
         "credit_customers": credit_rows[:20],
@@ -4039,9 +4148,11 @@ def _shift_report_bundle(
         "debtors_total": float(debtors_total),
         "low_stock": low_stock_rows,
         "low_stock_count": len(low_stock_rows),
-        "opened_at_display": shift.get("opened_display") or shift.get("opened_at") or "",
-        "closed_at_display": shift.get("closed_display") or shift.get("closed_at") or "",
+        "opened_at_display": opened_disp,
+        "closed_at_display": closed_disp,
+        "duration_label": duration_label,
     }
+    biz = shift.get("business_name") or "TezPOS"
     return {
         "shift": enriched,
         "sales_rows": sales_rows,
@@ -4049,14 +4160,16 @@ def _shift_report_bundle(
         "credit_rows": credit_rows,
         "debtors_rows": debtors_rows,
         "low_stock_rows": low_stock_rows,
+        "sold_product_rows": sold_product_rows,
         "excel": tg.build_shift_excel(
-            business_name=shift.get("business_name") or "TezPOS",
+            business_name=biz,
             shift=enriched,
             sales_rows=sales_rows,
             price_lists=pl_rows,
             credit_rows=credit_rows,
             debtors_rows=debtors_rows,
             low_stock_rows=low_stock_rows,
+            sold_product_rows=sold_product_rows,
         ),
     }
 
@@ -4248,10 +4361,15 @@ def telegram_cron_sync(request):
     return JsonResponse({"ok": True, "results": results})
 
 
+def _tg_any_ok(results: list | None) -> bool:
+    return any(bool(r.get("ok")) for r in (results or []) if isinstance(r, dict))
+
+
 def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
     """
     Smena ochilish/yopilishni tekshiradi.
-    Yopilishda: avval TEZKOR xabar, keyin Excel (kechikishsiz bildirishnoma).
+    Yopilishda: to‘liq hisobot (xabar + Excel) guruh/kanal/shaxsiy chatlarga.
+    Muvaffaqiyatsiz yuborish qayta uriniladi (notified faqat ok bo‘lsa).
     """
     from . import telegram_bot as tg
 
@@ -4345,51 +4463,84 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                     continue
 
             try:
-                # Tezkor xabar — Excel kutmasdan (2 daqiqa ichida yetishi uchun)
-                quick = dict(sh)
-                quick["business_name"] = tenant.business_name
-                quick["opened_at_display"] = sh.get("opened_display") or sh.get("opened_at")
-                quick["closed_at_display"] = sh.get("closed_display") or sh.get("closed_at")
-                text = tg.build_shift_message(
-                    business_name=tenant.business_name,
-                    event=event,
-                    shift=quick,
-                )
-                msg_res = tg.broadcast_message(tenant.telegram_bot_token, recipients, text)
-                notified[key] = timezone.now().isoformat()
-                tenant.telegram_notified_events = notified
-                tenant.save(update_fields=["telegram_notified_events"])
-
-                doc_res = []
+                doc_res: list = []
                 if event == "close":
+                    # To‘liq ma’lumot: avval hisobot, keyin xabar + Excel
+                    bundle = _shift_report_bundle(
+                        token, server, {**sh, "business_name": tenant.business_name}
+                    )
+                    shift_payload = bundle.get("shift") or dict(sh)
+                    shift_payload["business_name"] = tenant.business_name
+                    text = tg.build_shift_message(
+                        business_name=tenant.business_name,
+                        event=event,
+                        shift=shift_payload,
+                    )
+                    msg_res = tg.broadcast_message(
+                        tenant.telegram_bot_token, recipients, text
+                    )
+                    if not _tg_any_ok(msg_res):
+                        sent.append(
+                            {
+                                "shift_id": sid,
+                                "event": event,
+                                "messages": msg_res,
+                                "error": "xabar yetmadi — qayta uriniladi",
+                            }
+                        )
+                        continue
+
+                    notified[key] = timezone.now().isoformat()
+                    tenant.telegram_notified_events = notified
+                    tenant.save(update_fields=["telegram_notified_events"])
+
                     excel_key = f"{sid}:excel"
-                    if excel_key not in notified:
-                        try:
-                            bundle = _shift_report_bundle(token, server, sh)
-                            if bundle.get("excel"):
-                                day = timezone.localdate().isoformat()
-                                fname = f"kunlik_hisobot_{day}_{sid[:8]}.xlsx"
-                                doc_res = tg.broadcast_document(
-                                    tenant.telegram_bot_token,
-                                    recipients,
-                                    fname,
-                                    bundle["excel"],
-                                    caption=(
-                                        f"📎 Kunlik hisobot — {tenant.business_name}\n"
-                                        f"Sotuv · Qarzdorlar · Kam qoldiq · Excel"
-                                    ),
-                                )
+                    if excel_key not in notified and bundle.get("excel"):
+                        day = timezone.localdate().isoformat()
+                        fname = f"kunlik_hisobot_{day}_{sid[:8]}.xlsx"
+                        doc_res = tg.broadcast_document(
+                            tenant.telegram_bot_token,
+                            recipients,
+                            fname,
+                            bundle["excel"],
+                            caption=(
+                                f"📎 Kunlik hisobot — {tenant.business_name}\n"
+                                f"Sotuv · Mahsulotlar · Qarzdorlar · Kam qoldiq"
+                            ),
+                        )
+                        if _tg_any_ok(doc_res):
                             notified[excel_key] = timezone.now().isoformat()
                             tenant.telegram_notified_events = notified
                             tenant.save(update_fields=["telegram_notified_events"])
-                        except Exception as excel_exc:  # noqa: BLE001
-                            sent.append(
-                                {
-                                    "shift_id": sid,
-                                    "event": "excel",
-                                    "error": str(excel_exc),
-                                }
-                            )
+                else:
+                    quick = dict(sh)
+                    quick["business_name"] = tenant.business_name
+                    opened_disp = sh.get("opened_display") or sh.get("opened_at") or ""
+                    if opened_disp and " · " not in str(opened_disp):
+                        opened_disp = str(opened_disp).replace(" ", " · ", 1)
+                    quick["opened_at_display"] = opened_disp
+                    quick["closed_at_display"] = sh.get("closed_display") or ""
+                    text = tg.build_shift_message(
+                        business_name=tenant.business_name,
+                        event=event,
+                        shift=quick,
+                    )
+                    msg_res = tg.broadcast_message(
+                        tenant.telegram_bot_token, recipients, text
+                    )
+                    if not _tg_any_ok(msg_res):
+                        sent.append(
+                            {
+                                "shift_id": sid,
+                                "event": event,
+                                "messages": msg_res,
+                                "error": "xabar yetmadi — qayta uriniladi",
+                            }
+                        )
+                        continue
+                    notified[key] = timezone.now().isoformat()
+                    tenant.telegram_notified_events = notified
+                    tenant.save(update_fields=["telegram_notified_events"])
 
                 sent.append(
                     {
@@ -4413,7 +4564,9 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
             if close_key not in notified or excel_key in notified:
                 continue
             try:
-                bundle = _shift_report_bundle(token, server, sh)
+                bundle = _shift_report_bundle(
+                    token, server, {**sh, "business_name": tenant.business_name}
+                )
                 if bundle.get("excel"):
                     day = timezone.localdate().isoformat()
                     fname = f"kunlik_hisobot_{day}_{sid[:8]}.xlsx"
@@ -4424,7 +4577,8 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                         bundle["excel"],
                         caption=f"📎 Kunlik hisobot — {tenant.business_name}",
                     )
-                    notified[excel_key] = timezone.now().isoformat()
+                    if _tg_any_ok(doc_res):
+                        notified[excel_key] = timezone.now().isoformat()
                     sent.append(
                         {"shift_id": sid, "event": "excel", "documents": doc_res}
                     )
@@ -4438,7 +4592,7 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
     tenant.telegram_notified_events = notified
     tenant.save(update_fields=["telegram_notified_events"])
 
-    return {"ok": True, "sent": sent, "checked": len(shifts)}
+    return {"ok": True, "sent": sent, "checked": len(shifts), "recipients": recipients}
 
 
 def _debt_amount(value) -> Decimal:

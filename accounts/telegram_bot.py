@@ -14,7 +14,7 @@ TG_API = "https://api.telegram.org"
 
 
 def parse_recipient_line(raw: str) -> str | None:
-    """Qatorni Telegram chat_id yoki @username ga aylantiradi."""
+    """Qatorni Telegram chat_id yoki @username ga aylantiradi (guruh/kanal ham)."""
     s = (raw or "").strip()
     if not s or s.startswith("#"):
         return None
@@ -36,11 +36,16 @@ def parse_recipient_line(raw: str) -> str | None:
 
     if s.startswith("@"):
         return s
-    if re.fullmatch(r"-?\d+", s):
+    # -100... guruh/kanal ID
+    if re.fullmatch(r"-100\d{5,}", s) or re.fullmatch(r"-?\d{5,}", s):
         return s
-    # Oddiy username
+    # Oddiy username (kanal/guruh public)
     if re.fullmatch(r"[A-Za-z0-9_]{4,}", s):
         return f"@{s}"
+    # t.me/name/msg
+    m2 = re.fullmatch(r"([A-Za-z0-9_]{4,})(?:/\d+)?", s)
+    if m2:
+        return f"@{m2.group(1)}"
     return None
 
 
@@ -287,8 +292,10 @@ def build_shift_excel(
     credit_rows: list[dict],
     debtors_rows: list[dict] | None = None,
     low_stock_rows: list[dict] | None = None,
+    sold_product_rows: list[dict] | None = None,
 ) -> bytes:
     from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
     from openpyxl.utils import get_column_letter
 
     wb = Workbook()
@@ -300,6 +307,7 @@ def build_shift_excel(
         ("Kassir", shift.get("cashier") or ""),
         ("Ochilgan", shift.get("opened_at_display") or shift.get("opened_at") or ""),
         ("Yopilgan", shift.get("closed_at_display") or shift.get("closed_at") or "—"),
+        ("Davomiylik", shift.get("duration_label") or ""),
         ("Cheklar", shift.get("checks") or 0),
         ("Jami savdo", shift.get("gross") or 0),
         ("Sof foyda", shift.get("profit") or 0),
@@ -325,6 +333,21 @@ def build_shift_excel(
                 row.get("customer") or "",
                 row.get("payment") or "",
                 row.get("total") or 0,
+                row.get("profit") or 0,
+            ]
+        )
+
+    ws_sold = wb.create_sheet("Sotilgan mahsulotlar")
+    ws_sold.append(["#", "Mahsulot nomi", "Shtrixkod", "Miqdor", "Birlik", "Tushum", "Foyda"])
+    for i, row in enumerate(sold_product_rows or [], start=1):
+        ws_sold.append(
+            [
+                i,
+                row.get("name") or "",
+                row.get("barcode") or "",
+                row.get("qty") or 0,
+                row.get("unit") or "dona",
+                row.get("revenue") or 0,
                 row.get("profit") or 0,
             ]
         )
@@ -360,24 +383,50 @@ def build_shift_excel(
         )
 
     ws6 = wb.create_sheet("Kam qoldiq")
-    ws6.append(["#", "Mahsulot", "Qoldiq", "Minimal"])
+    ws6.append(["#", "Mahsulot nomi", "Shtrixkod", "Qoldiq", "Minimal", "Birlik"])
     for i, row in enumerate(low_stock_rows or [], start=1):
         ws6.append(
             [
                 i,
                 row.get("name") or "",
+                row.get("barcode") or "",
                 row.get("stock") if row.get("stock") is not None else row.get("qty") or 0,
                 row.get("min_stock") if row.get("min_stock") is not None else "",
+                row.get("unit") or "dona",
             ]
         )
 
+    wrap = Alignment(wrap_text=True, vertical="top")
+    header_font = Font(bold=True)
+    # Ustun indekslari (1-based): nom kesilmasin
+    name_cols_by_sheet = {
+        "Xulosa": {2},
+        "Kunlik sotuv": {3},
+        "Sotilgan mahsulotlar": {2},
+        "Narxlar": {1},
+        "Smena qarzlari": {1},
+        "Qarzdorlar": {2},
+        "Kam qoldiq": {2},
+    }
+
     for sheet in wb.worksheets:
+        name_cols = name_cols_by_sheet.get(sheet.title, set())
+        for cell in sheet[1]:
+            cell.font = header_font
         for col in sheet.columns:
-            letter = get_column_letter(col[0].column)
-            width = 12
+            col_idx = col[0].column
+            letter = get_column_letter(col_idx)
+            width = 14
             for cell in col:
-                width = max(width, min(48, len(str(cell.value or "")) + 2))
-            sheet.column_dimensions[letter].width = width
+                val = str(cell.value if cell.value is not None else "")
+                width = max(width, len(val) + 2)
+                if col_idx in name_cols:
+                    cell.alignment = wrap
+            # Mahsulot/mijoz nomlari to‘liq ko‘rinsin
+            if col_idx in name_cols:
+                sheet.column_dimensions[letter].width = min(90, max(28, width))
+            else:
+                sheet.column_dimensions[letter].width = min(36, max(10, width))
 
     bio = BytesIO()
     wb.save(bio)
@@ -392,77 +441,146 @@ def format_money(n: float | int) -> str:
     return f"{v:,.0f}".replace(",", " ")
 
 
+def format_margin(n: float | int) -> str:
+    try:
+        v = float(n or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    # 41,0% — o‘zbekcha vergul
+    return f"{v:.1f}".replace(".", ",")
+
+
+def format_duration(opened_iso: str, closed_iso: str) -> str:
+    """Smena davomiyligi: '2 soat 51 daqiqa'."""
+    from datetime import datetime
+
+    def _parse(raw: str):
+        s = (raw or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    a = _parse(opened_iso)
+    b = _parse(closed_iso)
+    if not a or not b:
+        return ""
+    secs = int(abs((b - a).total_seconds()))
+    hours, rem = divmod(secs, 3600)
+    mins = rem // 60
+    if hours and mins:
+        return f"{hours} soat {mins} daqiqa"
+    if hours:
+        return f"{hours} soat"
+    return f"{mins} daqiqa"
+
+
 def build_shift_message(
     *,
     business_name: str,
     event: str,
     shift: dict,
 ) -> str:
+    """Telegram smena xabari — foydalanuvchi namunasi bilan bir xil ko‘rinish."""
     status = "ochildi" if event == "open" else "yopildi"
     emoji = "🟢" if event == "open" else "🔴"
+    opened = (
+        shift.get("opened_at_display")
+        or shift.get("opened_display")
+        or shift.get("opened_at")
+        or "—"
+    )
+    closed = (
+        shift.get("closed_at_display")
+        or shift.get("closed_display")
+        or shift.get("closed_at")
+        or "—"
+    )
+    duration = shift.get("duration_label") or ""
+    if not duration and event == "close":
+        duration = format_duration(
+            str(shift.get("opened_at") or ""),
+            str(shift.get("closed_at") or ""),
+        )
+
     lines = [
         f"{emoji} <b>{business_name}</b>",
-        f"Smena <b>{status}</b>",
-        f"Kassir: <b>{shift.get('cashier') or '—'}</b>",
-        f"Vaqt: {shift.get('opened_at_display') or shift.get('opened_display') or shift.get('opened_at') or '—'}"
-        + (
-            f" → {shift.get('closed_at_display') or shift.get('closed_display') or shift.get('closed_at') or '—'}"
-            if event == "close"
-            else ""
-        ),
+        f"<b>Smena {status}</b>",
         "",
-        f"🧾 Cheklar: <b>{int(shift.get('checks') or 0)}</b>",
-        f"💰 Savdo: <b>{format_money(shift.get('gross') or 0)}</b> so'm",
-        f"📈 Sof foyda: <b>{format_money(shift.get('profit') or 0)}</b> so'm",
-        f"📊 Marja: <b>{float(shift.get('margin') or 0):.1f}%</b>",
+        f"👤 Kassir: <b>{shift.get('cashier') or '—'}</b>",
+    ]
+    if event == "close":
+        lines.append(f"🕐 {opened} → {closed}")
+        if duration:
+            lines.append(f"⏱️ Smena davomiyligi: <b>{duration}</b>")
+    else:
+        lines.append(f"🕐 {opened}")
+
+    lines += [
         "",
-        f"🛒 Sotuv narxida: <b>{format_money(shift.get('selling_revenue') or 0)}</b>",
-        f"📦 Optom / narxlar ro‘yxati: <b>{format_money(shift.get('wholesale_revenue') or 0)}</b>",
-        f"💳 Qarzga (smena): <b>{format_money(shift.get('credit_total') or 0)}</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        f"🧾 <b>Cheklar:</b> {int(shift.get('checks') or 0)} ta",
+        f"💰 <b>Jami savdo:</b> {format_money(shift.get('gross') or 0)} so‘m",
+        f"📈 <b>Sof foyda:</b> {format_money(shift.get('profit') or 0)} so‘m",
+        f"📊 <b>Marja:</b> {format_margin(shift.get('margin') or 0)}%",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        f"💵 <b>Savdo:</b> {format_money(shift.get('selling_revenue') or shift.get('gross') or 0)} so‘m",
+        f"📦 <b>Optom savdo:</b> {format_money(shift.get('wholesale_revenue') or 0)} so‘m",
+        f"💳 <b>Smenadagi qarz:</b> {format_money(shift.get('credit_total') or 0)} so‘m",
     ]
 
     if event == "close":
         lines += [
             "",
-            f"👥 Qarzdorlar: <b>{int(shift.get('debtors_count') or 0)}</b> ta · "
-            f"<b>{format_money(shift.get('debtors_total') or 0)}</b> so'm",
-            f"⚠️ Kam qoldiq: <b>{int(shift.get('low_stock_count') or 0)}</b> ta tovar",
+            "━━━━━━━━━━━━━━━━━━",
             "",
-            "📎 Excel: kunlik sotuv, qarzdorlar, kam qoldiq — faylda.",
+            f"👥 <b>Qarzdorlar:</b> {int(shift.get('debtors_count') or 0)} ta",
+            f"💰 Jami qarz: <b>{format_money(shift.get('debtors_total') or 0)} so‘m</b>",
+            "",
+            f"⚠️ <b>Kam qoldiq:</b> {int(shift.get('low_stock_count') or 0)} ta mahsulot",
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "",
+            "📎 <b>Excel hisobot tayyor</b>",
+            "• Kunlik sotuvlar",
+            "• Sotilgan mahsulotlar",
+            "• Qarzdorlar ro‘yxati",
+            "• Kam qoldiq mahsulotlar",
         ]
 
         debtors = shift.get("debtors") or []
         if debtors:
-            lines.append("")
-            lines.append("<b>Qarzdorlar ro‘yxati:</b>")
+            lines += ["", "📋 <b>Qarzdorlar</b>"]
             for c in debtors[:15]:
                 name = c.get("name") or c.get("customer") or "—"
-                lines.append(f"• {name}: {format_money(c.get('debt') or c.get('total') or 0)} so'm")
+                lines.append(
+                    f"• {name} — <b>{format_money(c.get('debt') or c.get('total') or 0)} so‘m</b>"
+                )
             if len(debtors) > 15:
                 lines.append(f"… yana {len(debtors) - 15} ta (Excelda)")
 
-        low = shift.get("low_stock") or []
-        if low:
-            lines.append("")
-            lines.append("<b>Kam qoldiq:</b>")
-            for p in low[:12]:
-                lines.append(
-                    f"• {p.get('name')}: {p.get('stock')} (min {p.get('min_stock')})"
-                )
-            if len(low) > 12:
-                lines.append(f"… yana {len(low) - 12} ta (Excelda)")
+        low_count = int(shift.get("low_stock_count") or 0)
+        if low_count:
+            lines += [
+                "",
+                "⚠️ <b>Kam qoldiq mahsulotlar</b>",
+                f"{low_count} ta mahsulot Excel faylida batafsil ko‘rsatilgan.",
+            ]
     else:
         credits = shift.get("credit_customers") or []
         if credits:
-            lines.append("")
-            lines.append("<b>Qarzga sotuv:</b>")
+            lines += ["", "<b>Qarzga sotuv:</b>"]
             for c in credits[:12]:
                 lines.append(
-                    f"• {c.get('customer')}: {format_money(c.get('total') or 0)} so'm"
+                    f"• {c.get('customer')}: {format_money(c.get('total') or 0)} so‘m"
                 )
 
     text = "\n".join(lines)
-    # Telegram limito ~4096
     if len(text) > 4000:
         text = text[:3980] + "\n…"
     return text

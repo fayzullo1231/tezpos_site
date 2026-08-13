@@ -22,17 +22,28 @@ class TezPosApiError(Exception):
         self.payload = payload
 
 
+# Production TezPOS backend (Contabo). 127.0.0.1 / localhost hech qachon ishlatilmasin.
+TEZPOS_BACKEND_DEFAULT = "http://13.140.146.78:8000"
+
+
 def normalize_api_base(url: str | None = None) -> str:
     raw = (url or getattr(settings, "TEZPOS_API_URL", "") or "").strip()
     # .env dan kelgan qo‘shtirnoq / CRLF
     raw = raw.strip().strip('"').strip("'").replace("\r", "").strip()
-    # 127/localhost ni production Contabo API ga almashtirmaymiz — foydalanuvchi
-    # TEZPOS_API_URL ni o‘zi Contabo IP qilib qo‘yadi.
     if not raw:
-        raw = "http://13.140.146.78:8000"
+        raw = TEZPOS_BACKEND_DEFAULT
     if not raw.startswith("http://") and not raw.startswith("https://"):
         raw = "http://" + raw
-    return raw.rstrip("/")
+    raw = raw.rstrip("/")
+    # 127/localhost — sayt o‘zi emas, Contabo API
+    lowered = raw.lower()
+    if (
+        "127.0.0.1" in lowered
+        or "localhost" in lowered
+        or "0.0.0.0" in lowered
+    ):
+        return TEZPOS_BACKEND_DEFAULT
+    return raw
 
 
 def _parse_error(body: bytes, status: int) -> str:
@@ -301,43 +312,74 @@ def get_me(token: str, server_name: str) -> dict:
     return api_request("GET", "/api/auth/me/", token=token, server_name=server_name, timeout=10)
 
 
-def get_products(token: str, server_name: str, *, max_pages: int = 4) -> list:
-    data = api_request(
-        "GET",
-        "/api/catalog/products/",
-        token=token,
-        server_name=server_name,
-        query={"all": "true"},
-        timeout=18,
-    )
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        results = list(data.get("results") or [])
-        next_url = data.get("next")
-        page = 2
-        while next_url and page <= max_pages:
-            page_data = api_request(
+def get_products(
+    token: str,
+    server_name: str,
+    *,
+    max_pages: int = 8,
+    timeout: float = 12,
+    page_size: int = 80,
+    all_at_once: bool = False,
+) -> list:
+    """
+    Mahsulotlar. all=true katta katalogda 18s+ timeout beradi —
+    default: sahifalab olish, timeout bo‘lsa qisman ro‘yxat.
+    """
+    results: list = []
+
+    def _rows(payload) -> list:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            return list(
+                payload.get("results")
+                or payload.get("items")
+                or payload.get("products")
+                or []
+            )
+        return []
+
+    if all_at_once:
+        try:
+            data = api_request(
                 "GET",
                 "/api/catalog/products/",
                 token=token,
                 server_name=server_name,
-                query={"page": page},
-                timeout=15,
+                query={"all": "true"},
+                timeout=max(timeout, 40),
             )
-            if isinstance(page_data, list):
-                results.extend(page_data)
-                break
-            if not isinstance(page_data, dict):
-                break
-            chunk = page_data.get("results") or []
-            results.extend(chunk)
-            next_url = page_data.get("next")
-            if not chunk:
-                break
-            page += 1
-        return results
-    return []
+            rows = _rows(data)
+            if rows:
+                return rows
+        except TezPosApiError:
+            pass
+
+    size = page_size
+    page = 1
+    while page <= max_pages:
+        try:
+            data = api_request(
+                "GET",
+                "/api/catalog/products/",
+                token=token,
+                server_name=server_name,
+                query={"page": page, "page_size": size},
+                timeout=timeout,
+            )
+        except TezPosApiError:
+            if page == 1 and size > 30:
+                size = 30
+                continue
+            return results
+        chunk = _rows(data)
+        if not chunk:
+            break
+        results.extend(chunk)
+        if isinstance(data, list) or not (isinstance(data, dict) and data.get("next")):
+            break
+        page += 1
+    return results
 
 
 def get_sales(

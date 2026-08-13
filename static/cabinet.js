@@ -101,7 +101,7 @@
     })
       .then(async (r) => {
         const json = await r.json().catch(() => ({}));
-        if (!r.ok || json.error) {
+        if (!r.ok || (json.error && !(json.products || []).length)) {
           if (typeof window.tezposShowApiBanner === "function") {
             window.tezposShowApiBanner(
               `Katalog yuklanmadi: ${json.error || r.status}. TezPOS API (13.140.146.78:8000) ni tekshiring.`
@@ -124,7 +124,9 @@
       document.getElementById("products-mgmt-tbody") ||
       document.getElementById("stock-value-panel") ||
       document.getElementById("signals-list") ||
-      document.getElementById("label-designer-root") ||
+      document.getElementById("label-designer") ||
+      document.getElementById("label-print-view") ||
+      document.getElementById("labels-table") ||
       document.querySelector(".cabinet-products");
 
     if (!data.products?.length) {
@@ -151,12 +153,13 @@
         document.getElementById("products-mgmt-tbody"),
         document.getElementById("stock-value-tbody"),
         document.getElementById("signals-list"),
+        document.querySelector("#labels-table tbody"),
       ].filter(Boolean);
       skelTargets.forEach((el) => {
         if (el && !el.dataset.loaded) {
           el.innerHTML =
             el.tagName === "TBODY"
-              ? '<tr><td colspan="8" class="cabinet-hint">…</td></tr>'
+              ? '<tr><td colspan="8" class="cabinet-hint">Mahsulotlar yuklanmoqda…</td></tr>'
               : "";
         }
       });
@@ -818,7 +821,8 @@
       const qs = new URLSearchParams({ from: fromIso, to: toIsoVal });
       if (fast) qs.set("fast", "1");
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 22000 : 35000) : null;
+      // Server hard deadline ~14–20s; brauzer biroz ko‘proq kutadi
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 28000 : 45000) : null;
       const res = await fetch(`${url}?${qs}`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
@@ -835,7 +839,7 @@
       if (!inChecks && !inGross && hasRealSummary) return;
       currentRangeKey = key;
       applyRangePayload(key, payload);
-      if (payload.error && salesRangeSummary && !hasUiCache) {
+      if (payload.error && salesRangeSummary && !hasUiCache && !inChecks && !inGross) {
         const tip = document.createElement("li");
         tip.innerHTML =
           "<span style=\"color:#c2410c\">API sekin yoki ulanmadi. Qayta urinib ko‘ring.</span>";
@@ -851,12 +855,28 @@
       }
     } catch (_err) {
       if (reqId !== priceListReq) return;
+      // Bir marta tez rejimda qayta urinish
+      if (!fast && !force) {
+        loadRangeStats(fromIso, toIsoVal, { force: true, fast: true });
+        return;
+      }
       seedRangeFromDaySales();
       currentPriceLists = priceListCache[key] || [];
       refreshOverviewPriceUi();
-      if (!hasUiCache && !((data.salesStats || {})[key] || {}).summary) {
+      const cachedSummary = ((data.salesStats || {})[key] || {}).summary;
+      if (cachedSummary && (Number(cachedSummary.checks) > 0 || Number(cachedSummary.gross) > 0)) {
+        paintCachedRange(key);
+        return;
+      }
+      if (!hasUiCache && !cachedSummary) {
         if (salesRangeSummary) {
-          salesRangeSummary.innerHTML = `<li>Davr: <strong>${formatRangeLabel(fromIso, toIsoVal)}</strong></li><li>Ma’lumot yuklanmadi (API timeout). Qayta urinib ko‘ring.</li>`;
+          salesRangeSummary.innerHTML = `<li>Davr: <strong>${formatRangeLabel(fromIso, toIsoVal)}</strong></li><li>Ma’lumot yuklanmadi. <button type="button" id="range-retry-btn" style="margin-left:6px;border:0;background:none;color:#0369a1;text-decoration:underline;cursor:pointer;font:inherit;padding:0">Qayta urinish</button></li>`;
+          const btn = document.getElementById("range-retry-btn");
+          if (btn) {
+            btn.addEventListener("click", () => {
+              loadRangeStats(fromIso, toIsoVal, { force: true, fast: true });
+            });
+          }
         }
       }
     }
@@ -2046,6 +2066,12 @@
       labelDesigner.hidden = mode !== "design";
       if (labelPrintView) labelPrintView.hidden = mode !== "print";
       if (mode === "design" || mode === "print") renderPreview();
+      if (mode === "print") {
+        if ((data.products || []).length) renderLabelsTable();
+        else if (typeof window.tezposEnsureCatalog === "function") {
+          window.tezposEnsureCatalog({ force: true });
+        }
+      }
     };
 
     loadTpl();
@@ -2304,18 +2330,101 @@
       };
     };
 
-    document.querySelectorAll(".ld-product-row").forEach((row) => {
-      row.addEventListener("click", (e) => {
-        if (e.target.closest("input")) return;
-        state.sample = productFromEl(row);
-        document.querySelectorAll(".ld-product-row").forEach((r) => r.classList.remove("is-preview"));
-        row.classList.add("is-preview");
-        renderPreview();
-      });
+    const moneyCell = (n) => {
+      const v = Number(n || 0);
+      if (!v) return "—";
+      return Math.round(v).toLocaleString("uz-UZ");
+    };
+
+    const renderLabelsTable = () => {
+      const table = document.getElementById("labels-table");
+      const tbody = table?.querySelector("tbody");
+      if (!tbody) return;
+      const list = data.products || [];
+      tbody.dataset.loaded = "1";
+      if (!list.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="5" class="cabinet-hint">Mahsulot yo‘q. Katalog yuklanmagan bo‘lsa — sahifani yangilang.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = list
+        .map((p) => {
+          const name = escHtml(p.name || "");
+          const barcode = escHtml(p.barcode || p.sku || "");
+          const sku = escHtml(p.sku || p.barcode || "");
+          const selling = Number(p.selling_price || 0);
+          const wholesale = Number(p.wholesale_price || 0);
+          const cost = Number(p.cost_price || 0);
+          return `<tr class="ld-product-row" tabindex="0"
+              data-name="${name}"
+              data-price="${selling}"
+              data-wholesale="${wholesale}"
+              data-cost="${cost}"
+              data-barcode="${barcode}"
+              data-sku="${sku}">
+            <td><input type="checkbox" class="label-check"
+              data-name="${name}"
+              data-price="${selling}"
+              data-wholesale="${wholesale}"
+              data-cost="${cost}"
+              data-barcode="${barcode}"
+              data-sku="${sku}"></td>
+            <td>${name}</td>
+            <td>${barcode || "—"}</td>
+            <td>${moneyCell(selling)}</td>
+            <td>${wholesale > 0 ? moneyCell(wholesale) : "—"}</td>
+          </tr>`;
+        })
+        .join("");
+      // Qidiruv filtrini qayta qo‘llash
+      const q = String(document.getElementById("ld-product-search")?.value || "")
+        .trim()
+        .toLowerCase();
+      if (q) {
+        tbody.querySelectorAll(".ld-product-row").forEach((row) => {
+          const hay = `${row.dataset.name || ""} ${row.dataset.barcode || ""} ${row.dataset.sku || ""}`.toLowerCase();
+          row.hidden = !hay.includes(q);
+        });
+      }
+    };
+
+    // Event delegation — AJAX qayta renderdan keyin ham ishlaydi
+    document.getElementById("labels-table")?.addEventListener("click", (e) => {
+      const row = e.target.closest(".ld-product-row");
+      if (!row) return;
+      if (e.target.closest("input")) return;
+      state.sample = productFromEl(row);
+      document.querySelectorAll(".ld-product-row").forEach((r) => r.classList.remove("is-preview"));
+      row.classList.add("is-preview");
+      renderPreview();
     });
+
+    document.addEventListener("tezpos:catalog", () => {
+      renderLabelsTable();
+      // Birinchi mahsulotni mini-preview uchun
+      const first = (data.products || [])[0];
+      if (first) {
+        state.sample = {
+          name: first.name || "",
+          price: Number(first.selling_price || 0),
+          wholesale: Number(first.wholesale_price || 0),
+          cost: Number(first.cost_price || 0),
+          barcode: first.barcode || "",
+          sku: first.sku || first.barcode || "",
+        };
+        renderPreview();
+      }
+    });
+    // Kesh / allaqachon yuklangan katalog
+    if ((data.products || []).length) {
+      renderLabelsTable();
+    } else if (typeof window.tezposEnsureCatalog === "function") {
+      window.tezposEnsureCatalog({ force: true });
+    }
+
     document.getElementById("ld-select-all")?.addEventListener("click", () => {
       document.querySelectorAll(".label-check").forEach((c) => {
-        c.checked = true;
+        if (!c.closest("tr")?.hidden) c.checked = true;
       });
     });
     document.getElementById("ld-select-none")?.addEventListener("click", () => {

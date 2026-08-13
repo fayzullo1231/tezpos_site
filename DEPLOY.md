@@ -107,7 +107,7 @@ ALLOWED_HOSTS=tez-pos.uz,www.tez-pos.uz
 CSRF_TRUSTED_ORIGINS=https://tez-pos.uz,https://www.tez-pos.uz
 USE_HTTPS=1
 SECURE_SSL_REDIRECT=1
-TEZPOS_API_URL=http://127.0.0.1:9000
+TEZPOS_API_URL=http://13.140.146.78:8000
 DEVSMS_TOKEN=
 ```
 

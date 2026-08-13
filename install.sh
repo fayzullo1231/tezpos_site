@@ -38,7 +38,7 @@ ALLOWED_HOSTS=127.0.0.1,localhost
 CSRF_TRUSTED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 USE_HTTPS=0
 SECURE_SSL_REDIRECT=0
-TEZPOS_API_URL=http://127.0.0.1:8000
+TEZPOS_API_URL=http://13.140.146.78:8000
 EOF
 else
   echo "==> .env allaqachon bor — o'zgartirilmadi"

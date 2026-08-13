@@ -687,29 +687,7 @@
                 <tr><th></th><th>Nomi</th><th>Shtrixkod</th><th>Sotuv</th><th>Ulgurji</th></tr>
           </thead>
           <tbody>
-            {% for p in products %}
-                <tr class="ld-product-row" tabindex="0"
-                    data-name="{{ p.name }}"
-                    data-price="{{ p.selling_price|unlocalize }}"
-                    data-wholesale="{{ p.wholesale_price|default:0|unlocalize }}"
-                    data-cost="{{ p.cost_price|default:0|unlocalize }}"
-                    data-barcode="{{ p.barcode|default:p.sku }}"
-                    data-sku="{{ p.sku|default:p.barcode }}">
-                  <td><input type="checkbox" class="label-check"
-                    data-name="{{ p.name }}"
-                    data-price="{{ p.selling_price|unlocalize }}"
-                    data-wholesale="{{ p.wholesale_price|default:0|unlocalize }}"
-                    data-cost="{{ p.cost_price|default:0|unlocalize }}"
-                    data-barcode="{{ p.barcode|default:p.sku }}"
-                    data-sku="{{ p.sku|default:p.barcode }}"></td>
-              <td>{{ p.name }}</td>
-              <td>{{ p.barcode|default:p.sku|default:"—" }}</td>
-                  <td>{{ p.selling_price }}</td>
-                  <td>{{ p.wholesale_price|default:"—" }}</td>
-            </tr>
-            {% empty %}
-                <tr><td colspan="5">Mahsulot yo‘q</td></tr>
-            {% endfor %}
+            <tr><td colspan="5" class="cabinet-hint">Mahsulotlar yuklanmoqda…</td></tr>
           </tbody>
         </table>
           </div>
@@ -769,10 +747,9 @@
           <span class="field-label">Kimga yuborilsin <span class="req">*</span></span>
           <textarea id="bot-recipients" rows="5" placeholder="123456789&#10;-1001234567890&#10;https://t.me/mychannel">{{ bot_settings.recipients }}</textarea>
           <small>
-            <strong>Muhim:</strong> shaxsiy akkauntga <code>@username</code> ishlamaydi.
-            Avval botga (masalan <strong>@zakaz_bot_test_bot</strong>) kirib <code>/start</code> yozing,
-            keyin <em>Chatlarni topish</em> orqali raqamli ID qo‘ying.
-            Guruh/kanal: botni qo‘shib admin qiling, keyin <code>-100...</code> ID yoki <code>t.me/...</code>.
+            Har qatorga bitta manzil. Shaxsiy: botga <code>/start</code> → <em>Chatlarni topish</em> → raqamli ID.
+            <strong>Guruh va kanal:</strong> botni qo‘shing, <em>admin</em> qiling (xabar yozish huquqi),
+            keyin <code>-100...</code> ID, <code>@kanal</code> yoki <code>https://t.me/kanal</code> — ikkalasiga ham xabar + Excel ketadi.
           </small>
         </label>
         <div class="bot-chats-box" id="bot-chats-box" hidden>
@@ -806,8 +783,8 @@
           <li>Telegramda <strong>@BotFather</strong> orqali bot yarating va token oling.</li>
           <li>O‘zingiz botga kirib <strong>/start</strong> yozing (majburiy).</li>
           <li><strong>Chatlarni topish</strong> → o‘z Chat ID raqamingizni tanlang.</li>
-          <li>Guruh/kanal uchun botni qo‘shing va admin qiling.</li>
-          <li>Smena yopilganda: savdo, foyda, sotuv/optom, qarzlar + Excel keladi.</li>
+          <li>Guruh <strong>va</strong> kanal uchun botni qo‘shing, admin qiling, ID ni qatorga yozing (ikkala joyga ham ketadi).</li>
+          <li>Smena yopilganda: to‘liq hisobot (cheklar, foyda, qarz, kam qoldiq) + Excel keladi.</li>
         </ol>
       </div>
     </section>

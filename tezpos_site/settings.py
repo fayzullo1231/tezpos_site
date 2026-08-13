@@ -166,8 +166,11 @@ LOGIN_REDIRECT_URL = "accounts:cabinet"
 LOGOUT_REDIRECT_URL = "landing"
 
 # TezPOS desktop / API backend (kabinet shu manzildan ma'lumot oladi)
-# Default Contabo: http://13.140.146.78:8000 — .env da TEZPOS_API_URL ni o‘zgartiring
-TEZPOS_API_URL = os.environ.get("TEZPOS_API_URL", "http://13.140.146.78:8000")
+# TezPOS backend API — faqat Contabo IP (127.0.0.1 emas)
+_api = (os.environ.get("TEZPOS_API_URL") or "http://13.140.146.78:8000").strip()
+if "127.0.0.1" in _api or "localhost" in _api.lower() or "0.0.0.0" in _api:
+    _api = "http://13.140.146.78:8000"
+TEZPOS_API_URL = _api
 
 # DevSMS — qarz/to'lov SMS (TezPOS bilan bir xil)
 DEVSMS_TOKEN = os.environ.get("DEVSMS_TOKEN", "").strip()
