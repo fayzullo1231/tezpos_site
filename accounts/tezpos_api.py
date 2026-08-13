@@ -322,8 +322,8 @@ def get_products(
     all_at_once: bool = False,
 ) -> list:
     """
-    Mahsulotlar. all=true katta katalogda 18s+ timeout beradi —
-    default: sahifalab olish, timeout bo‘lsa qisman ro‘yxat.
+    Mahsulotlar. Avval 1-sahifa (tez), keyin qolgan sahifalar.
+    all=true katta katalogda sekin — faqat sahifa bo‘sh bo‘lsa yoki so‘ralsa.
     """
     results: list = []
 
@@ -335,49 +335,78 @@ def get_products(
                 payload.get("results")
                 or payload.get("items")
                 or payload.get("products")
+                or payload.get("data")
                 or []
             )
         return []
 
+    def _fetch(query: dict, wait: float):
+        return api_request(
+            "GET",
+            "/api/catalog/products/",
+            token=token,
+            server_name=server_name,
+            query=query,
+            timeout=wait,
+        )
+
     if all_at_once:
         try:
-            data = api_request(
-                "GET",
-                "/api/catalog/products/",
-                token=token,
-                server_name=server_name,
-                query={"all": "true"},
-                timeout=max(timeout, 40),
-            )
+            data = _fetch({"all": "true"}, max(timeout, 40))
             rows = _rows(data)
             if rows:
                 return rows
-        except TezPosApiError:
-            pass
+        except TezPosApiError as exc:
+            if exc.status in (401, 403):
+                raise
 
-    size = page_size
-    page = 1
-    while page <= max_pages:
+    first_queries = (
+        {"page": "1"},
+        {"page": "1", "page_size": str(min(int(page_size or 80), 100))},
+        {"limit": str(min(int(page_size or 80), 100))},
+    )
+    data = None
+    last_err: TezPosApiError | None = None
+    for query in first_queries:
         try:
-            data = api_request(
-                "GET",
-                "/api/catalog/products/",
-                token=token,
-                server_name=server_name,
-                query={"page": page, "page_size": size},
-                timeout=timeout,
-            )
+            data = _fetch(query, timeout)
+            chunk = _rows(data)
+            if chunk:
+                results.extend(chunk)
+                break
+        except TezPosApiError as exc:
+            last_err = exc
+            if exc.status in (401, 403):
+                raise
+            continue
+
+    if not results:
+        try:
+            data = _fetch({"all": "true"}, max(timeout, 35))
+            chunk = _rows(data)
+            if chunk:
+                return chunk
+        except TezPosApiError as exc:
+            if exc.status in (401, 403):
+                raise
+            last_err = exc
+        if last_err and not results:
+            raise last_err
+        return results
+
+    # Keyingi sahifalar — timeout bo‘lsa qisman qaytaramiz
+    next_url = data.get("next") if isinstance(data, dict) else None
+    page = 2
+    while next_url and page <= max_pages:
+        try:
+            page_data = _fetch({"page": str(page)}, timeout)
         except TezPosApiError:
-            if page == 1 and size > 30:
-                size = 30
-                continue
-            return results
-        chunk = _rows(data)
+            break
+        chunk = _rows(page_data)
         if not chunk:
             break
         results.extend(chunk)
-        if isinstance(data, list) or not (isinstance(data, dict) and data.get("next")):
-            break
+        next_url = page_data.get("next") if isinstance(page_data, dict) else None
         page += 1
     return results
 

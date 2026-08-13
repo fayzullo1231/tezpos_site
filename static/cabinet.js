@@ -72,17 +72,26 @@
   let warmStarted = false;
 
   const applyCatalogPayload = (json, { emit = true } = {}) => {
-    if (!json || json.error) return data;
-    data.products = json.products || [];
-    data.priceLists = json.priceLists || data.priceLists || [];
-    data.nearMin = json.nearMin || data.nearMin || [];
-    window.TEZPOS_CHARTS = data;
-    cacheSet("catalog", {
-      products: data.products,
-      priceLists: data.priceLists,
-      nearMin: data.nearMin,
-      ts: Date.now(),
-    });
+    if (!json) return data;
+    const incoming = Array.isArray(json.products) ? json.products : [];
+    if (json.error && !incoming.length) {
+      if (emit) {
+        document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
+      }
+      return data;
+    }
+    if (incoming.length) {
+      data.products = incoming;
+      data.priceLists = json.priceLists || data.priceLists || [];
+      data.nearMin = json.nearMin || data.nearMin || [];
+      window.TEZPOS_CHARTS = data;
+      cacheSet("catalog", {
+        products: data.products,
+        priceLists: data.priceLists,
+        nearMin: data.nearMin,
+        ts: Date.now(),
+      });
+    }
     if (emit) {
       document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
     }
@@ -92,31 +101,46 @@
     return data;
   };
 
-  const fetchCatalog = () => {
+  const fetchCatalog = ({ lite = false } = {}) => {
     if (!data.catalogUrl) return Promise.resolve(data);
-    if (catalogInflight) return catalogInflight;
-    catalogInflight = fetch(data.catalogUrl, {
+    if (catalogInflight && !lite) return catalogInflight;
+    const qs = lite ? "?lite=1" : `?t=${Date.now()}`;
+    const run = fetch(`${data.catalogUrl}${qs}`, {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     })
       .then(async (r) => {
         const json = await r.json().catch(() => ({}));
-        if (!r.ok || (json.error && !(json.products || []).length)) {
+        if (json.error === "auth" || r.status === 401) {
+          window.location.href = "/login/";
+          throw new Error("auth");
+        }
+        if (!incomingOk(json) && (json.error || !r.ok)) {
           if (typeof window.tezposShowApiBanner === "function") {
             window.tezposShowApiBanner(
               `Katalog yuklanmadi: ${json.error || r.status}. TezPOS API (13.140.146.78:8000) ni tekshiring.`
             );
           }
+          document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
           throw new Error(json.error || "catalog fail");
         }
         return applyCatalogPayload(json);
       })
-      .catch(() => data)
-      .finally(() => {
+      .catch((err) => {
+        if (err && err.message === "auth") return data;
+        document.dispatchEvent(new CustomEvent("tezpos:catalog", { detail: data }));
+        return data;
+      });
+    if (!lite) {
+      catalogInflight = run.finally(() => {
         catalogInflight = null;
       });
-    return catalogInflight;
+      return catalogInflight;
+    }
+    return run;
   };
+
+  const incomingOk = (json) => Array.isArray(json?.products) && json.products.length > 0;
 
   // Katalog AJAX — kesh bo‘lsa darhol, yangilash fonida
   const ensureCatalog = ({ force = false } = {}) => {
@@ -142,12 +166,10 @@
 
     if (!data.catalogUrl) return Promise.resolve(data);
     if (data.products?.length && !force) {
-      // Foniy yangilash — UI kutmaydi
       fetchCatalog();
       return Promise.resolve(data);
     }
 
-    // Birinchi yuklash — skeleton faqat kesh bo‘lmasa
     if (need && !data.products?.length) {
       const skelTargets = [
         document.getElementById("products-mgmt-tbody"),
@@ -164,7 +186,14 @@
         }
       });
     }
-    return fetchCatalog();
+    // Avval 1-sahifa (tez), keyin to‘liq katalog
+    return fetchCatalog({ lite: true }).then((d) => {
+      if (d?.products?.length && !force) {
+        fetchCatalog();
+        return d;
+      }
+      return fetchCatalog();
+    });
   };
   window.tezposEnsureCatalog = ensureCatalog;
 
@@ -2344,7 +2373,15 @@
       tbody.dataset.loaded = "1";
       if (!list.length) {
         tbody.innerHTML =
-          '<tr><td colspan="5" class="cabinet-hint">Mahsulot yo‘q. Katalog yuklanmagan bo‘lsa — sahifani yangilang.</td></tr>';
+          '<tr><td colspan="5" class="cabinet-hint">Mahsulotlar yuklanmadi. <button type="button" id="ld-catalog-retry" style="margin-left:6px;border:0;background:none;color:#0369a1;text-decoration:underline;cursor:pointer;font:inherit;padding:0">Qayta urinish</button></td></tr>';
+        document.getElementById("ld-catalog-retry")?.addEventListener("click", () => {
+          tbody.dataset.loaded = "";
+          tbody.innerHTML =
+            '<tr><td colspan="5" class="cabinet-hint">Mahsulotlar yuklanmoqda…</td></tr>';
+          if (typeof window.tezposEnsureCatalog === "function") {
+            window.tezposEnsureCatalog({ force: true });
+          }
+        });
         return;
       }
       tbody.innerHTML = list
