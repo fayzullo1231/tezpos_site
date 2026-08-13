@@ -2365,6 +2365,31 @@
       return Math.round(v).toLocaleString("uz-UZ");
     };
 
+    const rowSearchHay = (row) => {
+      const name = String(row.dataset.name || "").toLowerCase();
+      const sku = String(row.dataset.sku || "").toLowerCase();
+      const codes = String(row.dataset.codes || row.dataset.barcode || "")
+        .toLowerCase()
+        .replace(/\s/g, "");
+      return { name, sku, codes };
+    };
+
+    const filterLabelProducts = () => {
+      const raw = String(document.getElementById("ld-product-search")?.value || "");
+      const q = raw.trim().toLowerCase();
+      const qCompact = q.replace(/\s/g, "");
+      document.querySelectorAll(".ld-product-row").forEach((row) => {
+        if (!q) {
+          row.hidden = false;
+          return;
+        }
+        const { name, sku, codes } = rowSearchHay(row);
+        const byName = name.includes(q) || sku.includes(q);
+        const byCode = Boolean(qCompact) && codes.includes(qCompact);
+        row.hidden = !(byName || byCode);
+      });
+    };
+
     const renderLabelsTable = () => {
       const table = document.getElementById("labels-table");
       const tbody = table?.querySelector("tbody");
@@ -2387,8 +2412,14 @@
       tbody.innerHTML = list
         .map((p) => {
           const name = escHtml(p.name || "");
-          const barcode = escHtml(p.barcode || p.sku || "");
+          const extraCodes = Array.isArray(p.barcodes) ? p.barcodes : [];
+          const codes = [p.barcode, p.sku, ...extraCodes]
+            .map((c) => String(c || "").replace(/\s/g, ""))
+            .filter(Boolean);
+          const uniq = [...new Set(codes)];
+          const barcode = escHtml(uniq[0] || "");
           const sku = escHtml(p.sku || p.barcode || "");
+          const codesAttr = escHtml(uniq.join(" "));
           const selling = Number(p.selling_price || 0);
           const wholesale = Number(p.wholesale_price || 0);
           const cost = Number(p.cost_price || 0);
@@ -2398,6 +2429,7 @@
               data-wholesale="${wholesale}"
               data-cost="${cost}"
               data-barcode="${barcode}"
+              data-codes="${codesAttr}"
               data-sku="${sku}">
             <td><input type="checkbox" class="label-check"
               data-name="${name}"
@@ -2413,16 +2445,7 @@
           </tr>`;
         })
         .join("");
-      // Qidiruv filtrini qayta qo‘llash
-      const q = String(document.getElementById("ld-product-search")?.value || "")
-        .trim()
-        .toLowerCase();
-      if (q) {
-        tbody.querySelectorAll(".ld-product-row").forEach((row) => {
-          const hay = `${row.dataset.name || ""} ${row.dataset.barcode || ""} ${row.dataset.sku || ""}`.toLowerCase();
-          row.hidden = !hay.includes(q);
-        });
-      }
+      filterLabelProducts();
     };
 
     // Event delegation — AJAX qayta renderdan keyin ham ishlaydi
@@ -2469,12 +2492,26 @@
         c.checked = false;
       });
     });
-    document.getElementById("ld-product-search")?.addEventListener("input", (e) => {
-      const q = String(e.target.value || "").trim().toLowerCase();
-      document.querySelectorAll(".ld-product-row").forEach((row) => {
-        const hay = `${row.dataset.name || ""} ${row.dataset.barcode || ""} ${row.dataset.sku || ""}`.toLowerCase();
-        row.hidden = Boolean(q) && !hay.includes(q);
+    document.getElementById("ld-product-search")?.addEventListener("input", filterLabelProducts);
+    document.getElementById("ld-product-search")?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      filterLabelProducts();
+      const qCompact = String(e.target.value || "").trim().replace(/\s/g, "");
+      if (!qCompact) return;
+      const match = [...document.querySelectorAll(".ld-product-row")].find((row) => {
+        if (row.hidden) return false;
+        const codes = String(row.dataset.codes || row.dataset.barcode || "").replace(/\s/g, "");
+        return codes.split(/[^0-9A-Za-z]+/).includes(qCompact) || codes.endsWith(qCompact);
       });
+      if (match) {
+        const check = match.querySelector(".label-check");
+        if (check) check.checked = true;
+        match.scrollIntoView({ block: "nearest" });
+        match.classList.add("is-preview");
+        state.sample = productFromEl(match);
+        renderPreview();
+      }
     });
 
     const buildLabelHtml = (product, priceType) => {
@@ -3582,7 +3619,12 @@
       const name = row.dataset.name || "";
       const barcode = row.dataset.barcode || "";
       const category = row.dataset.category || "";
-      const matchQ = !q || name.includes(q) || barcode.includes(q);
+      const matchQ =
+        !q ||
+        name.includes(q) ||
+        barcode.includes(q) ||
+        barcode.replace(/\s/g, "").includes(q.replace(/\s/g, "")) ||
+        (row.dataset.codes || "").toLowerCase().replace(/\s/g, "").includes(q.replace(/\s/g, ""));
       const matchCat = !cat || category === cat;
       const show = matchQ && matchCat;
       row.hidden = !show;
