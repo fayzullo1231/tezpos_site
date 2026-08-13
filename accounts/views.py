@@ -293,6 +293,76 @@ def cabinet_catalog(request):
     token = request.session[SESSION_TOKEN]
     server = request.session[SESSION_SERVER]
     memo_prefix = f"{server}|{(token or '')[-12:]}"
+    skip_pl = (request.GET.get("skip_pl") or "").strip() in ("1", "true", "yes")
+    want_full = (request.GET.get("full") or "").strip() in ("1", "true", "yes")
+
+    def _price_lists_payload():
+        if skip_pl:
+            return []
+        try:
+            raw_pl = _memo_get(
+                f"{memo_prefix}|price_lists",
+                600.0,
+                lambda: tezpos_api.get_price_lists(token, server) or [],
+            ) or []
+            return [
+                {
+                    "id": str(pl.get("id") or ""),
+                    "name": (pl.get("name") or "").strip() or "Narxlar",
+                    "is_selling": bool(pl.get("is_selling")),
+                }
+                for pl in raw_pl
+                if isinstance(pl, dict) and pl.get("is_active", True) and str(pl.get("id") or "")
+            ]
+        except Exception:
+            return []
+
+    if want_full:
+        meta: dict = {}
+        try:
+            raw_products = _memo_get(
+                f"{memo_prefix}|products|desktop-all",
+                180.0,
+                lambda: tezpos_api.get_all_products(token, server, info=meta) or [],
+                skip_empty=True,
+            ) or []
+        except tezpos_api.TezPosApiError as exc:
+            if getattr(exc, "status", None) in (401, 403):
+                clear_tezpos_session(request)
+                return JsonResponse({"error": "auth"}, status=401)
+            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=502)
+        except (TimeoutError, OSError) as exc:
+            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=504)
+
+        if not isinstance(raw_products, list):
+            raw_products = []
+        products = []
+        for row in raw_products:
+            if not isinstance(row, dict):
+                continue
+            try:
+                products.append(_map_product(row))
+            except Exception:
+                continue
+        products.sort(key=lambda p: (not p.is_active, p.name.lower()))
+        total = int(meta.get("total") or 0) or len(products)
+        complete = bool(meta.get("complete")) or (total and len(products) >= total) or len(products) > 100
+        return JsonResponse(
+            {
+                "ok": True,
+                "products": _products_payload_list(products),
+                "priceLists": _price_lists_payload(),
+                "page": 1,
+                "page_size": len(products),
+                "total": total,
+                "has_more": not complete,
+                "count": len(products),
+                "complete": complete,
+                "partial": not complete,
+                "source": meta.get("source") or "",
+                "api": tezpos_api.normalize_api_base(),
+            }
+        )
 
     page_raw = (request.GET.get("page") or "").strip()
     if page_raw.isdigit():

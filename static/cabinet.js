@@ -157,26 +157,81 @@
     throw lastErr;
   };
 
+  const fetchCatalogFull = async (tries = 2) => {
+    const params = new URLSearchParams({ full: "1" });
+    if (data.section === "labels") params.set("skip_pl", "1");
+    const url = `${data.catalogUrl}?${params}`;
+    let lastErr = new Error("catalog full fail");
+    for (let i = 0; i < tries; i += 1) {
+      try {
+        const r = await fetch(url, {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+        const json = await r.json().catch(() => ({}));
+        if (json.error === "auth" || r.status === 401) {
+          window.location.href = "/login/";
+          throw new Error("auth");
+        }
+        if (incomingOk(json) && (json.products || []).length) {
+          return json;
+        }
+        lastErr = new Error(json.error || `catalog HTTP ${r.status}`);
+      } catch (err) {
+        if (err && err.message === "auth") throw err;
+        lastErr = err;
+      }
+      await sleep(600 * (i + 1));
+    }
+    throw lastErr;
+  };
+
   const fetchCatalog = ({ lite = false } = {}) => {
     if (!data.catalogUrl) return Promise.resolve(data);
     if (catalogInflight && !lite) return catalogInflight;
     const run = (async () => {
       try {
-        let page = 1;
-        let total = 0;
+        try {
+          const first = await fetchCatalogPage(1);
+          applyCatalogPayload(first, { emit: true, merge: true });
+        } catch (err) {
+          if (err && err.message === "auth") return data;
+        }
+        if (lite) return data;
+
+        try {
+          const full = await fetchCatalogFull();
+          const n = (full.products || []).length;
+          if (n > 0) {
+            applyCatalogPayload(
+              {
+                products: full.products,
+                priceLists: full.priceLists,
+                complete: n >= 200 || full.complete === true,
+                total: full.total || n,
+                count: n,
+              },
+              { emit: true, merge: false }
+            );
+            if (n >= 200 || full.complete === true) return data;
+          }
+        } catch (err) {
+          if (err && err.message === "auth") return data;
+        }
+
+        let page = 2;
+        let total = Number(data.catalogCount || 0);
         let chunkSize = CATALOG_PAGE_SIZE;
         while (page <= CATALOG_MAX_PAGES) {
           const json = await fetchCatalogPage(page);
           const before = (data.products || []).length;
           applyCatalogPayload(json, { emit: true, merge: true });
           const got = (json.products || []).length;
-          if (page === 1 && got > 0) chunkSize = got;
+          if (got > 0 && got < chunkSize) chunkSize = Math.max(got, 50);
           const reported = Number(json.total || 0);
-          if (reported > total && !(page === 1 && reported <= got && got >= 50)) {
-            total = reported;
-          }
+          if (reported > total) total = reported;
           const after = (data.products || []).length;
-          const fullPage = got >= chunkSize && got >= 50;
+          const fullPage = got >= 50 && got >= Math.min(chunkSize, 100);
           if (!got) {
             applyCatalogPayload(
               { products: data.products, complete: true, total: total || after, count: after },
@@ -191,7 +246,7 @@
             );
             break;
           }
-          if (page > 1 && after === before) {
+          if (after === before) {
             applyCatalogPayload(
               { products: data.products, complete: true, total: total || after, count: after },
               { emit: true, merge: false }
@@ -205,7 +260,6 @@
             );
             break;
           }
-          if (lite) return data;
           page += 1;
         }
         const have = (data.products || []).length;

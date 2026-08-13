@@ -313,6 +313,122 @@ def get_me(token: str, server_name: str) -> dict:
     return api_request("GET", "/api/auth/me/", token=token, server_name=server_name, timeout=10)
 
 
+def _server_slug(server_name: str) -> str:
+    return "".join(ch for ch in (server_name or "").strip().lower() if ch.isalnum() or ch in "_-")
+
+
+def _product_rows(payload) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        return list(
+            payload.get("results")
+            or payload.get("items")
+            or payload.get("products")
+            or payload.get("data")
+            or []
+        )
+    return []
+
+
+def get_product_count(token: str, server_name: str, timeout: float = 12) -> int:
+    """TezPOS desktop: GET /api/catalog/products/count/"""
+    try:
+        data = api_request(
+            "GET",
+            "/api/catalog/products/count/",
+            token=token,
+            server_name=server_name,
+            timeout=timeout,
+        )
+        if isinstance(data, dict):
+            return int(data.get("count") or data.get("total") or 0)
+        if isinstance(data, (int, float)):
+            return int(data)
+    except (TezPosApiError, TypeError, ValueError):
+        pass
+    return 0
+
+
+def get_all_products(
+    token: str,
+    server_name: str,
+    *,
+    info: dict | None = None,
+    timeout: float = 75,
+) -> list:
+    """Desktop TezPOS bilan bir xil: /{server}/product/, keyin ?all=true, keyin sahifa."""
+    count = get_product_count(token, server_name)
+    if info is not None:
+        info["total"] = count
+        info["complete"] = False
+        info["source"] = ""
+
+    def _enough(rows: list) -> bool:
+        if not rows:
+            return False
+        if count and len(rows) >= max(1, min(count, int(count * 0.9))):
+            return True
+        return len(rows) > 100
+
+    slug = _server_slug(server_name)
+    if slug:
+        try:
+            data = api_request(
+                "GET",
+                f"/{slug}/product/",
+                token=token,
+                server_name=server_name,
+                timeout=timeout,
+            )
+            rows = data if isinstance(data, list) else _product_rows(data)
+            if _enough(rows):
+                if info is not None:
+                    info["total"] = max(count, len(rows))
+                    info["complete"] = True
+                    info["source"] = "tenant"
+                return rows
+        except TezPosApiError as exc:
+            if exc.status in (401, 403):
+                raise
+
+    try:
+        data = api_request(
+            "GET",
+            "/api/catalog/products/",
+            token=token,
+            server_name=server_name,
+            query={"all": "true"},
+            timeout=timeout,
+        )
+        rows = data if isinstance(data, list) else _product_rows(data)
+        if _enough(rows):
+            if info is not None:
+                info["total"] = max(count, len(rows))
+                info["complete"] = True
+                info["source"] = "all"
+            return rows
+    except TezPosApiError as exc:
+        if exc.status in (401, 403):
+            raise
+
+    meta: dict = {}
+    rows = get_products(
+        token,
+        server_name,
+        max_pages=40,
+        timeout=20,
+        page_size=100,
+        all_at_once=False,
+        info=meta,
+    )
+    if info is not None:
+        info["total"] = max(count, int(meta.get("total") or 0), len(rows or []))
+        info["complete"] = bool(meta.get("complete")) or (count and len(rows or []) >= count)
+        info["source"] = "pages"
+    return rows or []
+
+
 def get_products(
     token: str,
     server_name: str,
