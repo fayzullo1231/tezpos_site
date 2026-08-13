@@ -87,7 +87,7 @@
         data.priceLists = json.priceLists || data.priceLists || [];
         data.nearMin = json.nearMin || data.nearMin || [];
         data.catalogCount = Number(json.count || incoming.length) || incoming.length;
-        data.catalogComplete = Boolean(json.complete);
+        data.catalogComplete = Boolean(json.complete) && incoming.length >= 500;
         window.TEZPOS_CHARTS = data;
         cacheSet("catalog", {
           products: data.products,
@@ -162,7 +162,10 @@
     if (!data.products?.length) {
       const cached = cacheGet("catalog");
       if (cached?.products?.length) {
-        applyCatalogPayload(cached, { emit: false });
+        applyCatalogPayload(
+          { ...cached, complete: Boolean(cached.complete) && cached.products.length >= 500 },
+          { emit: false }
+        );
       }
     }
 

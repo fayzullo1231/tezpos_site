@@ -227,23 +227,35 @@ def cabinet_catalog(request):
     cached_pl = _memo_peek(f"{memo_prefix}|price_lists")
 
     def _load_full():
-        return tezpos_api.get_products(
-            token, server, max_pages=80, timeout=12, page_size=100
+        meta: dict = {}
+        rows = tezpos_api.get_products(
+            token, server, max_pages=80, timeout=12, page_size=100, info=meta
         )
+        _load_full.meta = meta
+        return rows
+
+    _load_full.meta = {}
 
     def _load_lite():
         return tezpos_api.get_products(
             token, server, max_pages=1, timeout=12, page_size=100
         )
 
+    MIN_FULL = 500
+
     try:
-        if (not lite) and isinstance(cached_full, list) and len(cached_full) >= 200:
+        if (not lite) and isinstance(cached_full, list) and len(cached_full) >= MIN_FULL:
             raw_products = cached_full
             complete = True
 
             def _bg_full() -> None:
                 try:
-                    _memo_get(full_key, 180.0, _load_full, skip_empty=True)
+                    meta: dict = {}
+                    rows = tezpos_api.get_products(
+                        token, server, max_pages=80, timeout=12, page_size=100, info=meta
+                    )
+                    if rows and (meta.get("complete") or len(rows) >= len(cached_full)):
+                        _TEZPOS_MEMO[full_key] = (time.time(), rows)
                 except Exception:
                     pass
 
@@ -265,20 +277,18 @@ def cabinet_catalog(request):
                         lambda: tezpos_api.get_price_lists(token, server) or [],
                     )
                 )
-                if lite and isinstance(cached_full, list) and len(cached_full) >= 200:
+                if lite and isinstance(cached_full, list) and len(cached_full) >= MIN_FULL:
                     raw_products = cached_full
                     complete = True
                     fut_p = None
                 elif lite:
                     fut_p = pool.submit(
-                        lambda: _memo_get(lite_key, 120.0, _load_lite, skip_empty=True)
+                        lambda: _memo_get(lite_key, 90.0, _load_lite, skip_empty=True)
                     )
                 else:
-                    fut_p = pool.submit(
-                        lambda: _memo_get(full_key, 180.0, _load_full, skip_empty=True)
-                    )
+                    fut_p = pool.submit(_load_full)
 
-                wait_p = 16.0 if lite else 75.0
+                wait_p = 16.0 if lite else 80.0
                 if fut_p is not None:
                     try:
                         raw_products = fut_p.result(timeout=wait_p) or []
@@ -315,11 +325,14 @@ def cabinet_catalog(request):
         except Exception:
             continue
     products.sort(key=lambda p: (not p.is_active, p.name.lower()))
+    meta = getattr(_load_full, "meta", None) or {}
     if not complete:
-        complete = (not lite) and len(products) >= 200 and not api_err
-        if isinstance(cached_full, list) and len(products) >= len(cached_full) >= 200:
+        complete = (not lite) and not api_err and bool(meta.get("complete"))
+        if not complete and (not lite) and not api_err and len(products) >= MIN_FULL:
             complete = True
-    if complete and products:
+    if complete and products and len(products) >= MIN_FULL:
+        _TEZPOS_MEMO[full_key] = (time.time(), raw_products)
+    elif (not lite) and products and len(products) > len(cached_full or []):
         _TEZPOS_MEMO[full_key] = (time.time(), raw_products)
 
     price_lists = [
