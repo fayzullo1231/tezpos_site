@@ -157,35 +157,6 @@
     throw lastErr;
   };
 
-  const fetchCatalogFull = async (tries = 2) => {
-    const params = new URLSearchParams({ full: "1" });
-    if (data.section === "labels") params.set("skip_pl", "1");
-    const url = `${data.catalogUrl}?${params}`;
-    let lastErr = new Error("catalog full fail");
-    for (let i = 0; i < tries; i += 1) {
-      try {
-        const r = await fetch(url, {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        });
-        const json = await r.json().catch(() => ({}));
-        if (json.error === "auth" || r.status === 401) {
-          window.location.href = "/login/";
-          throw new Error("auth");
-        }
-        if (incomingOk(json) && (json.products || []).length) {
-          return json;
-        }
-        lastErr = new Error(json.error || `catalog HTTP ${r.status}`);
-      } catch (err) {
-        if (err && err.message === "auth") throw err;
-        lastErr = err;
-      }
-      await sleep(600 * (i + 1));
-    }
-    throw lastErr;
-  };
-
   const fetchCatalog = ({ lite = false } = {}) => {
     if (!data.catalogUrl) return Promise.resolve(data);
     if (catalogInflight && !lite) return catalogInflight;
@@ -198,26 +169,6 @@
           if (err && err.message === "auth") return data;
         }
         if (lite) return data;
-
-        try {
-          const full = await fetchCatalogFull();
-          const n = (full.products || []).length;
-          if (n > 0) {
-            applyCatalogPayload(
-              {
-                products: full.products,
-                priceLists: full.priceLists,
-                complete: n >= 200 || full.complete === true,
-                total: full.total || n,
-                count: n,
-              },
-              { emit: true, merge: false }
-            );
-            if (n >= 200 || full.complete === true) return data;
-          }
-        } catch (err) {
-          if (err && err.message === "auth") return data;
-        }
 
         let page = 2;
         let total = Number(data.catalogCount || 0);

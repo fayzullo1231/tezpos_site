@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from io import BytesIO
 from typing import Any
+
+logger = logging.getLogger("tezpos.telegram")
 
 
 TG_API = "https://api.telegram.org"
@@ -61,25 +65,34 @@ def parse_recipients(text: str) -> list[str]:
     return out
 
 
-def _api_call(token: str, method: str, payload: dict | None = None, timeout: float = 40) -> dict:
+def _api_call(token: str, method: str, payload: dict | None = None, timeout: float = 12) -> dict:
     url = f"{TG_API}/bot{token}/{method}"
     data = None
     headers = {"Content-Type": "application/json"}
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
+    last_err = "telegram request failed"
+    for attempt in range(3):
         try:
-            body = json.loads(err_body)
-        except json.JSONDecodeError:
-            body = {"ok": False, "description": err_body or str(exc)}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return {"ok": False, "description": str(exc)}
-    return body if isinstance(body, dict) else {"ok": False, "description": "bad response"}
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = json.loads(resp.read().decode("utf-8") or "{}")
+            return body if isinstance(body, dict) else {"ok": False, "description": "bad response"}
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            try:
+                body = json.loads(err_body)
+            except json.JSONDecodeError:
+                body = {"ok": False, "description": err_body or str(exc)}
+            logger.warning("telegram %s HTTP %s: %s", method, exc.code, body.get("description"))
+            return body if isinstance(body, dict) else {"ok": False, "description": str(exc)}
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_err = str(exc)
+            logger.warning("telegram %s attempt %s failed: %s", method, attempt + 1, exc)
+            if attempt < 2:
+                time.sleep(0.4 * (2 ** attempt))
+    logger.error("telegram %s failed after retries: %s", method, last_err)
+    return {"ok": False, "description": last_err}
 
 
 def get_me(token: str) -> dict:
@@ -226,17 +239,24 @@ def send_document(
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
+    last_err = "sendDocument failed"
+    for attempt in range(3):
         try:
-            return json.loads(err_body)
-        except json.JSONDecodeError:
-            return {"ok": False, "description": err_body or str(exc)}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return {"ok": False, "description": str(exc)}
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(err_body)
+            except json.JSONDecodeError:
+                return {"ok": False, "description": err_body or str(exc)}
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_err = str(exc)
+            logger.warning("sendDocument attempt %s failed: %s", attempt + 1, exc)
+            if attempt < 2:
+                time.sleep(0.4 * (2 ** attempt))
+    logger.error("sendDocument failed after retries: %s", last_err)
+    return {"ok": False, "description": last_err}
 
 
 def broadcast_message(token: str, recipients: list[str], text: str) -> list[dict[str, Any]]:

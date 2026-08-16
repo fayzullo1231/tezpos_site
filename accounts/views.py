@@ -4,6 +4,7 @@ from __future__ import annotations
 from io import BytesIO
 import csv
 import json
+import logging
 import threading
 import time
 from collections import defaultdict
@@ -34,6 +35,16 @@ from .auth_views import (
     session_has_tezpos,
 )
 from .models import DesktopInstaller, LabelTemplate, TenantProfile
+
+logger = logging.getLogger("tezpos.slow")
+tg_logger = logging.getLogger("tezpos.telegram")
+
+
+def _log_slow(name: str, t0: float, extra: str = "") -> float:
+    dt = time.time() - t0
+    if dt >= 2.0:
+        logger.warning("[SLOW] %s took %.2fs %s", name, dt, extra)
+    return dt
 
 
 PAYMENT_LABELS = {
@@ -193,41 +204,41 @@ def _memo_peek(key: str):
     return val
 
 
-def _products_payload_list(products: list) -> list[dict]:
+def _products_payload_list(products: list, *, lite: bool = False) -> list[dict]:
     out = []
     for p in products:
-        images = []
-        try:
-            if hasattr(p, "images") and hasattr(p.images, "all"):
-                images = [
-                    {"id": img.id, "url": img.image.url, "is_primary": img.is_primary}
-                    for img in p.images.all()
-                ]
-        except Exception:
+        row = {
+            "id": p.id,
+            "name": p.name,
+            "barcode": p.barcode or "",
+            "barcodes": getattr(p, "barcode_list", []) or [],
+            "unit": p.unit or "dona",
+            "category": p.category or "",
+            "brand": p.brand or "",
+            "selling_price": float(p.selling_price),
+            "wholesale_price": float(p.wholesale_price or 0),
+            "cost_price": float(p.cost_price or 0),
+            "stock_qty": float(p.stock_qty or 0),
+            "min_stock": float(p.min_stock or 0),
+            "is_favorite": bool(p.is_favorite),
+        }
+        if not lite:
             images = []
-        out.append(
-            {
-                "id": p.id,
-                "name": p.name,
-                "barcode": p.barcode or "",
-                "barcodes": getattr(p, "barcode_list", []) or [],
-                "unit": p.unit or "dona",
-                "category": p.category or "",
-                "brand": p.brand or "",
-                "selling_price": float(p.selling_price),
-                "wholesale_price": float(p.wholesale_price or 0),
-                "cost_price": float(p.cost_price or 0),
-                "list_prices": {
-                    str(k): float(v) for k, v in (p.list_prices or {}).items()
-                },
-                "stock_qty": float(p.stock_qty or 0),
-                "min_stock": float(p.min_stock or 0),
-                "is_favorite": bool(p.is_favorite),
-                "image": p.display_image,
-                "image_url": getattr(p, "image_url", "") or "",
-                "images": images,
+            try:
+                if hasattr(p, "images") and hasattr(p.images, "all"):
+                    images = [
+                        {"id": img.id, "url": img.image.url, "is_primary": img.is_primary}
+                        for img in p.images.all()
+                    ]
+            except Exception:
+                images = []
+            row["list_prices"] = {
+                str(k): float(v) for k, v in (p.list_prices or {}).items()
             }
-        )
+            row["image"] = p.display_image
+            row["image_url"] = getattr(p, "image_url", "") or ""
+            row["images"] = images
+        out.append(row)
     return out
 
 
@@ -248,7 +259,7 @@ def cabinet_api_status(request):
             "/api/catalog/price-lists/",
             token=token,
             server_name=server,
-            timeout=20,
+            timeout=6,
         )
         ms = int((time.time() - t0) * 1000)
         return JsonResponse(
@@ -317,72 +328,28 @@ def cabinet_catalog(request):
         except Exception:
             return []
 
-    if want_full:
-        meta: dict = {}
-        try:
-            raw_products = _memo_get(
-                f"{memo_prefix}|products|desktop-all",
-                180.0,
-                lambda: tezpos_api.get_all_products(token, server, info=meta) or [],
-                skip_empty=True,
-            ) or []
-        except tezpos_api.TezPosApiError as exc:
-            if getattr(exc, "status", None) in (401, 403):
-                clear_tezpos_session(request)
-                return JsonResponse({"error": "auth"}, status=401)
-            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=502)
-        except (TimeoutError, OSError) as exc:
-            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=504)
-
-        if not isinstance(raw_products, list):
-            raw_products = []
-        products = []
-        for row in raw_products:
-            if not isinstance(row, dict):
-                continue
-            try:
-                products.append(_map_product(row))
-            except Exception:
-                continue
-        products.sort(key=lambda p: (not p.is_active, p.name.lower()))
-        total = int(meta.get("total") or 0) or len(products)
-        complete = bool(meta.get("complete")) or (total and len(products) >= total) or len(products) > 100
-        return JsonResponse(
-            {
-                "ok": True,
-                "products": _products_payload_list(products),
-                "priceLists": _price_lists_payload(),
-                "page": 1,
-                "page_size": len(products),
-                "total": total,
-                "has_more": not complete,
-                "count": len(products),
-                "complete": complete,
-                "partial": not complete,
-                "source": meta.get("source") or "",
-                "api": tezpos_api.normalize_api_base(),
-            }
-        )
-
     page_raw = (request.GET.get("page") or "").strip()
+    # full=1 butun katalogni bir requestga yig‘ib worker ni 504 qiladi — sahifalab yuboriladi
+    if want_full and not page_raw.isdigit():
+        page_raw = "1"
     if page_raw.isdigit():
         page_n = max(1, int(page_raw))
         try:
             page_size = max(20, min(int(request.GET.get("page_size") or 100), 100))
         except (TypeError, ValueError):
             page_size = 100
-        skip_pl = (request.GET.get("skip_pl") or "").strip() in ("1", "true", "yes")
+        t0 = time.time()
         try:
             pack = tezpos_api.get_products_page(
-                token, server, page=page_n, page_size=page_size, timeout=45, retries=3
+                token, server, page=page_n, page_size=page_size, timeout=12, retries=2
             )
         except tezpos_api.TezPosApiError as exc:
             if getattr(exc, "status", None) in (401, 403):
                 clear_tezpos_session(request)
                 return JsonResponse({"error": "auth"}, status=401)
-            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=502)
+            return JsonResponse({"ok": False, "error": str(exc), "products": []}, status=200)
         except (TimeoutError, OSError) as exc:
-            return JsonResponse({"error": str(exc), "ok": False, "products": []}, status=504)
+            return JsonResponse({"ok": False, "error": str(exc), "products": []}, status=200)
 
         products = []
         for row in pack.get("rows") or []:
@@ -424,7 +391,7 @@ def cabinet_catalog(request):
         return JsonResponse(
             {
                 "ok": True,
-                "products": _products_payload_list(products),
+                "products": _products_payload_list(products, lite=skip_pl),
                 "priceLists": price_lists_payload,
                 "page": page_n,
                 "page_size": actual if actual else page_size,
@@ -437,155 +404,41 @@ def cabinet_catalog(request):
             }
         )
 
-    # Eski to‘liq so‘rov (orqaga mos)
-    full_key = f"{memo_prefix}|products|all"
-    lite_key = f"{memo_prefix}|products|lite"
-    lite = (request.GET.get("lite") or "").strip() in ("1", "true", "yes")
-    api_err = ""
-    raw_products: list = []
-    raw_pl: list = []
-    complete = False
-
-    cached_full = _memo_peek(full_key)
-    cached_lite = _memo_peek(lite_key)
-    cached_pl = _memo_peek(f"{memo_prefix}|price_lists")
-
-    def _load_full():
-        meta: dict = {}
-        rows = tezpos_api.get_products(
-            token, server, max_pages=80, timeout=12, page_size=100, info=meta
-        )
-        _load_full.meta = meta
-        return rows
-
-    _load_full.meta = {}
-
-    def _load_lite():
-        return tezpos_api.get_products(
-            token, server, max_pages=1, timeout=12, page_size=100
-        )
-
-    MIN_FULL = 500
-
+    # page yo‘q: birinchi sahifa (to‘liq dump gunicorn ni 504 qiladi)
+    t0 = time.time()
     try:
-        if (not lite) and isinstance(cached_full, list) and len(cached_full) >= MIN_FULL:
-            raw_products = cached_full
-            complete = True
-
-            def _bg_full() -> None:
-                try:
-                    meta: dict = {}
-                    rows = tezpos_api.get_products(
-                        token, server, max_pages=80, timeout=12, page_size=100, info=meta
-                    )
-                    if rows and (meta.get("complete") or len(rows) >= len(cached_full)):
-                        _TEZPOS_MEMO[full_key] = (time.time(), rows)
-                except Exception:
-                    pass
-
-            threading.Thread(target=_bg_full, daemon=True, name="tezpos-catalog-full").start()
-            try:
-                raw_pl = _memo_get(
-                    f"{memo_prefix}|price_lists",
-                    600.0,
-                    lambda: tezpos_api.get_price_lists(token, server) or [],
-                ) or []
-            except Exception:
-                raw_pl = cached_pl or []
-        else:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_pl = pool.submit(
-                    lambda: _memo_get(
-                        f"{memo_prefix}|price_lists",
-                        600.0,
-                        lambda: tezpos_api.get_price_lists(token, server) or [],
-                    )
-                )
-                if lite and isinstance(cached_full, list) and len(cached_full) >= MIN_FULL:
-                    raw_products = cached_full
-                    complete = True
-                    fut_p = None
-                elif lite:
-                    fut_p = pool.submit(
-                        lambda: _memo_get(lite_key, 90.0, _load_lite, skip_empty=True)
-                    )
-                else:
-                    fut_p = pool.submit(_load_full)
-
-                wait_p = 16.0 if lite else 80.0
-                if fut_p is not None:
-                    try:
-                        raw_products = fut_p.result(timeout=wait_p) or []
-                    except FuturesTimeoutError:
-                        api_err = "Katalog so‘rovi vaqt limiti"
-                        raw_products = cached_full or cached_lite or []
-                try:
-                    raw_pl = fut_pl.result(timeout=8) or []
-                except Exception:
-                    raw_pl = cached_pl or []
+        pack = tezpos_api.get_products_page(token, server, page=1, page_size=100, timeout=12, retries=2)
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
             return JsonResponse({"error": "auth"}, status=401)
-        api_err = str(exc)
-        raw_products = cached_full or cached_lite or []
-        raw_pl = cached_pl or []
+        return JsonResponse({"ok": False, "error": str(exc), "products": []}, status=200)
     except (TimeoutError, OSError) as exc:
-        api_err = str(exc)
-        raw_products = cached_full or cached_lite or []
-        raw_pl = cached_pl or []
-
-    if not isinstance(raw_products, list):
-        raw_products = []
-    if not isinstance(raw_pl, list):
-        raw_pl = []
-
+        return JsonResponse({"ok": False, "error": str(exc), "products": []}, status=200)
     products = []
-    for row in raw_products:
+    for row in pack.get("rows") or []:
         if not isinstance(row, dict):
             continue
         try:
             products.append(_map_product(row))
         except Exception:
             continue
-    products.sort(key=lambda p: (not p.is_active, p.name.lower()))
-    meta = getattr(_load_full, "meta", None) or {}
-    if not complete:
-        complete = (not lite) and not api_err and bool(meta.get("complete"))
-        if not complete and (not lite) and not api_err and len(products) >= MIN_FULL:
-            complete = True
-    if complete and products and len(products) >= MIN_FULL:
-        _TEZPOS_MEMO[full_key] = (time.time(), raw_products)
-    elif (not lite) and products and len(products) > len(cached_full or []):
-        _TEZPOS_MEMO[full_key] = (time.time(), raw_products)
-
-    price_lists = [
-        pl for pl in raw_pl if isinstance(pl, dict) and pl.get("is_active", True)
-    ]
-    near_min = _build_near_min_stock(products)
-    payload = {
-        "ok": True,
-        "products": _products_payload_list(products),
-        "priceLists": [
-            {
-                "id": str(pl.get("id") or ""),
-                "name": (pl.get("name") or "").strip() or "Narxlar",
-                "is_selling": bool(pl.get("is_selling")),
-            }
-            for pl in price_lists
-            if str(pl.get("id") or "")
-        ],
-        "nearMin": near_min,
-        "cached": bool(complete and cached_full),
-        "partial": bool(lite and not complete),
-        "complete": bool(complete),
-        "api": tezpos_api.normalize_api_base(),
-        "count": len(products),
-    }
-    if api_err and not products:
-        payload["error"] = api_err
-        payload["ok"] = False
-    return JsonResponse(payload)
+    _log_slow("catalog", t0, f"n={len(products)}")
+    return JsonResponse(
+        {
+            "ok": True,
+            "products": _products_payload_list(products, lite=True),
+            "priceLists": [],
+            "page": 1,
+            "page_size": len(products) or 100,
+            "total": int(pack.get("total") or 0),
+            "has_more": True,
+            "count": len(products),
+            "complete": False,
+            "partial": True,
+            "api": tezpos_api.normalize_api_base(),
+        }
+    )
 
 
 @login_required
@@ -728,48 +581,17 @@ def _collect_shifts_payload(token: str, server: str, *, days: int = 21) -> tuple
         raw_shifts_api = []
 
     margin_ratio = Decimal("0.25")
-    try:
-        products_raw = _memo_get(
-            f"{memo_prefix}|products|2",
-            600.0,
-            lambda: tezpos_api.get_products(token, server, max_pages=2) or [],
-        )
-        products = [_map_product(p) for p in (products_raw or []) if isinstance(p, dict)]
-        if products:
-            margin_ratio = _catalog_margin_ratio(products) or Decimal("0.25")
-    except Exception:
-        pass
-
     shifts_payload: list[dict] = []
     shifts_source = "none"
     sales_for_shifts: list = []
 
     if raw_shifts_api:
+        # Sotuvlar API ni smena ro‘yxatida chaqirmaymiz — 504 oldini olish
         shifts_source = "api"
-        try:
-            sales_for_shifts = _memo_get(
-                f"{memo_prefix}|sales|{date_from}|{date_to}|2",
-                60.0,
-                lambda: tezpos_api.get_sales(
-                    token,
-                    server,
-                    date_from=date_from,
-                    date_to=date_to,
-                    timeout=12,
-                    max_pages=2,
-                )
-                or [],
-            )
-        except Exception:
-            sales_for_shifts = []
-        sales_for_shifts = [s for s in sales_for_shifts if isinstance(s, dict)]
         for raw in raw_shifts_api:
             if not isinstance(raw, dict):
                 continue
             sh = _normalize_api_shift(raw, today)
-            sh = _enrich_shift_with_sales(
-                sh, sales_for_shifts, margin_ratio=margin_ratio
-            )
             sh.pop("raw", None)
             shifts_payload.append(sh)
 
@@ -810,16 +632,18 @@ def cabinet_shifts(request):
         return JsonResponse({"error": "auth"}, status=401)
     token = request.session[SESSION_TOKEN]
     server = request.session[SESSION_SERVER]
+    t0 = time.time()
     try:
-        shifts, source = _collect_shifts_payload(token, server, days=21)
+        shifts, source = _collect_shifts_payload(token, server, days=14)
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
             return JsonResponse({"error": "auth"}, status=401)
-        return JsonResponse({"error": str(exc)}, status=502)
+        return JsonResponse({"ok": False, "error": str(exc), "shifts": []}, status=200)
     except (TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=504)
+        return JsonResponse({"ok": False, "error": str(exc), "shifts": []}, status=200)
 
+    _log_slow("shifts", t0, f"n={len(shifts)} src={source}")
     return JsonResponse(
         {
             "ok": True,
@@ -840,18 +664,19 @@ def cabinet_reports(request):
     server = request.session[SESSION_SERVER]
     today = timezone.localdate()
     memo_prefix = f"{server}|{(token or '')[-12:]}"
-    start = today - timedelta(days=29)
+    start = today - timedelta(days=6)
+    t0 = time.time()
     try:
         sales = _memo_get(
-            f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|2",
+            f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|1",
             90.0,
             lambda: tezpos_api.get_sales(
                 token,
                 server,
                 date_from=start.isoformat(),
                 date_to=today.isoformat(),
-                timeout=14,
-                max_pages=2,
+                timeout=10,
+                max_pages=1,
             )
             or [],
         )
@@ -859,14 +684,13 @@ def cabinet_reports(request):
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
             return JsonResponse({"error": "auth"}, status=401)
-        return JsonResponse({"error": str(exc)}, status=502)
+        return JsonResponse({"ok": False, "error": str(exc), "reports": {}}, status=200)
     except (TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=504)
+        return JsonResponse({"ok": False, "error": str(exc), "reports": {}}, status=200)
 
     sales = [s for s in (sales or []) if isinstance(s, dict)]
     charts = _build_charts_from_sales(sales, today)
     d_pack = charts.get("d7") or {"labels": [], "totals": [], "counts": []}
-    # Hisobot UI: daily = soatlik bugun, weekly = 7 kun, monthly = 6 oy
     daily = _chart_pack_for_dates(
         [s for s in sales if _sale_day(s) == today], today, today
     )
@@ -874,17 +698,6 @@ def cabinet_reports(request):
     monthly = charts.get("m6") or charts.get("m3") or d_pack
 
     margin_ratio = Decimal("0.25")
-    try:
-        products_raw = _memo_get(
-            f"{memo_prefix}|products|2",
-            600.0,
-            lambda: tezpos_api.get_products(token, server, max_pages=2) or [],
-        )
-        products = [_map_product(p) for p in (products_raw or []) if isinstance(p, dict)]
-        if products:
-            margin_ratio = _catalog_margin_ratio(products) or Decimal("0.25")
-    except Exception:
-        pass
 
     gross = float(sum((_dec(s.get("total")) for s in sales), Decimal("0")))
     checks = len(sales)
@@ -893,6 +706,7 @@ def cabinet_reports(request):
     today_gross = float(sum((_dec(s.get("total")) for s in today_sales), Decimal("0")))
     today_profit = today_gross * float(margin_ratio)
 
+    _log_slow("reports", t0, f"n={len(sales)}")
     return JsonResponse(
         {
             "ok": True,
@@ -930,51 +744,52 @@ def cabinet_abc(request):
     today = timezone.localdate()
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     start = today - timedelta(days=14)
+    t0 = time.time()
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             fut_p = pool.submit(
                 lambda: _memo_get(
-                    f"{memo_prefix}|products|4",
+                    f"{memo_prefix}|products|1",
                     600.0,
-                    lambda: tezpos_api.get_products(token, server, max_pages=4) or [],
+                    lambda: tezpos_api.get_products(token, server, max_pages=1, timeout=10) or [],
                 )
             )
             fut_s = pool.submit(
                 lambda: _memo_get(
-                    f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|2",
+                    f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|1",
                     90.0,
                     lambda: tezpos_api.get_sales(
                         token,
                         server,
                         date_from=start.isoformat(),
                         date_to=today.isoformat(),
-                        timeout=14,
-                        max_pages=2,
+                        timeout=10,
+                        max_pages=1,
                     )
                     or [],
                 )
             )
-            products_raw = fut_p.result() or []
-            sales = fut_s.result() or []
+            products_raw = fut_p.result(timeout=12) or []
+            sales = fut_s.result(timeout=12) or []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
             return JsonResponse({"error": "auth"}, status=401)
-        return JsonResponse({"error": str(exc)}, status=502)
-    except (TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=504)
+        return JsonResponse({"ok": False, "error": str(exc), "rows": []}, status=200)
+    except (TimeoutError, OSError, FuturesTimeoutError) as exc:
+        return JsonResponse({"ok": False, "error": str(exc), "rows": []}, status=200)
 
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     sales = [s for s in sales if isinstance(s, dict)]
     item_rows = []
-    sale_ids = [str(s.get("id")) for s in sales if s.get("id")][:24]
+    sale_ids = [str(s.get("id")) for s in sales if s.get("id")][:12]
     details = _fetch_sale_details(
         token,
         server,
         sale_ids,
-        limit=24,
-        per_sale_timeout=3.0,
-        overall_timeout=8.0,
+        limit=12,
+        per_sale_timeout=2.5,
+        overall_timeout=6.0,
     )
     for detail in details.values():
         for item in detail.get("items") or []:
@@ -1011,6 +826,7 @@ def cabinet_abc(request):
                 "stock": float(getattr(p, "stock_qty", 0) or 0),
             }
         )
+    _log_slow("abc", t0, f"rows={len(rows_out)}")
     return JsonResponse(
         {
             "ok": True,
@@ -3815,6 +3631,7 @@ def cabinet_range_stats(request):
     }
     if api_err:
         payload["error"] = api_err
+    _log_slow("range-stats", t_start, f"span={span} checks={checks}")
     # Har doim 200 — brauzer "API timeout" catch ga tushmasin
     return JsonResponse(payload)
 
@@ -4222,8 +4039,15 @@ def _shift_report_bundle(
     from . import telegram_bot as tg
 
     today = timezone.localdate()
-    products_raw = tezpos_api.get_products(token, server, max_pages=4) or []
-    price_lists = tezpos_api.get_price_lists(token, server) or []
+    try:
+        products_raw = tezpos_api.get_products(token, server, max_pages=2, timeout=10) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+        tg_logger.exception("shift bundle products failed")
+        products_raw = []
+    try:
+        price_lists = tezpos_api.get_price_lists(token, server) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+        price_lists = []
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     products_by_id = {str(p.id): p for p in products}
     products_by_name = _products_by_name(products)
@@ -4248,8 +4072,8 @@ def _shift_report_bundle(
         server,
         date_from=date_from,
         date_to=date_to,
-        timeout=28,
-        max_pages=6 if is_open else 4,
+        timeout=12,
+        max_pages=2,
     )
     sales = [s for s in sales if isinstance(s, dict)]
     sale_ids = set(str(x) for x in (shift.get("sale_ids") or []) if x)
@@ -4274,7 +4098,9 @@ def _shift_report_bundle(
         token,
         server,
         [str(s.get("id")) for s in matched if s.get("id")],
-        limit=100 if is_open else 70,
+        limit=12,
+        per_sale_timeout=2.5,
+        overall_timeout=8.0,
     )
     lists = _aggregate_price_list_stats(
         list(details.values()), products_by_id, products_by_name, price_lists
@@ -4631,38 +4457,33 @@ def cabinet_bot_chats(request):
 @login_required
 @require_GET
 def cabinet_telegram_sync(request):
-    """Yangi ochilgan/yopilgan smenalarni aniqlab Telegramga yuboradi."""
+    """Web worker bloklanmasin: faqat status + cron uchun token yangilash."""
     if not session_has_tezpos(request):
         return JsonResponse({"error": "auth"}, status=401)
 
     tenant = get_tenant_for_user(request.user)
-    if not tenant.telegram_enabled or not tenant.telegram_bot_token:
-        return JsonResponse({"ok": True, "skipped": True, "reason": "disabled"})
-
     token = request.session[SESSION_TOKEN]
     server = request.session[SESSION_SERVER]
-    # Fon cron uchun credential yangilab turish
     if token and server:
         TenantProfile.objects.filter(pk=tenant.pk).update(
             tezpos_api_token=token,
             tezpos_server_name=server,
         )
-        tenant.tezpos_api_token = token
-        tenant.tezpos_server_name = server
-
-    try:
-        result = sync_telegram_shifts_for_tenant(tenant, token, server)
-    except (tezpos_api.TezPosApiError, TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=502)
-    return JsonResponse(result)
+    last = tenant.telegram_last_sync or {}
+    return JsonResponse(
+        {
+            "ok": True,
+            "skipped": True,
+            "reason": "background_only",
+            "enabled": bool(tenant.telegram_enabled and tenant.telegram_bot_token),
+            "last_sync": last,
+        }
+    )
 
 
 @require_GET
 def telegram_cron_sync(request):
-    """
-    Brauzersiz smena sync — systemd/cron har 1 daqiqada.
-    Header: X-Cron-Secret yoki ?secret=
-    """
+    """Faqat oxirgi sync holati. Haqiqiy sync — manage.py / systemd."""
     from django.conf import settings as dj_settings
 
     expected = (getattr(dj_settings, "TELEGRAM_CRON_SECRET", "") or "").strip()
@@ -4674,27 +4495,17 @@ def telegram_cron_sync(request):
     if not expected or got != expected:
         return JsonResponse({"error": "forbidden"}, status=403)
 
-    tenants = TenantProfile.objects.filter(
-        telegram_enabled=True,
-    ).exclude(telegram_bot_token="").exclude(tezpos_api_token="").exclude(
-        tezpos_server_name=""
+    tenants = TenantProfile.objects.filter(telegram_enabled=True).exclude(
+        telegram_bot_token=""
     )
-    results = []
-    for tenant in tenants:
-        try:
-            results.append(
-                {
-                    "tenant": tenant.business_name,
-                    **sync_telegram_shifts_for_tenant(
-                        tenant,
-                        tenant.tezpos_api_token,
-                        tenant.tezpos_server_name,
-                    ),
-                }
-            )
-        except Exception as exc:  # noqa: BLE001
-            results.append({"tenant": tenant.business_name, "error": str(exc)})
-    return JsonResponse({"ok": True, "results": results})
+    results = [
+        {
+            "tenant": t.business_name,
+            "last_sync": t.telegram_last_sync or {},
+        }
+        for t in tenants.only("business_name", "telegram_last_sync")
+    ]
+    return JsonResponse({"ok": True, "sync": "systemd", "results": results})
 
 
 def _tg_any_ok(results: list | None) -> bool:
@@ -4709,16 +4520,43 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
     """
     from . import telegram_bot as tg
 
+    t0 = time.time()
+    api_s = 0.0
+    db_s = 0.0
+    deadline = t0 + 50.0
+    max_heavy = 1  # bir rundagi Excel/hisobot soni
+
+    def _persist_meta(extra: dict | None = None) -> None:
+        nonlocal db_s
+        meta = {
+            "at": timezone.now().isoformat(),
+            "duration_s": round(time.time() - t0, 2),
+            "api_s": round(api_s, 2),
+            "db_s": round(db_s, 2),
+        }
+        if extra:
+            meta.update(extra)
+        tenant.telegram_last_sync = meta
+        tdb = time.time()
+        tenant.save(update_fields=["telegram_notified_events", "telegram_last_sync"])
+        db_s += time.time() - tdb
+
     recipients = tg.parse_recipients(tenant.telegram_recipients)
     if not recipients:
-        return {"ok": True, "skipped": True, "reason": "no_recipients"}
+        result = {"ok": True, "skipped": True, "reason": "no_recipients"}
+        tenant.telegram_last_sync = {**result, "at": timezone.now().isoformat()}
+        tenant.save(update_fields=["telegram_last_sync"])
+        return result
 
     today = timezone.localdate()
 
+    t_api = time.time()
     try:
-        raw_shifts = tezpos_api.get_shifts(token, server) or []
+        raw_shifts = tezpos_api.get_shifts(token, server, timeout=10, max_pages=2) or []
     except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+        tg_logger.exception("get_shifts failed tenant=%s", tenant.business_name)
         raise
+    api_s += time.time() - t_api
 
     shifts = []
     for raw in raw_shifts:
@@ -4726,33 +4564,30 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
             shifts.append(_normalize_api_shift(raw, today))
 
     if not shifts:
+        t_api = time.time()
         try:
             sales = tezpos_api.get_sales(
                 token,
                 server,
                 date_from=(today - timedelta(days=2)).isoformat(),
                 date_to=today.isoformat(),
-                timeout=18,
-                max_pages=3,
+                timeout=12,
+                max_pages=2,
             )
         except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+            tg_logger.exception("sales fallback failed tenant=%s", tenant.business_name)
             sales = []
-        products_raw = []
-        try:
-            products_raw = tezpos_api.get_products(token, server, max_pages=2) or []
-        except (tezpos_api.TezPosApiError, TimeoutError, OSError):
-            pass
-        products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-        margin_ratio = _catalog_margin_ratio(products)
+        api_s += time.time() - t_api
         shifts = _build_shifts_from_sales(
             [s for s in sales if isinstance(s, dict)],
             today=today,
             gap_hours=4.0,
-            margin_ratio=margin_ratio,
+            margin_ratio=Decimal("0.25"),
         )
 
     notified = dict(tenant.telegram_notified_events or {})
     sent: list[dict] = []
+    heavy_used = 0
     # Birinchi sync: mavjud smenalarni faqat belgilash (spam bo‘lmasin)
     seed_only = "__seeded__" in notified and len(notified) <= 2
     if seed_only:
@@ -4769,10 +4604,12 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                 notified.setdefault(f"{sid}:excel", timezone.now().isoformat())
         notified.pop("__seeded__", None)
         tenant.telegram_notified_events = notified
-        tenant.save(update_fields=["telegram_notified_events"])
+        _persist_meta({"checked": len(shifts), "seeded": True, "sent": 0})
         return {"ok": True, "sent": [], "checked": len(shifts), "seeded": True}
 
     for sh in shifts[:12]:
+        if time.time() >= deadline:
+            break
         sid = str(sh.get("id") or "").strip()
         if not sid:
             continue
@@ -4801,10 +4638,14 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
             try:
                 doc_res: list = []
                 if event == "close":
-                    # To‘liq ma’lumot: avval hisobot, keyin xabar + Excel
+                    if heavy_used >= max_heavy or time.time() >= deadline:
+                        continue
+                    heavy_used += 1
+                    t_api = time.time()
                     bundle = _shift_report_bundle(
                         token, server, {**sh, "business_name": tenant.business_name}
                     )
+                    api_s += time.time() - t_api
                     shift_payload = bundle.get("shift") or dict(sh)
                     shift_payload["business_name"] = tenant.business_name
                     text = tg.build_shift_message(
@@ -4847,7 +4688,9 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                         if _tg_any_ok(doc_res):
                             notified[excel_key] = timezone.now().isoformat()
                             tenant.telegram_notified_events = notified
+                            tdb = time.time()
                             tenant.save(update_fields=["telegram_notified_events"])
+                            db_s += time.time() - tdb
                 else:
                     quick = dict(sh)
                     quick["business_name"] = tenant.business_name
@@ -4887,11 +4730,19 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                     }
                 )
             except Exception as exc:  # noqa: BLE001
+                tg_logger.exception(
+                    "telegram event failed tenant=%s shift=%s event=%s",
+                    tenant.business_name,
+                    sid,
+                    event,
+                )
                 sent.append({"shift_id": sid, "event": event, "error": str(exc)})
 
     # Yopilgan smenalar uchun Excel hali ketmagan bo‘lsa — alohida urinish
     if tenant.telegram_notify_close:
         for sh in shifts[:12]:
+            if time.time() >= deadline or heavy_used >= max_heavy:
+                break
             sid = str(sh.get("id") or "").strip()
             if not sid or (sh.get("status") or "") != "closed":
                 continue
@@ -4900,9 +4751,12 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
             if close_key not in notified or excel_key in notified:
                 continue
             try:
+                heavy_used += 1
+                t_api = time.time()
                 bundle = _shift_report_bundle(
                     token, server, {**sh, "business_name": tenant.business_name}
                 )
+                api_s += time.time() - t_api
                 if bundle.get("excel"):
                     day = timezone.localdate().isoformat()
                     fname = f"kunlik_hisobot_{day}_{sid[:8]}.xlsx"
@@ -4919,6 +4773,11 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                         {"shift_id": sid, "event": "excel", "documents": doc_res}
                     )
             except Exception as exc:  # noqa: BLE001
+                tg_logger.exception(
+                    "telegram excel failed tenant=%s shift=%s",
+                    tenant.business_name,
+                    sid,
+                )
                 sent.append({"shift_id": sid, "event": "excel", "error": str(exc)})
 
     if len(notified) > 120:
@@ -4926,9 +4785,33 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
         notified = dict(items[-80:])
 
     tenant.telegram_notified_events = notified
-    tenant.save(update_fields=["telegram_notified_events"])
-
-    return {"ok": True, "sent": sent, "checked": len(shifts), "recipients": recipients}
+    duration = round(time.time() - t0, 2)
+    _persist_meta(
+        {
+            "checked": len(shifts),
+            "sent": len(sent),
+            "errors": sum(1 for x in sent if x.get("error")),
+        }
+    )
+    result = {
+        "ok": True,
+        "sent": sent,
+        "checked": len(shifts),
+        "recipients": recipients,
+        "duration_s": duration,
+        "api_s": round(api_s, 2),
+        "db_s": round(db_s, 2),
+    }
+    tg_logger.info(
+        "tenant=%s checked=%s sent=%s duration=%.2fs api=%.2fs db=%.2fs",
+        tenant.business_name,
+        len(shifts),
+        len(sent),
+        duration,
+        api_s,
+        db_s,
+    )
+    return result
 
 
 def _debt_amount(value) -> Decimal:

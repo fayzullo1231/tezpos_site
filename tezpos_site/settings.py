@@ -89,6 +89,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "tezpos_site.slowlog_middleware.SlowRequestMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -123,6 +124,11 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": os.environ.get("SQLITE_PATH", str(BASE_DIR / "db.sqlite3")),
+        "CONN_MAX_AGE": 0,
+        "OPTIONS": {
+            "timeout": 20,
+        },
+        "ATOMIC_REQUESTS": False,
     }
 }
 
@@ -176,5 +182,17 @@ TEZPOS_API_URL = _api
 DEVSMS_TOKEN = os.environ.get("DEVSMS_TOKEN", "").strip()
 DEVSMS_FROM = os.environ.get("DEVSMS_FROM", "4546").strip() or "4546"
 
-# Smena Telegram sync (cron/systemd) — brauzersiz, har 1 daqiqada
+# Smena Telegram sync (cron/systemd) — brauzersiz
 TELEGRAM_CRON_SECRET = os.environ.get("TELEGRAM_CRON_SECRET", "").strip()
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {"class": "logging.StreamHandler"},
+    },
+    "loggers": {
+        "tezpos.slow": {"handlers": ["console"], "level": "WARNING"},
+        "tezpos.telegram": {"handlers": ["console"], "level": "INFO"},
+    },
+}

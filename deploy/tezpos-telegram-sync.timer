@@ -1,9 +1,10 @@
 [Unit]
-Description=TezPOS Telegram smena sync timer (1 daqiqa)
+Description=TezPOS Telegram smena sync timer
 
 [Timer]
 OnBootSec=45s
-OnUnitActiveSec=60s
+# Oldingi service to‘xtagandan keyin 90s — overlap yo‘q
+OnUnitInactiveSec=90s
 AccuracySec=5s
 Persistent=true
 Unit=tezpos-telegram-sync.service

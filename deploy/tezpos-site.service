@@ -7,12 +7,20 @@ User=www-data
 Group=www-data
 WorkingDirectory=/opt/tezpos_site
 EnvironmentFile=/opt/tezpos_site/.env
+Environment=HOME=/opt/tezpos_site
+Environment=XDG_RUNTIME_DIR=/run/tezpos-site
+RuntimeDirectory=tezpos-site
+RuntimeDirectoryMode=0755
 ExecStart=/opt/tezpos_site/.venv/bin/gunicorn tezpos_site.wsgi:application \
     --bind 127.0.0.1:8001 \
     --workers 4 \
     --threads 2 \
     --timeout 90 \
+    --graceful-timeout 25 \
     --keep-alive 5 \
+    --max-requests 400 \
+    --max-requests-jitter 80 \
+    --pid /run/tezpos-site/gunicorn.pid \
     --access-logfile /var/log/tezpos_site/access.log \
     --error-logfile /var/log/tezpos_site/error.log
 Restart=always

@@ -21,9 +21,11 @@ from django.urls import include, path
 from accounts.auth_views import tezpos_login, tezpos_logout
 from sales.public_check import PublicReceiptCheckView
 from sales.views import sales_page_view
+from tezpos_site.health import health
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path("health/", health, name="health"),
     path("", sales_page_view, name="landing"),
     path(
         "check/<str:server_name>/<str:ref>/",

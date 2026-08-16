@@ -86,4 +86,5 @@ echo "OK: http://tez-pos.uz (nginx + gunicorn :8001)"
 echo "API: TEZPOS_API_URL=$(grep '^TEZPOS_API_URL=' .env | head -1)"
 systemctl --no-pager status tezpos-site | head -n 15
 ss -lntp | grep 8001 || true
+curl -sS http://127.0.0.1:8001/health/ || true
 curl -sI http://127.0.0.1:8001/ | head -n 5 || true

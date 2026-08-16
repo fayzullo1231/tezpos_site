@@ -97,9 +97,9 @@ def _http_conn(base: str) -> tuple[http.client.HTTPConnection | http.client.HTTP
     conn = pool.get(key)
     if conn is None:
         if parsed.scheme == "https":
-            conn = http.client.HTTPSConnection(host, port, timeout=30)
+            conn = http.client.HTTPSConnection(host, port, timeout=20)
         else:
-            conn = http.client.HTTPConnection(host, port, timeout=30)
+            conn = http.client.HTTPConnection(host, port, timeout=20)
         pool[key] = conn
     return conn, key
 
@@ -355,7 +355,7 @@ def get_all_products(
     server_name: str,
     *,
     info: dict | None = None,
-    timeout: float = 75,
+    timeout: float = 18,
 ) -> list:
     """Desktop TezPOS bilan bir xil: /{server}/product/, keyin ?all=true, keyin sahifa."""
     count = get_product_count(token, server_name)
@@ -504,7 +504,7 @@ def get_products(
 
     if all_at_once:
         try:
-            data = _fetch({"all": "true"}, max(timeout, 60))
+            data = _fetch({"all": "true"}, timeout)
             rows = _rows(data)
             cnt = _count(data)
             if rows and (not cnt or len(rows) >= cnt):
@@ -683,52 +683,30 @@ def get_sales(
     timeout: float = 18,
     max_pages: int = 3,
 ) -> list:
-    """Sotuvlar ro'yxati. all=true bilan pagination o'chiriladi."""
-    data = api_request(
-        "GET",
-        "/api/sales/",
-        token=token,
-        server_name=server_name,
-        query={
-            "all": "true",
-            "date_from": date_from,
-            "date_to": date_to,
-        },
-        timeout=timeout,
-    )
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        results = list(data.get("results") or [])
-        # Ba'zi sozlamalarda all=true ishlamasa — sahifalab yig'ish
-        next_url = data.get("next")
-        page = 2
-        while next_url and page <= max_pages:
-            page_data = api_request(
-                "GET",
-                "/api/sales/",
-                token=token,
-                server_name=server_name,
-                query={
-                    "page": page,
-                    "date_from": date_from,
-                    "date_to": date_to,
-                },
-                timeout=min(timeout, 15),
-            )
-            if isinstance(page_data, list):
-                results.extend(page_data)
-                break
-            if not isinstance(page_data, dict):
-                break
-            chunk = page_data.get("results") or []
-            results.extend(chunk)
-            next_url = page_data.get("next")
-            if not chunk:
-                break
-            page += 1
-        return results
-    return []
+    """Sotuvlar. all=true katta javob/timeout beradi — sahifa bilan cheklanadi."""
+    results: list = []
+    for page in range(1, max(1, max_pages) + 1):
+        data = api_request(
+            "GET",
+            "/api/sales/",
+            token=token,
+            server_name=server_name,
+            query={
+                "page": str(page),
+                "date_from": date_from,
+                "date_to": date_to,
+            },
+            timeout=timeout if page == 1 else min(timeout, 12),
+        )
+        if isinstance(data, list):
+            return data
+        if not isinstance(data, dict):
+            break
+        chunk = list(data.get("results") or [])
+        results.extend(chunk)
+        if not data.get("next") or not chunk:
+            break
+    return results
 
 
 def get_sales_for_day(token: str, server_name: str, day: str) -> list:
@@ -792,7 +770,7 @@ def get_shifts(
         paths = [_SHIFT_PATH_OK] + [p for p in paths if p != _SHIFT_PATH_OK]
 
     for path in paths:
-        probe_timeout = timeout if path == _SHIFT_PATH_OK else min(timeout, 5.0)
+        probe_timeout = timeout if path == _SHIFT_PATH_OK else min(timeout, 1.8)
         try:
             data = api_request(
                 "GET",

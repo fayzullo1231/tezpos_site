@@ -22,10 +22,16 @@ class TenantProfile(models.Model):
     telegram_notify_open = models.BooleanField(default=True)
     telegram_notify_close = models.BooleanField(default=True)
     telegram_notified_events = models.JSONField(default=dict, blank=True)
+    telegram_last_sync = models.JSONField(default=dict, blank=True)
 
     # Fon smena sync (cron) uchun — login paytida yangilanadi
     tezpos_api_token = models.CharField(max_length=255, blank=True, default="")
-    tezpos_server_name = models.CharField(max_length=120, blank=True, default="")
+    tezpos_server_name = models.CharField(max_length=120, blank=True, default="", db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["telegram_enabled", "tezpos_server_name"], name="acct_tenant_tg_sync_idx"),
+        ]
 
     def __str__(self) -> str:
         return self.business_name
