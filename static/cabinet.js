@@ -979,13 +979,18 @@
           "<span style=\"color:#c2410c\">API sekin yoki ulanmadi. Qayta urinib ko‘ring.</span>";
         salesRangeSummary.appendChild(tip);
       }
-      if (
-        fast &&
-        Array.isArray(payload.priceLists) &&
-        !payload.priceLists.some((r) => r && !r.is_total && Number(r.revenue) > 0) &&
-        (inChecks > 0 || inGross > 0)
-      ) {
-        loadRangeStats(fromIso, toIsoVal, { force: true, fast: false });
+      if (fast && Array.isArray(payload.priceLists) && (inChecks > 0 || inGross > 0)) {
+        const hasOptom = payload.priceLists.some(
+          (r) =>
+            r &&
+            !r.is_total &&
+            String(r.id) !== "__selling__" &&
+            Number(r.revenue) > 0
+        );
+        // Tez rejimdan keyin Optom/detallar uchun to‘liq so‘rov (bir marta)
+        if (payload.estimated || payload.partial || !hasOptom) {
+          loadRangeStats(fromIso, toIsoVal, { force: true, fast: false });
+        }
       }
     } catch (_err) {
       if (reqId !== priceListReq) return;

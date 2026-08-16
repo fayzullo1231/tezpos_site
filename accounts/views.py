@@ -453,12 +453,20 @@ def cabinet_warm(request):
     today = timezone.localdate().isoformat()
 
     def _warm() -> None:
-        # To‘liq katalogni shu yerda tortmang — /catalog/?page=N o‘zi yig‘adi.
+        # Fon isitish — web requestni bloklamaydi. Optom uchun list_prices kerak.
         try:
             _memo_get(
                 f"{memo_prefix}|price_lists",
                 600.0,
                 lambda: tezpos_api.get_price_lists(token, server) or [],
+            )
+        except Exception:
+            pass
+        try:
+            _memo_get(
+                f"{memo_prefix}|products|4",
+                600.0,
+                lambda: tezpos_api.get_products(token, server, max_pages=4, timeout=12) or [],
             )
         except Exception:
             pass
@@ -1395,6 +1403,18 @@ def _aggregate_price_list_stats(
         if not isinstance(detail, dict):
             continue
         sid = str(detail.get("id") or "")
+        sale_pl = (
+            detail.get("price_list_id")
+            or detail.get("price_list")
+            or detail.get("list_id")
+        )
+        if isinstance(sale_pl, dict):
+            sale_pl = sale_pl.get("id")
+        sale_pl_name = (
+            (detail.get("price_list_name") or detail.get("list_name") or "")
+            if not isinstance(detail.get("price_list"), dict)
+            else (detail.get("price_list") or {}).get("name")
+        )
         for item in detail.get("items") or []:
             qty_dec = _dec(item.get("quantity"))
             qty = float(qty_dec)
@@ -1417,6 +1437,7 @@ def _aggregate_price_list_stats(
                 item.get("price_list_id")
                 or item.get("price_list")
                 or item.get("list_id")
+                or sale_pl
             )
             if isinstance(raw_pl, dict):
                 raw_pl = raw_pl.get("id")
@@ -1425,6 +1446,24 @@ def _aggregate_price_list_stats(
                 list_id = SELLING_LIST_ID
             elif list_id and list_id in buckets:
                 pass
+            elif list_id:
+                # API bergan noma’lum optom ro‘yxati — Sotuvga tashlamaymiz
+                pl_name = (
+                    item.get("price_list_name")
+                    or item.get("list_name")
+                    or sale_pl_name
+                    or "Optom"
+                )
+                if isinstance(item.get("price_list"), dict):
+                    pl_name = item["price_list"].get("name") or pl_name
+                buckets[list_id] = {
+                    "id": list_id,
+                    "name": str(pl_name).strip() or "Optom",
+                    "qty": 0.0,
+                    "checks": set(),
+                    "revenue": 0.0,
+                    "cost": 0.0,
+                }
             else:
                 list_id = _match_price_list_id(unit_price, p, price_lists)
             if list_id not in buckets:
@@ -3438,28 +3477,28 @@ def cabinet_range_stats(request):
 
     span = (end - start).days + 1
     fast = (request.GET.get("fast") or "").strip() in ("1", "true", "yes")
-    # Tez javob — brauzer abort (22–35s) va gunicorn oldidan
+    # fast: faqat jami (tez). To‘liq: Optom uchun chek + katalog namuna (deadline ichida).
     single_day = span <= 1
-    if fast and single_day:
+    if fast:
         max_pages, product_pages, sales_timeout = 1, 0, 8
         detail_cap, detail_each, detail_budget = 0, 0.0, 0.0
-        hard_deadline = 14.0
+        hard_deadline = 12.0
     elif single_day:
-        max_pages, product_pages, sales_timeout = 1, 0, 10
-        detail_cap, detail_each, detail_budget = 6, 2.5, 4.0
-        hard_deadline = 18.0
-    elif fast or span <= 7:
-        max_pages, product_pages, sales_timeout = 1, 0, 10
-        detail_cap, detail_each, detail_budget = 6, 2.5, 5.0
-        hard_deadline = 16.0
-    elif span <= 31:
-        max_pages, product_pages, sales_timeout = 1, 0, 12
-        detail_cap, detail_each, detail_budget = 8, 2.5, 5.0
-        hard_deadline = 18.0
-    else:
-        max_pages, product_pages, sales_timeout = 2, 0, 14
-        detail_cap, detail_each, detail_budget = 8, 2.5, 5.0
+        max_pages, product_pages, sales_timeout = 1, 4, 10
+        detail_cap, detail_each, detail_budget = 45, 2.2, 10.0
+        hard_deadline = 22.0
+    elif span <= 7:
+        max_pages, product_pages, sales_timeout = 1, 3, 10
+        detail_cap, detail_each, detail_budget = 30, 2.2, 9.0
         hard_deadline = 20.0
+    elif span <= 31:
+        max_pages, product_pages, sales_timeout = 2, 2, 12
+        detail_cap, detail_each, detail_budget = 24, 2.2, 8.0
+        hard_deadline = 20.0
+    else:
+        max_pages, product_pages, sales_timeout = 2, 2, 12
+        detail_cap, detail_each, detail_budget = 20, 2.0, 8.0
+        hard_deadline = 22.0
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     sales: list = []
@@ -3504,11 +3543,24 @@ def cabinet_range_stats(request):
             lambda: tezpos_api.get_price_lists(token, server) or [],
         )
 
+    def _load_products():
+        if product_pages <= 0:
+            return []
+        return _memo_get(
+            f"{memo_prefix}|products|{product_pages}",
+            600.0,
+            lambda: tezpos_api.get_products(
+                token, server, max_pages=product_pages, timeout=12
+            )
+            or [],
+        )
+
     try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        workers = 3 if product_pages > 0 else 2
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             fut_s = pool.submit(_load_sales)
             fut_pl = pool.submit(_load_price_lists)
-            # Hard deadline — uzoq kutmaslik
+            fut_p = pool.submit(_load_products) if product_pages > 0 else None
             remain = max(1.0, hard_deadline - (time.time() - t_start))
             try:
                 sales = fut_s.result(timeout=remain) or []
@@ -3522,6 +3574,12 @@ def cabinet_range_stats(request):
                 price_lists = []
             except Exception:
                 price_lists = []
+            if fut_p is not None:
+                remain = max(0.5, hard_deadline - (time.time() - t_start))
+                try:
+                    products_raw = fut_p.result(timeout=remain) or []
+                except (FuturesTimeoutError, Exception):
+                    products_raw = []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -3530,12 +3588,16 @@ def cabinet_range_stats(request):
     except (TimeoutError, OSError) as exc:
         api_err = str(exc)
 
-    # Mahsulot — faqat kesh (bloklamaslik; Contabo da products sekin)
-    hit = _TEZPOS_MEMO.get(f"{memo_prefix}|products|4") or _TEZPOS_MEMO.get(
-        f"{memo_prefix}|products|2"
-    )
-    if hit:
-        products_raw = hit[1] if isinstance(hit[1], list) else []
+    if not products_raw:
+        for key in (
+            f"{memo_prefix}|products|4",
+            f"{memo_prefix}|products|3",
+            f"{memo_prefix}|products|2",
+        ):
+            hit = _TEZPOS_MEMO.get(key)
+            if hit and isinstance(hit[1], list) and hit[1]:
+                products_raw = hit[1]
+                break
 
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     products_by_id = {str(p.id): p for p in products}
@@ -3566,10 +3628,12 @@ def cabinet_range_stats(request):
 
     lists: list = []
     details_used = 0
+    estimated = False
     remain_budget = hard_deadline - (time.time() - t_start)
     if gross > 0:
         # Avval tez Jami/Sotuv — UI bo‘sh qolmasin
         lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
+        estimated = True
         if detail_cap > 0 and remain_budget >= 3.0:
             embedded = [
                 s for s in sales if isinstance(s.get("items"), list) and s.get("items")
@@ -3582,6 +3646,17 @@ def cabinet_range_stats(request):
                 for s in sales
                 if s.get("id") and str(s.get("id")) not in details
             ]
+            # Aralash namuna (optom kechki cheklarda bo‘lishi mumkin)
+            if len(need_ids) > detail_cap:
+                step = max(1, len(need_ids) // detail_cap)
+                sampled = need_ids[::step][:detail_cap]
+                if len(sampled) < detail_cap:
+                    for sid in need_ids:
+                        if sid not in sampled:
+                            sampled.append(sid)
+                        if len(sampled) >= detail_cap:
+                            break
+                need_ids = sampled
             sample_n = min(detail_cap, len(need_ids))
             if sample_n > 0:
                 fetched = _fetch_sale_details(
@@ -3603,11 +3678,19 @@ def cabinet_range_stats(request):
                 )
                 if refined:
                     lists = _scale_price_list_stats(refined, gross, checks)
+                    estimated = False
                     jami = next((r for r in lists if r.get("is_total")), None)
                     if jami and float(jami.get("revenue") or 0) > 0:
                         profit = float(jami.get("profit") or profit)
                         margin = float(jami.get("margin") or margin)
 
+    has_optom = any(
+        isinstance(r, dict)
+        and not r.get("is_total")
+        and str(r.get("id")) != SELLING_LIST_ID
+        and float(r.get("revenue") or 0) > 0
+        for r in lists
+    )
     payload = {
         "range": range_key,
         "from": start.isoformat(),
@@ -3618,20 +3701,27 @@ def cabinet_range_stats(request):
             "profit": profit,
             "margin": margin,
             "details_used": details_used,
+            "products_used": len(products),
         },
         "chart": chart,
         "priceLists": lists,
         "partial": bool(
-            (detail_cap > 0 and details_used < max(1, min(checks, detail_cap)))
+            estimated
+            or (detail_cap > 0 and details_used < max(1, min(checks, detail_cap)))
             or bool(api_err)
         ),
+        "estimated": estimated,
         "fast": bool(fast),
         "ms": int((time.time() - t_start) * 1000),
         "api": tezpos_api.normalize_api_base(),
     }
     if api_err:
         payload["error"] = api_err
-    _log_slow("range-stats", t_start, f"span={span} checks={checks}")
+    _log_slow(
+        "range-stats",
+        t_start,
+        f"span={span} checks={checks} optom={has_optom} details={details_used}",
+    )
     # Har doim 200 — brauzer "API timeout" catch ga tushmasin
     return JsonResponse(payload)
 
@@ -3898,27 +3988,27 @@ def cabinet_shift_detail(request):
         with ThreadPoolExecutor(max_workers=3) as pool:
             fut_pl = pool.submit(tezpos_api.get_price_lists, token, server)
             fut_p = pool.submit(
-                lambda: tezpos_api.get_products(token, server, max_pages=3)
+                lambda: tezpos_api.get_products(token, server, max_pages=3, timeout=12)
             )
             api_shift = {}
             if shift_id and not shift_id.startswith("session-"):
                 fut_sh = pool.submit(tezpos_api.get_shift, token, server, shift_id)
             else:
                 fut_sh = None
-            price_lists = fut_pl.result() or []
-            products_raw = fut_p.result() or []
+            price_lists = fut_pl.result(timeout=12) or []
+            products_raw = fut_p.result(timeout=14) or []
             if fut_sh is not None:
                 try:
-                    api_shift = fut_sh.result() or {}
-                except tezpos_api.TezPosApiError:
+                    api_shift = fut_sh.result(timeout=8) or {}
+                except (tezpos_api.TezPosApiError, FuturesTimeoutError):
                     api_shift = {}
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
             return JsonResponse({"error": "auth"}, status=401)
-        return JsonResponse({"error": str(exc)}, status=502)
-    except (TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=504)
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)
+    except (TimeoutError, OSError, FuturesTimeoutError) as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)
 
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     products_by_id = {str(p.id): p for p in products}
@@ -3938,19 +4028,19 @@ def cabinet_shift_detail(request):
         date_from = (today - timedelta(days=2)).isoformat()
         date_to = today.isoformat()
 
-    # Ochiq smena: ochilgandan hozirgacha — ko‘proq sahifa
-    sale_pages = 6 if is_open else 3
+    # Ochiq smena: ochilgandan hozirgacha — sahifa cheklangan (504 yo‘q)
+    sale_pages = 3 if is_open else 2
     try:
         sales = tezpos_api.get_sales(
             token,
             server,
             date_from=date_from,
             date_to=date_to,
-            timeout=28,
+            timeout=12,
             max_pages=sale_pages,
         )
     except (tezpos_api.TezPosApiError, TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=502)
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)
 
     sales = [s for s in sales if isinstance(s, dict)]
     # Ochiq smena: vaqt oralig‘i (sale_ids eski/qisqa bo‘lishi mumkin)
@@ -3985,15 +4075,15 @@ def cabinet_shift_detail(request):
 
     gross = float(sum((_dec(s.get("total")) for s in matched), Decimal("0")))
     checks = len(matched)
-    # Bir kunlik / ochiq smena — tezkor namuna (WAN)
-    detail_cap = 16 if is_open or (opened_dt and date_from == date_to) else 12
+    # Bir kunlik / ochiq smena — Optom uchun yetarli namuna, lekin 90s emas
+    detail_cap = 35 if is_open or (opened_dt and date_from == date_to) else 28
     details = _fetch_sale_details(
         token,
         server,
         [str(s.get("id")) for s in matched if s.get("id")],
         limit=detail_cap,
-        per_sale_timeout=3.5,
-        overall_timeout=8.0,
+        per_sale_timeout=2.2,
+        overall_timeout=10.0,
     )
     lists = _aggregate_price_list_stats(
         list(details.values()), products_by_id, products_by_name, price_lists
@@ -4040,7 +4130,7 @@ def _shift_report_bundle(
 
     today = timezone.localdate()
     try:
-        products_raw = tezpos_api.get_products(token, server, max_pages=2, timeout=10) or []
+        products_raw = tezpos_api.get_products(token, server, max_pages=4, timeout=12) or []
     except (tezpos_api.TezPosApiError, TimeoutError, OSError):
         tg_logger.exception("shift bundle products failed")
         products_raw = []
@@ -4072,8 +4162,8 @@ def _shift_report_bundle(
         server,
         date_from=date_from,
         date_to=date_to,
-        timeout=12,
-        max_pages=2,
+        timeout=15,
+        max_pages=3,
     )
     sales = [s for s in sales if isinstance(s, dict)]
     sale_ids = set(str(x) for x in (shift.get("sale_ids") or []) if x)
@@ -4094,13 +4184,14 @@ def _shift_report_bundle(
 
     gross = float(sum((_dec(s.get("total")) for s in matched), Decimal("0")))
     checks = len(matched)
+    # Fon job: Optom/Excel uchun ko‘proq chek (web worker emas)
     details = _fetch_sale_details(
         token,
         server,
         [str(s.get("id")) for s in matched if s.get("id")],
-        limit=12,
+        limit=50,
         per_sale_timeout=2.5,
-        overall_timeout=8.0,
+        overall_timeout=18.0,
     )
     lists = _aggregate_price_list_stats(
         list(details.values()), products_by_id, products_by_name, price_lists
@@ -4523,8 +4614,8 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
     t0 = time.time()
     api_s = 0.0
     db_s = 0.0
-    deadline = t0 + 50.0
-    max_heavy = 1  # bir rundagi Excel/hisobot soni
+    deadline = t0 + 75.0
+    max_heavy = 2  # yopilish xabari + Excel (fon, web emas)
 
     def _persist_meta(extra: dict | None = None) -> None:
         nonlocal db_s
