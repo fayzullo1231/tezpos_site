@@ -705,7 +705,7 @@
             {% if shifts_source == 'api' %}
               TezPOS Shifts API dan yuklandi.
             {% elif shifts_source == 'sales' %}
-              TezPOS smena endpointi topilmadi — sotuvlar oralig‘idan smenalar yig‘ildi (4 soatlik tanaffus).
+              TezPOS smena endpointi topilmadi — yopilgan smenalar sotuvlardan yig‘ildi (dasturdagi ochiq smena emas).
             {% else %}
               Smenalar yuklanmoqda…
             {% endif %}
@@ -747,9 +747,9 @@
           <span class="field-label">Kimga yuborilsin <span class="req">*</span></span>
           <textarea id="bot-recipients" rows="5" placeholder="123456789&#10;-1001234567890&#10;https://t.me/mychannel">{{ bot_settings.recipients }}</textarea>
           <small>
-            Har qatorga bitta manzil. Shaxsiy: botga <code>/start</code> → <em>Chatlarni topish</em> → raqamli ID.
-            <strong>Guruh va kanal:</strong> botni qo‘shing, <em>admin</em> qiling (xabar yozish huquqi),
-            keyin <code>-100...</code> ID, <code>@kanal</code> yoki <code>https://t.me/kanal</code> — ikkalasiga ham xabar + Excel ketadi.
+            Har qatorga bitta manzil yoki bir qatorda bir nechta: <code>-1004303306685</code>,
+            <code>@kanal</code>, <code>https://t.me/+invite</code>.
+            Guruh: botni qo‘shing, <em>admin</em> qiling, keyin ID yoki invite havola — ikkalasi ham ishlaydi.
           </small>
         </label>
         <div class="bot-chats-box" id="bot-chats-box" hidden>
@@ -842,10 +842,22 @@
         <label class="sv-filter">
           <span>Qoldiq</span>
           <select id="sv-stock-filter">
-            <option value="gt0" selected>Faqat &gt; 0</option>
-            <option value="all">Hammasi</option>
+            <option value="all" selected>Hammasi</option>
+            <option value="gt0">Faqat &gt; 0</option>
             <option value="lt0">Manfiy</option>
             <option value="eq0">Nol</option>
+          </select>
+        </label>
+        <label class="sv-filter">
+          <span>Tartib</span>
+          <select id="sv-sort">
+            <option value="cost_desc">Tannarx jami: ko‘p → kam</option>
+            <option value="cost_asc">Tannarx jami: kam → ko‘p</option>
+            <option value="qty_desc">Qoldiq: ko‘p → kam</option>
+            <option value="qty_asc">Qoldiq: kam → ko‘p</option>
+            <option value="sell_desc">Sotuv jami: ko‘p → kam</option>
+            <option value="sell_asc">Sotuv jami: kam → ko‘p</option>
+            <option value="name_asc">Nomi: A → Z</option>
           </select>
         </label>
       </div>
@@ -1335,5 +1347,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=optom-fast-1" defer></script>
+<script src="/static/cabinet.js?v=shift-stock-tg-1" defer></script>
 {% endblock %}

@@ -18,7 +18,7 @@ TG_API = "https://api.telegram.org"
 
 
 def parse_recipient_line(raw: str) -> str | None:
-    """Qatorni Telegram chat_id yoki @username ga aylantiradi (guruh/kanal ham)."""
+    """Qatorni Telegram chat_id, @username yoki invite havolasiga aylantiradi."""
     s = (raw or "").strip()
     if not s or s.startswith("#"):
         return None
@@ -34,13 +34,17 @@ def parse_recipient_line(raw: str) -> str | None:
     if m:
         return f"-100{m.group(1)}"
 
-    # Invite links (joinchat / +) — bot API to'g'ridan-to'g'ri ishlamaydi
-    if s.startswith("joinchat/") or s.startswith("+"):
-        return None
+    # Invite: t.me/+HASH yoki t.me/joinchat/HASH
+    if s.startswith("joinchat/"):
+        h = s.split("/", 1)[1].split("/")[0].strip()
+        return f"invite:{h}" if h else None
+    if s.startswith("+") and not re.fullmatch(r"\+\d{5,}", s):
+        h = s[1:].split("/")[0].strip()
+        return f"invite:{h}" if len(h) >= 6 else None
 
     if s.startswith("@"):
         return s
-    # -100... guruh/kanal ID
+    # -100... guruh/kanal ID yoki shaxsiy raqamli ID
     if re.fullmatch(r"-100\d{5,}", s) or re.fullmatch(r"-?\d{5,}", s):
         return s
     # Oddiy username (kanal/guruh public)
@@ -53,15 +57,35 @@ def parse_recipient_line(raw: str) -> str | None:
     return None
 
 
+_RECIPIENT_TOKEN_RE = re.compile(
+    r"https?://(?:t\.me|telegram\.me)/[^\s,;]+"
+    r"|t\.me/[^\s,;]+"
+    r"|@[A-Za-z0-9_]{4,}"
+    r"|-100\d{5,}"
+    r"|-\d{6,}"
+    r"|\+[A-Za-z0-9_-]{8,}"
+    r"|(?<![A-Za-z0-9_-])\d{6,}"
+)
+
+
+def _split_recipient_tokens(line: str) -> list[str]:
+    s = (line or "").strip()
+    if not s or s.startswith("#"):
+        return []
+    found = [m.group(0).rstrip(".,;") for m in _RECIPIENT_TOKEN_RE.finditer(s)]
+    return found if found else [s]
+
+
 def parse_recipients(text: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
-    for line in (text or "").splitlines():
-        chat = parse_recipient_line(line)
-        if not chat or chat in seen:
-            continue
-        seen.add(chat)
-        out.append(chat)
+    for line in (text or "").replace(",", "\n").splitlines():
+        for token in _split_recipient_tokens(line):
+            chat = parse_recipient_line(token)
+            if not chat or chat in seen:
+                continue
+            seen.add(chat)
+            out.append(chat)
     return out
 
 
@@ -147,12 +171,28 @@ def list_recent_chats(token: str) -> list[dict[str, Any]]:
 
 def resolve_chat_id(token: str, recipient: str) -> tuple[str, str | None]:
     """
-    @username ni mumkin bo'lsa raqamli chat_id ga aylantiradi.
-    Private chat uchun foydalanuvchi botga /start bosgan bo'lishi kerak.
+    @username / invite / raqamli ID ni yuborish uchun chat_id ga aylantiradi.
+    Guruh invite: bot guruhda bo‘lishi kerak (getUpdates orqali topiladi).
     """
     r = (recipient or "").strip()
     if not r:
         return r, "bo‘sh manzil"
+    if r.startswith("invite:"):
+        chats = list_recent_chats(token)
+        groups = [
+            c
+            for c in chats
+            if (c.get("type") or "") in ("group", "supergroup", "channel")
+        ]
+        if len(groups) == 1:
+            return str(groups[0]["id"]), None
+        if groups:
+            # Bir nechta guruh — oxirgi (bot qo‘shilgan) ni sinab ko‘ramiz
+            return str(groups[0]["id"]), None
+        return r, (
+            "invite havola: botni guruhga qo‘shing (admin), "
+            "keyin «Chatlarni topish» yoki -100… ID ni yozing"
+        )
     if re.fullmatch(r"-?\d+", r):
         return r, None
 
@@ -162,6 +202,13 @@ def resolve_chat_id(token: str, recipient: str) -> tuple[str, str | None]:
         cu = (chat.get("username") or "").lstrip("@").lower()
         if cu and cu == uname_l:
             return str(chat["id"]), None
+        if str(chat.get("id")) == r:
+            return str(chat["id"]), None
+    probe = _api_call(token, "getChat", {"chat_id": r if r.startswith("@") else f"@{uname}"})
+    if probe.get("ok") and isinstance(probe.get("result"), dict):
+        cid = probe["result"].get("id")
+        if cid is not None:
+            return str(cid), None
     return r, None
 
 
@@ -172,7 +219,8 @@ def explain_tg_error(description: str, recipient: str) -> str:
             f"{recipient}: chat topilmadi. "
             "Shaxsiy chat uchun avval botga kirib /start bosing, "
             "keyin «Chatlarni topish» orqali raqamli ID ni qo‘ying. "
-            "Guruh/kanal uchun botni qo‘shib, admin qiling."
+            "Guruh/kanal: botni qo‘shing, admin qiling, "
+            "so‘ng -100… ID yoki t.me/+invite havolasini yozing."
         )
     if "blocked" in d or "deactivated" in d:
         return f"{recipient}: foydalanuvchi botni bloklagan yoki o‘chirilgan."
@@ -262,7 +310,18 @@ def send_document(
 def broadcast_message(token: str, recipients: list[str], text: str) -> list[dict[str, Any]]:
     results = []
     for chat in recipients:
-        resolved, _ = resolve_chat_id(token, chat)
+        resolved, hint = resolve_chat_id(token, chat)
+        if hint and str(resolved).startswith("invite:"):
+            results.append(
+                {
+                    "chat": chat,
+                    "resolved": resolved,
+                    "ok": False,
+                    "error": hint,
+                    "raw": {},
+                }
+            )
+            continue
         res = send_message(token, resolved, text)
         ok = bool(res.get("ok"))
         desc = res.get("description") or ""
@@ -287,7 +346,18 @@ def broadcast_document(
 ) -> list[dict[str, Any]]:
     results = []
     for chat in recipients:
-        resolved, _ = resolve_chat_id(token, chat)
+        resolved, hint = resolve_chat_id(token, chat)
+        if hint and str(resolved).startswith("invite:"):
+            results.append(
+                {
+                    "chat": chat,
+                    "resolved": resolved,
+                    "ok": False,
+                    "error": hint,
+                    "raw": {},
+                }
+            )
+            continue
         res = send_document(token, resolved, filename, file_bytes, caption=caption)
         ok = bool(res.get("ok"))
         desc = res.get("description") or ""

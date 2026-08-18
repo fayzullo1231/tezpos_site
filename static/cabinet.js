@@ -4314,7 +4314,7 @@
         hintEl.textContent = "TezPOS Shifts API dan yuklandi.";
       } else if (json.source === "sales") {
         hintEl.textContent =
-          "TezPOS smena endpointi topilmadi — sotuvlar oralig‘idan smenalar yig‘ildi (4 soatlik tanaffus).";
+          "TezPOS smena endpointi topilmadi — yopilgan smenalar sotuvlardan yig‘ildi (dasturdagi ochiq smena emas).";
       } else {
         hintEl.textContent = "Smenalar.";
       }
@@ -4661,24 +4661,31 @@
             <p>${esc(row.phone || "Telefon yo‘q")}</p>
           </div>
         </div>
-        <div class="debtor-balance">${fmt(debt)} so‘m</div>
+        <div class="debtor-head-actions">
+          <div class="debtor-balance">${fmt(debt)} so‘m</div>
+          ${
+            paidOff
+              ? ""
+              : `<details class="debtor-menu">
+            <summary class="debtor-menu-btn" aria-label="Amallar">Amallar</summary>
+            <div class="debtor-menu-panel">
+              <p class="debtor-pay-label">Qisman to‘lov</p>
+              <div class="debtor-pay-row">
+                <input type="text" inputmode="decimal" placeholder="Qancha to‘lash (so‘m)" class="debtor-amount" aria-label="To‘lov summasi">
+                <select class="debtor-pay-type" aria-label="To‘lov turi">
+                  <option value="cash">Naqd</option>
+                  <option value="card">Karta</option>
+                </select>
+                <button type="button" class="btn-save debtor-pay-btn">Yuborish</button>
+              </div>
+              <div class="debtor-presets">${presets}</div>
+              <p class="debtor-hint">Masalan 50 000 yozib Yuborish — qarz kamayadi. To‘liq — butun qoldiq.</p>
+            </div>
+          </details>`
+          }
+        </div>
       </div>
-      ${
-        paidOff
-          ? `<p class="debtor-msg is-ok">Qarz to‘liq yopildi.</p>`
-          : `<p class="debtor-pay-label">Qisman to‘lov</p>
-      <div class="debtor-pay-row">
-        <input type="text" inputmode="decimal" placeholder="Qancha to‘lash (so‘m)" class="debtor-amount" aria-label="To‘lov summasi">
-        <select class="debtor-pay-type" aria-label="To‘lov turi">
-          <option value="cash">Naqd</option>
-          <option value="card">Karta</option>
-        </select>
-        <button type="button" class="btn-save debtor-pay-btn">Yuborish</button>
-      </div>
-      <div class="debtor-presets">${presets}</div>
-      <p class="debtor-hint">Masalan 50 000 yozib Yuborish — qarz kamayadi. To‘liq — butun qoldiq.</p>
-      <p class="debtor-msg" hidden></p>`
-      }
+      ${paidOff ? `<p class="debtor-msg is-ok">Qarz to‘liq yopildi.</p>` : `<p class="debtor-msg" hidden></p>`}
     </article>`;
   };
 
@@ -4888,6 +4895,14 @@
     Number(n || 0).toLocaleString("uz-UZ", {
       maximumFractionDigits: 2,
     });
+  const fmtQty = (n) =>
+    Math.round(Number(n || 0)).toLocaleString("uz-UZ", {
+      maximumFractionDigits: 0,
+    });
+  const fmtMoney = (n) =>
+    Math.round(Number(n || 0)).toLocaleString("uz-UZ", {
+      maximumFractionDigits: 0,
+    });
   const esc = (s) =>
     String(s || "")
       .replace(/&/g, "&amp;")
@@ -4901,6 +4916,7 @@
   const emptyEl = document.getElementById("sv-empty");
   const searchEl = document.getElementById("sv-search");
   const filterEl = document.getElementById("sv-stock-filter");
+  const sortEl = document.getElementById("sv-sort");
   const kpisEl = document.getElementById("stock-value-kpis");
 
   // Sotuv ustuni selling_price; qolgan (is_selling bo‘lmagan) ro‘yxatlar list_prices dan
@@ -4928,7 +4944,7 @@
     const q = String(searchEl?.value || "")
       .trim()
       .toLowerCase();
-    const mode = filterEl?.value || "gt0";
+    const mode = filterEl?.value || "all";
 
     const rows = [];
     let sumQty = 0;
@@ -4951,7 +4967,7 @@
       ) {
         return;
       }
-      const cost = Number(p.cost_price || 0);
+      const cost = Number(p.cost_price || p.purchase_price || 0);
       const sell = Number(p.selling_price || 0);
       const costVal = qty * cost;
       const sellVal = qty * sell;
@@ -4978,18 +4994,27 @@
       });
     });
 
-    rows.sort((a, b) => Math.abs(b.costVal) - Math.abs(a.costVal));
+    const sortKey = sortEl?.value || "cost_desc";
+    rows.sort((a, b) => {
+      if (sortKey === "qty_asc") return a.qty - b.qty;
+      if (sortKey === "qty_desc") return b.qty - a.qty;
+      if (sortKey === "cost_asc") return a.costVal - b.costVal;
+      if (sortKey === "sell_asc") return a.sellVal - b.sellVal;
+      if (sortKey === "sell_desc") return b.sellVal - a.sellVal;
+      if (sortKey === "name_asc") return String(a.name).localeCompare(String(b.name), "uz");
+      return b.costVal - a.costVal;
+    });
 
     const countEl = document.getElementById("sv-count");
     const qtyEl = document.getElementById("sv-qty");
     const costEl = document.getElementById("sv-cost-total");
     const sellEl = document.getElementById("sv-sell-total");
     const marginEl = document.getElementById("sv-margin-total");
-    if (countEl) countEl.textContent = fmt(rows.length);
-    if (qtyEl) qtyEl.textContent = fmt(sumQty);
-    if (costEl) costEl.textContent = fmt(sumCost) + " so'm";
-    if (sellEl) sellEl.textContent = fmt(sumSell) + " so'm";
-    if (marginEl) marginEl.textContent = fmt(sumSell - sumCost) + " so'm";
+    if (countEl) countEl.textContent = fmtQty(rows.length);
+    if (qtyEl) qtyEl.textContent = fmtQty(sumQty);
+    if (costEl) costEl.textContent = fmtMoney(sumCost) + " so'm";
+    if (sellEl) sellEl.textContent = fmtMoney(sumSell) + " so'm";
+    if (marginEl) marginEl.textContent = fmtMoney(sumSell - sumCost) + " so'm";
 
     // Narx ro‘yxatlari KPI
     if (kpisEl) {
@@ -5003,7 +5028,7 @@
           "<span>" +
           esc(pl.name || "Narx") +
           " jami</span><strong>" +
-          fmt(sumLists[id] || 0) +
+          fmtMoney(sumLists[id] || 0) +
           " so'm</strong>";
         kpisEl.appendChild(card);
       });
@@ -5054,9 +5079,9 @@
               const lv = r.listVals[id] || { unit: 0, val: 0 };
               return (
                 '<td class="col-num">' +
-                fmt(lv.unit) +
+                fmtMoney(lv.unit) +
                 '</td><td class="col-num">' +
-                fmt(lv.val) +
+                fmtMoney(lv.val) +
                 "</td>"
               );
             })
@@ -5073,19 +5098,19 @@
             '<td class="col-num ' +
             stockCls +
             '">' +
-            fmt(r.qty) +
+            fmtQty(r.qty) +
             "</td>" +
             '<td class="col-num">' +
-            fmt(r.cost) +
+            fmtMoney(r.cost) +
             "</td>" +
             '<td class="col-num">' +
-            fmt(r.costVal) +
+            fmtMoney(r.costVal) +
             "</td>" +
             '<td class="col-num">' +
-            fmt(r.sell) +
+            fmtMoney(r.sell) +
             "</td>" +
             '<td class="col-num">' +
-            fmt(r.sellVal) +
+            fmtMoney(r.sellVal) +
             "</td>" +
             listCells +
             "</tr>"
@@ -5100,7 +5125,7 @@
           const id = String(pl.id);
           return (
             '<td class="col-num"></td><td class="col-num"><strong>' +
-            fmt(sumLists[id] || 0) +
+            fmtMoney(sumLists[id] || 0) +
             "</strong></td>"
           );
         })
@@ -5109,15 +5134,15 @@
         "<tr>" +
         "<th>Jami</th>" +
         '<th class="col-num">' +
-        fmt(sumQty) +
+        fmtQty(sumQty) +
         "</th>" +
         "<th></th>" +
         '<th class="col-num">' +
-        fmt(sumCost) +
+        fmtMoney(sumCost) +
         "</th>" +
         "<th></th>" +
         '<th class="col-num">' +
-        fmt(sumSell) +
+        fmtMoney(sumSell) +
         "</th>" +
         listFoot +
         "</tr>";
@@ -5126,6 +5151,7 @@
 
   searchEl?.addEventListener("input", paint);
   filterEl?.addEventListener("change", paint);
+  sortEl?.addEventListener("change", paint);
   document.addEventListener("tezpos:catalog", paint);
   paint();
 })();

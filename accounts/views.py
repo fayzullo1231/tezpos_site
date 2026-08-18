@@ -563,25 +563,30 @@ def cabinet_day_sales(request):
     )
 
 
-def _collect_shifts_payload(token: str, server: str, *, days: int = 21) -> tuple[list[dict], str]:
-    """Smenalar ro‘yxati (API yoki sotuvlardan)."""
+def _collect_shifts_payload(token: str, server: str, *, days: int = 90) -> tuple[list[dict], str]:
+    """Smenalar ro‘yxati — desktop /api/auth/shift bilan mos."""
     today = timezone.localdate()
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     date_from = (today - timedelta(days=days)).isoformat()
     date_to = today.isoformat()
 
     raw_shifts_api: list = []
+    current_raw = None
+    try:
+        current_raw = tezpos_api.get_current_shift(token, server)
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+        current_raw = None
     try:
         raw_shifts_api = _memo_get(
             f"{memo_prefix}|shifts|{date_from}|{date_to}",
-            90.0,
+            60.0,
             lambda: tezpos_api.get_shifts(
                 token,
                 server,
                 date_from=date_from,
                 date_to=date_to,
                 timeout=10,
-                max_pages=2,
+                max_pages=4,
             )
             or [],
         )
@@ -591,37 +596,58 @@ def _collect_shifts_payload(token: str, server: str, *, days: int = 21) -> tuple
     margin_ratio = Decimal("0.25")
     shifts_payload: list[dict] = []
     shifts_source = "none"
-    sales_for_shifts: list = []
+    seen_ids: set[str] = set()
 
+    def _push(raw: dict) -> None:
+        if not isinstance(raw, dict):
+            return
+        sh = _normalize_api_shift(raw, today)
+        sid = str(sh.get("id") or "")
+        if sid and sid in seen_ids:
+            return
+        if sid:
+            seen_ids.add(sid)
+        sh.pop("raw", None)
+        shifts_payload.append(sh)
+
+    if current_raw:
+        _push(current_raw)
     if raw_shifts_api:
-        # Sotuvlar API ni smena ro‘yxatida chaqirmaymiz — 504 oldini olish
         shifts_source = "api"
         for raw in raw_shifts_api:
-            if not isinstance(raw, dict):
-                continue
-            sh = _normalize_api_shift(raw, today)
-            sh.pop("raw", None)
-            shifts_payload.append(sh)
+            _push(raw)
+    elif current_raw:
+        shifts_source = "api"
+
+    open_id = ""
+    if current_raw:
+        open_id = str(current_raw.get("id") or current_raw.get("uuid") or "").strip()
+    for sh in shifts_payload:
+        sid = str(sh.get("id") or "")
+        if sh.get("status") == "open" and (not open_id or sid != open_id):
+            sh["status"] = "closed"
+            sh["status_label"] = "Yopilgan"
+            if not sh.get("closed_at"):
+                sh["closed_display"] = sh.get("opened_display") or "—"
 
     if not shifts_payload:
         shifts_source = "sales"
-        if not sales_for_shifts:
-            try:
-                sales_for_shifts = _memo_get(
-                    f"{memo_prefix}|sales|{date_from}|{date_to}|2",
-                    60.0,
-                    lambda: tezpos_api.get_sales(
-                        token,
-                        server,
-                        date_from=date_from,
-                        date_to=date_to,
-                        timeout=12,
-                        max_pages=2,
-                    )
-                    or [],
+        try:
+            sales_for_shifts = _memo_get(
+                f"{memo_prefix}|sales|{date_from}|{date_to}|3",
+                60.0,
+                lambda: tezpos_api.get_sales(
+                    token,
+                    server,
+                    date_from=date_from,
+                    date_to=date_to,
+                    timeout=12,
+                    max_pages=3,
                 )
-            except Exception:
-                sales_for_shifts = []
+                or [],
+            )
+        except Exception:
+            sales_for_shifts = []
         shifts_payload = _build_shifts_from_sales(
             [s for s in sales_for_shifts if isinstance(s, dict)],
             today=today,
@@ -629,7 +655,7 @@ def _collect_shifts_payload(token: str, server: str, *, days: int = 21) -> tuple
         )
 
     shifts_payload.sort(key=lambda s: s.get("opened_at") or "", reverse=True)
-    return shifts_payload[:60], shifts_source
+    return shifts_payload[:120], shifts_source
 
 
 @login_required
@@ -642,7 +668,7 @@ def cabinet_shifts(request):
     server = request.session[SESSION_SERVER]
     t0 = time.time()
     try:
-        shifts, source = _collect_shifts_payload(token, server, days=14)
+        shifts, source = _collect_shifts_payload(token, server, days=90)
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -1681,9 +1707,11 @@ def _normalize_api_shift(raw: dict, today: date) -> dict:
         or raw.get("finished_at")
     )
     status_raw = (raw.get("status") or "").strip().lower()
-    is_open = status_raw in ("open", "opened", "active", "ochiq") or (
-        not closed and bool(opened)
-    )
+    is_open = status_raw in ("open", "opened", "active", "ochiq")
+    if not status_raw:
+        is_open = bool(opened) and not closed
+    if closed and status_raw not in ("open", "opened", "active", "ochiq"):
+        is_open = False
     if not status_raw:
         status_raw = "open" if is_open else "closed"
     gross = _dec(
@@ -1765,13 +1793,12 @@ def _build_shifts_from_sales(
         else:
             groups[-1].append((dt, sale))
 
-    now = timezone.localtime(timezone.now())
     out: list[dict] = []
     for idx, group in enumerate(reversed(groups), start=1):
         opened = group[0][0]
         closed = group[-1][0]
-        # Oxirgi smena va oxirgi chek yaqin — ochiq deb hisoblash
-        is_open = (now - closed) <= gap and closed.date() == today
+        # Dastur yopiq bo‘lsa sayt ham ochiq deb ko‘rsatmasin
+        is_open = False
         gross = sum((_dec(s.get("total")) for _, s in group), Decimal("0"))
         checks = len(group)
         profit = (gross * margin_ratio).quantize(Decimal("0.01")) if margin_ratio > 0 else Decimal("0")
@@ -4715,6 +4742,8 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
             if key in notified:
                 continue
             if event == "open":
+                if str(sid).startswith("session-"):
+                    continue
                 opened_dt = _parse_dt(sh.get("opened_at"))
                 if opened_dt and timezone.now() - opened_dt > timedelta(hours=36):
                     notified[key] = timezone.now().isoformat()

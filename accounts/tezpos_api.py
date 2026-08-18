@@ -739,7 +739,10 @@ def get_price_lists(token: str, server_name: str) -> list:
     return []
 
 
+# Desktop TezPOS: /api/auth/shift/current/ va /api/auth/shift/history/
 SHIFT_LIST_PATHS = (
+    "/api/auth/shift/history/",
+    "/api/auth/shifts/",
     "/api/shifts/",
     "/api/accounts/shifts/",
     "/api/v1/shifts/",
@@ -754,6 +757,52 @@ SHIFT_LIST_PATHS = (
 _SHIFT_PATH_OK: str | None = None
 
 
+def _shift_rows(payload) -> list:
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    shift = payload.get("shift")
+    if isinstance(shift, dict) and (shift.get("id") or shift.get("opened_at")):
+        return [shift]
+    for key in ("results", "items", "shifts", "history", "data"):
+        val = payload.get(key)
+        if isinstance(val, list):
+            return [r for r in val if isinstance(r, dict)]
+        if isinstance(val, dict):
+            inner = val.get("shift")
+            if isinstance(inner, dict):
+                return [inner]
+            nested = val.get("results") or val.get("items")
+            if isinstance(nested, list):
+                return [r for r in nested if isinstance(r, dict)]
+    return []
+
+
+def get_current_shift(token: str, server_name: str, timeout: float = 8) -> dict | None:
+    """Desktop bilan bir xil: ochiq smena yoki None."""
+    try:
+        data = api_request(
+            "GET",
+            "/api/auth/shift/current/",
+            token=token,
+            server_name=server_name,
+            timeout=timeout,
+        )
+    except TezPosApiError as exc:
+        if exc.status in (401, 403):
+            raise
+        return None
+    if not isinstance(data, dict):
+        return None
+    shift = data.get("shift")
+    if isinstance(shift, dict) and (shift.get("id") or shift.get("opened_at")):
+        return shift
+    if data.get("id") and (data.get("opened_at") or data.get("status")):
+        return data
+    return None
+
+
 def get_shifts(
     token: str,
     server_name: str,
@@ -761,27 +810,47 @@ def get_shifts(
     date_from: str | None = None,
     date_to: str | None = None,
     timeout: float = 12,
-    max_pages: int = 2,
+    max_pages: int = 4,
 ) -> list:
-    """TezPOS smenalari. Ishlaydigan endpointni eslab qoladi."""
+    """Haqiqiy TezPOS smenalari. Bo‘sh /api/shifts/ ni 'topildi' deb eshlamaydi."""
     global _SHIFT_PATH_OK
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
+
+    def _add(rows: list) -> None:
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            sid = str(raw.get("id") or raw.get("uuid") or "").strip()
+            if not sid:
+                opened = str(raw.get("opened_at") or raw.get("created_at") or "")
+                sid = opened or str(len(by_id))
+            if sid not in by_id:
+                order.append(sid)
+            by_id[sid] = raw
+
+    current = get_current_shift(token, server_name, timeout=min(timeout, 8))
+    if current:
+        _add([current])
+
     paths = list(SHIFT_LIST_PATHS)
     if _SHIFT_PATH_OK and _SHIFT_PATH_OK in paths:
         paths = [_SHIFT_PATH_OK] + [p for p in paths if p != _SHIFT_PATH_OK]
 
     for path in paths:
-        probe_timeout = timeout if path == _SHIFT_PATH_OK else min(timeout, 1.8)
+        probe_timeout = timeout if path == _SHIFT_PATH_OK else min(timeout, 2.2)
+        query = {
+            "all": "true",
+            "date_from": date_from,
+            "date_to": date_to,
+        }
         try:
             data = api_request(
                 "GET",
                 path,
                 token=token,
                 server_name=server_name,
-                query={
-                    "all": "true",
-                    "date_from": date_from,
-                    "date_to": date_to,
-                },
+                query=query,
                 timeout=probe_timeout,
             )
         except TezPosApiError as exc:
@@ -790,61 +859,48 @@ def get_shifts(
             if exc.status in (401, 403):
                 raise
             continue
-        rows: list = []
-        if isinstance(data, list):
-            rows = data
-        elif isinstance(data, dict):
-            rows = list(
-                data.get("results")
-                or data.get("items")
-                or data.get("shifts")
-                or data.get("data")
-                or []
-            )
-            next_url = data.get("next")
-            page = 2
-            while next_url and page <= max_pages:
-                try:
-                    page_data = api_request(
-                        "GET",
-                        path,
-                        token=token,
-                        server_name=server_name,
-                        query={
-                            "page": page,
-                            "date_from": date_from,
-                            "date_to": date_to,
-                        },
-                        timeout=probe_timeout,
-                    )
-                except TezPosApiError:
-                    break
-                if isinstance(page_data, list):
-                    rows.extend(page_data)
-                    break
-                if not isinstance(page_data, dict):
-                    break
-                chunk = (
-                    page_data.get("results")
-                    or page_data.get("items")
-                    or page_data.get("shifts")
-                    or []
+        rows = _shift_rows(data)
+        next_url = data.get("next") if isinstance(data, dict) else None
+        page = 2
+        while next_url and page <= max_pages:
+            try:
+                page_data = api_request(
+                    "GET",
+                    path,
+                    token=token,
+                    server_name=server_name,
+                    query={
+                        "page": page,
+                        "all": "true",
+                        "date_from": date_from,
+                        "date_to": date_to,
+                    },
+                    timeout=probe_timeout,
                 )
-                rows.extend(chunk)
-                next_url = page_data.get("next")
-                if not chunk:
-                    break
-                page += 1
-        # 200 OK — yo‘l ishlaydi (bo‘sh ro‘yxat ham OK)
+            except TezPosApiError:
+                break
+            chunk = _shift_rows(page_data)
+            rows.extend(chunk)
+            next_url = page_data.get("next") if isinstance(page_data, dict) else None
+            if not chunk:
+                break
+            page += 1
+        if not rows:
+            # Bo‘sh 200 — bu yo‘l smena API emas (masalan /api/shifts/)
+            continue
         _SHIFT_PATH_OK = path
-        return [r for r in rows if isinstance(r, dict)]
-    return []
+        _add(rows)
+        break
+
+    return [by_id[sid] for sid in order]
 
 
 def get_shift(token: str, server_name: str, shift_id: str) -> dict:
     """Bitta smena detali тАФ mavjud yo'llarni sinaydi."""
     sid = str(shift_id).strip()
     for path in (
+        f"/api/auth/shift/{sid}/",
+        f"/api/auth/shifts/{sid}/",
         f"/api/shifts/{sid}/",
         f"/api/cash-shifts/{sid}/",
         f"/api/cash_shifts/{sid}/",

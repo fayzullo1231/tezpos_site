@@ -3685,6 +3685,24 @@ html.cabinet-ready .cabinet-content {
 .debtor-who h4 { margin: 0; color: #002048; font-size: 1rem; line-height: 1.25; word-break: break-word; }
 .debtor-who p { margin: .15rem 0 0; color: #8b97ab; font-size: .82rem; }
 .debtor-balance { color: #c2410c; font-weight: 800; font-size: 1.05rem; white-space: nowrap; }
+.debtor-head-actions {
+  display: flex; align-items: center; gap: .65rem; flex-shrink: 0;
+}
+.debtor-menu { position: relative; }
+.debtor-menu-btn {
+  list-style: none; cursor: pointer; user-select: none;
+  border: 1px solid #dbe3ef; background: #f8fafc; color: #06305e;
+  border-radius: 10px; padding: .4rem .75rem; font-size: .82rem; font-weight: 700;
+}
+.debtor-menu-btn::-webkit-details-marker { display: none; }
+.debtor-menu[open] .debtor-menu-btn { border-color: #2c86e0; background: #eff6ff; }
+.debtor-menu-panel {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  width: min(92vw, 380px);
+  border: 1px solid #e2e8f2; border-radius: 14px; background: #fff;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .12);
+  padding: .85rem; display: grid; gap: .55rem;
+}
 .debtor-pay-label {
   margin: 0; font-size: .72rem; font-weight: 800; letter-spacing: .06em;
   text-transform: uppercase; color: #8b97ab;
