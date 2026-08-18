@@ -394,7 +394,12 @@ def cabinet_catalog(request):
         t0 = time.time()
         try:
             pack = tezpos_api.get_products_page(
-                token, server, page=page_n, page_size=page_size, timeout=12, retries=2
+                token,
+                server,
+                page=page_n,
+                page_size=page_size,
+                timeout=25 if page_n == 1 else 12,
+                retries=2,
             )
         except tezpos_api.TezPosApiError as exc:
             if getattr(exc, "status", None) in (401, 403):
@@ -413,7 +418,7 @@ def cabinet_catalog(request):
             except Exception:
                 continue
         price_lists_payload = []
-        if page_n == 1 and not skip_pl:
+        if not skip_pl:
             try:
                 raw_pl = _memo_get(
                     f"{memo_prefix}|price_lists",

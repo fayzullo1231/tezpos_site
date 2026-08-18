@@ -203,3 +203,8 @@ class CatalogPagingTests(SimpleTestCase):
         self.assertTrue(
             catalog_has_more(actual=20, requested=100, has_next=False, total=1500, loaded=20)
         )
+
+    def test_product_count_helper_exists(self):
+        from accounts.tezpos_api import get_product_count
+
+        self.assertTrue(callable(get_product_count))

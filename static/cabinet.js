@@ -8,7 +8,7 @@
   ];
 
   // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
-  const CACHE_P = "tezpos_v5_";
+  const CACHE_P = "tezpos_v6_";
   const cacheGet = (key) => {
     try {
       const raw = sessionStorage.getItem(CACHE_P + key);
@@ -93,7 +93,9 @@
           data.products = incoming;
         }
       }
-      if (json.priceLists) data.priceLists = json.priceLists;
+      if (Array.isArray(json.priceLists) && json.priceLists.length) {
+        data.priceLists = json.priceLists;
+      }
       if (json.nearMin) data.nearMin = json.nearMin;
       const reportedTotal = Number(json.catalog_count || json.total || 0);
       if (reportedTotal > (data.catalogCount || 0)) data.catalogCount = reportedTotal;
@@ -105,7 +107,10 @@
         priceLists: data.priceLists,
         nearMin: data.nearMin,
         ts: Date.now(),
-        complete: Boolean(data.catalogComplete) && data.products.length >= 100,
+        complete:
+          Boolean(data.catalogComplete) &&
+          data.products.length >= 300 &&
+          data.products.length !== 200,
         total: data.catalogCount,
       });
     }
@@ -195,11 +200,15 @@
             break;
           }
           if (after === before) {
-            applyCatalogPayload(
-              { products: data.products, complete: true, total: total || after, count: after },
-              { emit: true, merge: false }
-            );
-            break;
+            if (!fullPage && !apiHasMore) {
+              applyCatalogPayload(
+                { products: data.products, complete: true, total: total || after, count: after },
+                { emit: true, merge: false }
+              );
+              break;
+            }
+            page += 1;
+            continue;
           }
           if (!fullPage && !apiHasMore) {
             applyCatalogPayload(
@@ -207,6 +216,10 @@
               { emit: true, merge: false }
             );
             break;
+          }
+          // 200 ta yolg‘on count — to‘liq sahifa bo‘lsa davom
+          if (total && after >= total && fullPage) {
+            total = 0;
           }
           if (total && after >= total && !fullPage && !apiHasMore) {
             applyCatalogPayload(
@@ -262,7 +275,7 @@
         applyCatalogPayload(
           {
             ...cached,
-            complete: Boolean(cached.complete) && cached.products.length >= 100,
+            complete: Boolean(cached.complete) && cached.products.length >= 300,
           },
           { emit: false }
         );
@@ -4935,10 +4948,12 @@
   const kpisEl = document.getElementById("stock-value-kpis");
 
   // Sotuv ustuni selling_price; qolgan (is_selling bo‘lmagan) ro‘yxatlar list_prices dan
-  const getExtraLists = () =>
-    (Array.isArray(data.priceLists) ? data.priceLists : []).filter(
-      (pl) => pl && pl.id && !pl.is_selling
-    );
+  const getExtraLists = () => {
+    const lists = Array.isArray(data.priceLists) ? data.priceLists : [];
+    const extra = lists.filter((pl) => pl && pl.id && !pl.is_selling);
+    if (extra.length) return extra;
+    return lists.filter((pl) => pl && pl.id);
+  };
 
   const listPrice = (p, plId) => {
     const lp = p.list_prices || {};

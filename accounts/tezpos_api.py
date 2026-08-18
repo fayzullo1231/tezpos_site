@@ -347,12 +347,14 @@ def catalog_has_more(
     if total and loaded < total:
         return True
     req = max(1, int(requested or 20))
-    # To‘liq sahifa: so‘ralgan hajm yoki DRF default 20
     if actual >= req:
         return True
     if actual >= 20:
         return True
     return False
+
+
+def get_product_count(token: str, server_name: str, timeout: float = 12) -> int:
     """TezPOS desktop: GET /api/catalog/products/count/"""
     try:
         data = api_request(
@@ -390,7 +392,10 @@ def get_all_products(
             return False
         if count and len(rows) >= max(1, min(count, int(count * 0.9))):
             return True
-        return len(rows) > 100
+        # count yo‘q/200 — 200 ta sahifa to‘liq katalog emas
+        if not count:
+            return len(rows) >= 400
+        return False
 
     slug = _server_slug(server_name)
     if slug:
@@ -437,8 +442,8 @@ def get_all_products(
     rows = get_products(
         token,
         server_name,
-        max_pages=40,
-        timeout=20,
+        max_pages=120,
+        timeout=12,
         page_size=100,
         all_at_once=False,
         info=meta,
@@ -448,6 +453,69 @@ def get_all_products(
         info["complete"] = bool(meta.get("complete")) or (count and len(rows or []) >= count)
         info["source"] = "pages"
     return rows or []
+
+
+_CATALOG_SNAP: dict[str, tuple[float, list]] = {}
+_CATALOG_SNAP_LOCK = threading.Lock()
+
+
+def get_catalog_snapshot(token: str, server_name: str, timeout: float = 22) -> list:
+    """Desktop kabi to‘liq katalog (tenant / all=true). 200 ta sahifa keshga yozilmaydi."""
+    key = f"{_server_slug(server_name)}|{(token or '')[-20:]}"
+    now = time.time()
+    with _CATALOG_SNAP_LOCK:
+        hit = _CATALOG_SNAP.get(key)
+        if hit and now - hit[0] < 120 and len(hit[1]) > 200:
+            return hit[1]
+
+    count = get_product_count(token, server_name, timeout=min(8.0, timeout)) or 0
+
+    def _ok(rows: list) -> bool:
+        n = len(rows or [])
+        if n <= 200:
+            return False
+        if count and n >= max(1, int(count * 0.85)):
+            return True
+        return n >= 400
+
+    def _save(rows: list) -> list:
+        with _CATALOG_SNAP_LOCK:
+            _CATALOG_SNAP[key] = (time.time(), rows)
+        return rows
+
+    slug = _server_slug(server_name)
+    if slug:
+        try:
+            data = api_request(
+                "GET",
+                f"/{slug}/product/",
+                token=token,
+                server_name=server_name,
+                timeout=timeout,
+            )
+            rows = data if isinstance(data, list) else _product_rows(data)
+            if _ok(rows):
+                return _save(rows)
+        except TezPosApiError as exc:
+            if exc.status in (401, 403):
+                raise
+
+    try:
+        data = api_request(
+            "GET",
+            "/api/catalog/products/",
+            token=token,
+            server_name=server_name,
+            query={"all": "true"},
+            timeout=timeout,
+        )
+        rows = data if isinstance(data, list) else _product_rows(data)
+        if _ok(rows):
+            return _save(rows)
+    except TezPosApiError as exc:
+        if exc.status in (401, 403):
+            raise
+    return []
 
 
 def get_products(
@@ -629,6 +697,22 @@ def get_products_page(
     size = max(20, min(int(page_size or 100), 100))
     offset = (page - 1) * size
 
+    try:
+        snap = get_catalog_snapshot(token, server_name, timeout=min(22.0, max(timeout, 12.0)))
+    except (TezPosApiError, TimeoutError, OSError, socket.timeout):
+        snap = []
+    if len(snap) > 200:
+        start = (page - 1) * size
+        chunk = snap[start : start + size]
+        return {
+            "rows": chunk,
+            "total": len(snap),
+            "has_more": start + len(chunk) < len(snap),
+            "page": page,
+            "page_size": len(chunk) or size,
+            "catalog_count": len(snap),
+        }
+
     def _rows(payload) -> list:
         if isinstance(payload, list):
             return payload
@@ -758,18 +842,30 @@ def get_sale(token: str, server_name: str, sale_id: str) -> dict:
 
 
 def get_price_lists(token: str, server_name: str) -> list:
-    data = api_request(
-        "GET",
-        "/api/catalog/price-lists/",
-        token=token,
-        server_name=server_name,
-        timeout=12,
-    )
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        return list(data.get("results") or data.get("items") or [])
-    return []
+    last: list = []
+    for query in ({"all": "true"}, None):
+        try:
+            data = api_request(
+                "GET",
+                "/api/catalog/price-lists/",
+                token=token,
+                server_name=server_name,
+                query=query,
+                timeout=12,
+            )
+        except TezPosApiError:
+            continue
+        if isinstance(data, list):
+            rows = data
+        elif isinstance(data, dict):
+            rows = list(data.get("results") or data.get("items") or [])
+        else:
+            rows = []
+        if len(rows) > len(last):
+            last = rows
+        if len(rows) > 1:
+            return rows
+    return last
 
 
 # Desktop TezPOS: /api/auth/shift/current/ va /api/auth/shift/history/
