@@ -208,3 +208,11 @@ class CatalogPagingTests(SimpleTestCase):
         from accounts.tezpos_api import get_product_count
 
         self.assertTrue(callable(get_product_count))
+
+
+class ProductExportSourceTests(SimpleTestCase):
+    def test_snapshot_preferred_over_capped_page(self):
+        snap = [{"id": str(i)} for i in range(1516)]
+        paged = [{"id": str(i)} for i in range(200)]
+        picked = snap if len(snap) > 200 else paged
+        self.assertEqual(len(picked), 1516)

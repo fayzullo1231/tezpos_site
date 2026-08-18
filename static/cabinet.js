@@ -3338,6 +3338,21 @@
         return;
       }
       const exportUrl = data.productsExportUrl;
+      const local = Array.isArray(data.products) ? data.products : [];
+      // Brauzerda to‘liq katalog bor bo‘lsa — 200 ta server kesimidan qochamiz
+      if (local.length > 250) {
+        try {
+          setStatus("Excel tayyorlanmoqda…", "");
+          const pack = buildExportSheet();
+          if (!pack) return;
+          XLSX.writeFile(pack.wb, "barcha_mahsulotlar.xlsx");
+          setStatus(`${pack.count} ta mahsulot Excelga yozildi.`, "");
+        } catch (err) {
+          setStatus(`Excel yaratilmadi: ${err.message || err}`, "error");
+          alert(`Excel yuklanmadi: ${err.message || err}`);
+        }
+        return;
+      }
       if (!exportUrl) {
         try {
           setStatus("Excel tayyorlanmoqda…", "");

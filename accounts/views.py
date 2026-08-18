@@ -2713,17 +2713,17 @@ def cabinet_products_export(request):
         fields.append(f)
 
     try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_p = pool.submit(
-                lambda: tezpos_api.get_products(
-                    token, server, max_pages=80, timeout=12, page_size=100
+        products_raw = tezpos_api.get_catalog_snapshot(token, server, timeout=25) or []
+        if len(products_raw) <= 200:
+            products_raw = tezpos_api.get_all_products(token, server, timeout=25) or products_raw
+        if len(products_raw) <= 200:
+            products_raw = (
+                tezpos_api.get_products(
+                    token, server, max_pages=120, timeout=12, page_size=100
                 )
+                or products_raw
             )
-            fut_pl = pool.submit(
-                lambda: tezpos_api.get_price_lists(token, server) or []
-            )
-            products_raw = fut_p.result() or []
-            price_lists = fut_pl.result() or []
+        price_lists = tezpos_api.get_price_lists(token, server) or []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
