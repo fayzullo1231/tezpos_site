@@ -432,8 +432,10 @@ def cabinet_catalog(request):
             except Exception:
                 price_lists_payload = []
         actual = len(products)
+        requested = page_size
         total = int(pack.get("total") or 0)
-        loaded = (page_n - 1) * page_size + actual
+        api_page_size = int(pack.get("page_size") or actual or page_size)
+        loaded = (page_n - 1) * max(api_page_size, 1) + actual
         catalog_count = int(pack.get("catalog_count") or 0)
         if page_n == 1 and not catalog_count:
             try:
@@ -447,20 +449,19 @@ def cabinet_catalog(request):
                 )
             except Exception:
                 catalog_count = 0
-        # count=100/200 kesilgan bo‘lsa — to‘liq sahifada davom etamiz
-        if actual >= page_size and total and total <= loaded and total % 50 == 0:
+        if actual >= api_page_size and total and total <= loaded and total % 50 == 0:
             if not catalog_count or catalog_count <= loaded:
                 total = 0
         if catalog_count > total:
             total = catalog_count
-        has_more = bool(pack.get("has_more")) or actual >= page_size
-        if catalog_count and loaded < catalog_count:
-            has_more = True
+        has_more = tezpos_api.catalog_has_more(
+            actual=actual,
+            requested=requested,
+            has_next=bool(pack.get("has_more")),
+            total=total or catalog_count,
+            loaded=loaded,
+        )
         if not products:
-            has_more = False
-        elif actual < page_size and not pack.get("has_more") and (
-            not catalog_count or loaded >= catalog_count
-        ):
             has_more = False
         return JsonResponse(
             {
@@ -468,7 +469,7 @@ def cabinet_catalog(request):
                 "products": _products_payload_list(products, lite=skip_pl),
                 "priceLists": price_lists_payload,
                 "page": page_n,
-                "page_size": actual if actual else page_size,
+                "page_size": actual if actual else api_page_size,
                 "total": total,
                 "catalog_count": catalog_count or total,
                 "has_more": has_more,

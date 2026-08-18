@@ -182,3 +182,24 @@ class WarehouseProductMapTests(SimpleTestCase):
         self.assertEqual(float(p.selling_price), 1000)
         self.assertEqual(_parse_list_prices([{"price_list_id": "optom", "price": 800}])["optom"], p.list_prices["optom"])
         self.assertEqual(float(p.stock_qty) * float(p.list_prices["optom"]), 2400)
+
+
+class CatalogPagingTests(SimpleTestCase):
+    def test_twenty_item_page_is_not_the_end(self):
+        from accounts.tezpos_api import catalog_has_more
+
+        self.assertTrue(
+            catalog_has_more(actual=20, requested=100, has_next=False, total=0, loaded=20)
+        )
+        self.assertTrue(
+            catalog_has_more(actual=20, requested=100, has_next=True, total=20, loaded=20)
+        )
+        self.assertFalse(
+            catalog_has_more(actual=7, requested=100, has_next=False, total=0, loaded=7)
+        )
+        self.assertFalse(
+            catalog_has_more(actual=0, requested=100, has_next=False, total=1500, loaded=0)
+        )
+        self.assertTrue(
+            catalog_has_more(actual=20, requested=100, has_next=False, total=1500, loaded=20)
+        )

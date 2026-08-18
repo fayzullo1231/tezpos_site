@@ -331,7 +331,28 @@ def _product_rows(payload) -> list:
     return []
 
 
-def get_product_count(token: str, server_name: str, timeout: float = 12) -> int:
+def catalog_has_more(
+    *,
+    actual: int,
+    requested: int = 100,
+    has_next: bool = False,
+    total: int = 0,
+    loaded: int = 0,
+) -> bool:
+    """DRF ko‘pincha 20 ta qaytaradi — bu oxiri emas."""
+    if actual <= 0:
+        return False
+    if has_next:
+        return True
+    if total and loaded < total:
+        return True
+    req = max(1, int(requested or 20))
+    # To‘liq sahifa: so‘ralgan hajm yoki DRF default 20
+    if actual >= req:
+        return True
+    if actual >= 20:
+        return True
+    return False
     """TezPOS desktop: GET /api/catalog/products/count/"""
     try:
         data = api_request(
@@ -496,17 +517,15 @@ def get_products(
 
     def _done(n: int, page_len: int) -> bool:
         nonlocal last_short
+        del n
         if page_len <= 0:
             last_short = True
             return True
-        if total and n >= total:
-            last_short = True
-            return True
-        # To‘liq sahifa — yana bor. Qisqa sahifa — oxiri.
-        if page_len < size:
-            last_short = True
-            return True
-        return False
+        # To‘liq sahifa (20 yoki 100) — yana bor. Qisqa — oxiri.
+        if page_len >= size:
+            return False
+        last_short = True
+        return True
 
     if all_at_once:
         try:
@@ -541,7 +560,10 @@ def get_products(
                     _add(chunk)
                     total = _count(data)
                     first_len = len(chunk)
-                    size = max(size, first_len)
+                    if 0 < first_len < size:
+                        size = first_len
+                    else:
+                        size = max(size, first_len)
                     break
             except TezPosApiError as exc:
                 last_err = exc
@@ -565,9 +587,6 @@ def get_products(
     if _done(len(results), first_len) and (not total or len(results) >= total):
         page = max_pages + 1
     while page <= max_pages and time.time() < deadline:
-        if total and len(results) >= total:
-            last_short = True
-            break
         try:
             page_data = _fetch({"page": str(page), "page_size": str(size)}, timeout)
         except TezPosApiError:
@@ -664,14 +683,19 @@ def get_products_page(
     total = _count(data)
     nxt = data.get("next") if isinstance(data, dict) else None
     actual = len(rows)
-    # TezPOS ko‘pincha count ni 100/200 da kesadi — to‘liq sahifa bo‘lsa davom etamiz
+    if 0 < actual < size:
+        size = actual
     loaded = (page - 1) * size + actual
     if actual >= size and total and total <= loaded and total % 50 == 0:
         total = 0
-    has_more = bool(nxt) or actual >= size
+    has_more = catalog_has_more(
+        actual=actual,
+        requested=size,
+        has_next=bool(nxt),
+        total=total,
+        loaded=loaded,
+    )
     if actual == 0:
-        has_more = False
-    elif total > 0 and loaded >= total and actual < size:
         has_more = False
     return {
         "rows": rows,
@@ -679,6 +703,7 @@ def get_products_page(
         "has_more": has_more,
         "page": page,
         "page_size": actual if actual else size,
+        "catalog_count": total,
     }
 
 

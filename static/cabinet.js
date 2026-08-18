@@ -8,7 +8,7 @@
   ];
 
   // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
-  const CACHE_P = "tezpos_v4_";
+  const CACHE_P = "tezpos_v5_";
   const cacheGet = (key) => {
     try {
       const raw = sessionStorage.getItem(CACHE_P + key);
@@ -120,15 +120,16 @@
 
   const incomingOk = (json) => Array.isArray(json?.products);
   const CATALOG_PAGE_SIZE = 100;
-  const CATALOG_MAX_PAGES = 80;
+  const CATALOG_MAX_PAGES = 250;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  const fetchCatalogPage = async (page, tries = 3) => {
+  const fetchCatalogPage = async (page, pageSize = CATALOG_PAGE_SIZE, tries = 3) => {
+    const size = Math.max(10, Number(pageSize) || CATALOG_PAGE_SIZE);
     const params = new URLSearchParams({
       page: String(page),
-      page_size: String(CATALOG_PAGE_SIZE),
-      offset: String((page - 1) * CATALOG_PAGE_SIZE),
+      page_size: String(size),
+      offset: String((page - 1) * size),
     });
     if (data.section === "labels") params.set("skip_pl", "1");
     const url = `${data.catalogUrl}?${params}`;
@@ -162,9 +163,12 @@
     if (catalogInflight && !lite) return catalogInflight;
     const run = (async () => {
       try {
+        let chunkSize = CATALOG_PAGE_SIZE;
         try {
-          const first = await fetchCatalogPage(1);
+          const first = await fetchCatalogPage(1, CATALOG_PAGE_SIZE);
           applyCatalogPayload(first, { emit: true, merge: true });
+          const firstGot = (first.products || []).length;
+          if (firstGot > 0 && firstGot < 90) chunkSize = firstGot;
         } catch (err) {
           if (err && err.message === "auth") return data;
         }
@@ -172,17 +176,16 @@
 
         let page = 2;
         let total = Number(data.catalogCount || 0);
-        let chunkSize = CATALOG_PAGE_SIZE;
-        while (page <= CATALOG_MAX_PAGES) {
-          const json = await fetchCatalogPage(page);
+        const maxPages = chunkSize <= 25 ? CATALOG_MAX_PAGES : 80;
+        while (page <= maxPages) {
+          const json = await fetchCatalogPage(page, chunkSize);
           const before = (data.products || []).length;
           applyCatalogPayload(json, { emit: true, merge: true });
           const got = (json.products || []).length;
           const after = (data.products || []).length;
-          if (got > 0 && got < chunkSize) chunkSize = Math.max(got, 50);
           const reported = Number(json.catalog_count || json.total || 0);
           if (reported > total) total = reported;
-          const fullPage = got >= 90;
+          const fullPage = got > 0 && got >= chunkSize;
           const apiHasMore = json.has_more === true || json.complete === false;
           if (!got) {
             applyCatalogPayload(
@@ -198,8 +201,7 @@
             );
             break;
           }
-          // count=200 kabi yolg‘on total — to‘liq sahifa yoki catalog_count katta bo‘lsa davom
-          if (!fullPage && json.has_more !== true && !(total && after < total)) {
+          if (!fullPage && !apiHasMore) {
             applyCatalogPayload(
               { products: data.products, complete: true, total: total || after, count: after },
               { emit: true, merge: false }
