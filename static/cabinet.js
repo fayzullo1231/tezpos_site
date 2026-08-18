@@ -8,7 +8,7 @@
   ];
 
   // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
-  const CACHE_P = "tezpos_v6_";
+  const CACHE_P = "tezpos_v7_";
   const cacheGet = (key) => {
     try {
       const raw = sessionStorage.getItem(CACHE_P + key);

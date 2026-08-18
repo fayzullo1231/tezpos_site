@@ -210,6 +210,96 @@ class CatalogPagingTests(SimpleTestCase):
         self.assertTrue(callable(get_product_count))
 
 
+class SalesPagingTests(SimpleTestCase):
+    def test_sale_rows_from_results_items_and_list(self):
+        from accounts.tezpos_api import _sale_rows
+
+        self.assertEqual(len(_sale_rows({"results": [{"id": 1}]})), 1)
+        self.assertEqual(len(_sale_rows({"items": [{"id": 2}]})), 1)
+        self.assertEqual(len(_sale_rows({"sales": [{"id": 3}]})), 1)
+        self.assertEqual(len(_sale_rows([{"id": 4}])), 1)
+
+    def test_all_true_list_is_complete_even_at_twenty(self):
+        from unittest.mock import patch
+        from accounts.tezpos_api import get_sales
+
+        with patch("accounts.tezpos_api.api_request") as mock_req:
+            mock_req.return_value = [{"id": str(i)} for i in range(20)]
+            rows = get_sales("t", "s", date_from="2026-08-19", date_to="2026-08-19")
+        self.assertEqual(len(rows), 20)
+        self.assertEqual(mock_req.call_count, 1)
+
+    def test_paged_twenty_is_not_the_end(self):
+        from unittest.mock import patch
+        from accounts.tezpos_api import get_sales
+
+        def fake(_method, _path, **kwargs):
+            q = kwargs.get("query") or {}
+            if q.get("all") == "true":
+                return {
+                    "results": [{"id": f"a{i}"} for i in range(20)],
+                    "next": None,
+                    "count": 45,
+                }
+            page = int(q.get("page") or 1)
+            if page == 2:
+                return {
+                    "results": [{"id": f"b{i}"} for i in range(20)],
+                    "next": "x",
+                    "count": 45,
+                }
+            if page == 3:
+                return {
+                    "results": [{"id": f"c{i}"} for i in range(5)],
+                    "next": None,
+                    "count": 45,
+                }
+            return {"results": []}
+
+        with patch("accounts.tezpos_api.api_request", side_effect=fake):
+            rows = get_sales("t", "s", date_from="2026-08-19", date_to="2026-08-19")
+        self.assertEqual(len(rows), 45)
+
+    def test_get_sales_for_day_pages_beyond_one(self):
+        from unittest.mock import patch
+        from accounts.tezpos_api import get_sales_for_day
+
+        calls = []
+
+        def fake(_method, _path, **kwargs):
+            q = kwargs.get("query") or {}
+            calls.append(q)
+            if q.get("all") == "true":
+                return {
+                    "results": [{"id": f"d{i}"} for i in range(20)],
+                    "next": "x",
+                    "count": 25,
+                }
+            page = int(q.get("page") or 1)
+            if page == 2:
+                return {
+                    "results": [{"id": f"e{i}"} for i in range(5)],
+                    "next": None,
+                    "count": 25,
+                }
+            return {"results": []}
+
+        with patch("accounts.tezpos_api.api_request", side_effect=fake):
+            rows = get_sales_for_day("t", "s", "2026-08-19")
+        self.assertEqual(len(rows), 25)
+        self.assertGreaterEqual(len(calls), 2)
+
+    def test_merge_shift_summary_fills_totals(self):
+        from accounts.tezpos_api import merge_shift_summary
+
+        sh = merge_shift_summary(
+            {"id": "1", "opened_at": "2026-08-19T08:00:00Z"},
+            {"sales_count": 12, "sales_total": "150000"},
+        )
+        self.assertEqual(sh["sales_count"], 12)
+        self.assertEqual(sh["sales_total"], "150000")
+
+
 class ProductExportSourceTests(SimpleTestCase):
     def test_snapshot_preferred_over_capped_page(self):
         snap = [{"id": str(i)} for i in range(1516)]

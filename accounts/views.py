@@ -553,24 +553,9 @@ def cabinet_warm(request):
             pass
         try:
             _memo_get(
-                f"{memo_prefix}|day|{today}",
+                f"{memo_prefix}|dayv3|{today}",
                 120.0,
                 lambda: tezpos_api.get_sales_for_day(token, server, today),
-            )
-        except Exception:
-            pass
-        try:
-            _memo_get(
-                f"{memo_prefix}|sales|{today}|{today}|1",
-                90.0,
-                lambda: tezpos_api.get_sales(
-                    token,
-                    server,
-                    date_from=today,
-                    date_to=today,
-                    timeout=10,
-                    max_pages=1,
-                ),
             )
         except Exception:
             pass
@@ -591,7 +576,7 @@ def cabinet_day_sales(request):
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     try:
         day_sales_raw = _memo_get(
-            f"{memo_prefix}|day|{sale_date.isoformat()}",
+            f"{memo_prefix}|dayv3|{sale_date.isoformat()}",
             90.0,
             lambda: tezpos_api.get_sales_for_day(token, server, sale_date.isoformat()),
         )
@@ -659,15 +644,15 @@ def _collect_shifts_payload(token: str, server: str, *, days: int = 90) -> tuple
         current_raw = None
     try:
         raw_shifts_api = _memo_get(
-            f"{memo_prefix}|shifts|{date_from}|{date_to}",
+            f"{memo_prefix}|shiftsv2|{date_from}|{date_to}",
             60.0,
             lambda: tezpos_api.get_shifts(
                 token,
                 server,
                 date_from=date_from,
                 date_to=date_to,
-                timeout=10,
-                max_pages=4,
+                timeout=12,
+                max_pages=20,
             )
             or [],
         )
@@ -713,27 +698,35 @@ def _collect_shifts_payload(token: str, server: str, *, days: int = 90) -> tuple
 
     if not shifts_payload:
         shifts_source = "sales"
-        try:
-            sales_for_shifts = _memo_get(
-                f"{memo_prefix}|sales|{date_from}|{date_to}|3",
-                60.0,
-                lambda: tezpos_api.get_sales(
-                    token,
-                    server,
-                    date_from=date_from,
-                    date_to=date_to,
-                    timeout=12,
-                    max_pages=3,
-                )
-                or [],
+
+    sales_for_shifts: list = []
+    try:
+        sales_for_shifts = _memo_get(
+            f"{memo_prefix}|salesv3|{date_from}|{date_to}|shifts",
+            60.0,
+            lambda: tezpos_api.get_sales(
+                token,
+                server,
+                date_from=date_from,
+                date_to=date_to,
+                timeout=16,
+                max_pages=50,
             )
-        except Exception:
-            sales_for_shifts = []
+            or [],
+        )
+    except Exception:
+        sales_for_shifts = []
+    sales_for_shifts = [s for s in (sales_for_shifts or []) if isinstance(s, dict)]
+
+    if not shifts_payload:
         shifts_payload = _build_shifts_from_sales(
-            [s for s in sales_for_shifts if isinstance(s, dict)],
+            sales_for_shifts,
             today=today,
             margin_ratio=margin_ratio,
         )
+    elif sales_for_shifts:
+        for sh in shifts_payload:
+            _enrich_shift_with_sales(sh, sales_for_shifts, margin_ratio=margin_ratio)
 
     shifts_payload.sort(key=lambda s: s.get("opened_at") or "", reverse=True)
     return shifts_payload[:120], shifts_source
@@ -783,15 +776,15 @@ def cabinet_reports(request):
     t0 = time.time()
     try:
         sales = _memo_get(
-            f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|1",
+            f"{memo_prefix}|salesv3|{start.isoformat()}|{today.isoformat()}|40",
             90.0,
             lambda: tezpos_api.get_sales(
                 token,
                 server,
                 date_from=start.isoformat(),
                 date_to=today.isoformat(),
-                timeout=10,
-                max_pages=1,
+                timeout=16,
+                max_pages=40,
             )
             or [],
         )
@@ -871,21 +864,21 @@ def cabinet_abc(request):
             )
             fut_s = pool.submit(
                 lambda: _memo_get(
-                    f"{memo_prefix}|sales|{start.isoformat()}|{today.isoformat()}|1",
+                    f"{memo_prefix}|salesv3|{start.isoformat()}|{today.isoformat()}|40",
                     90.0,
                     lambda: tezpos_api.get_sales(
                         token,
                         server,
                         date_from=start.isoformat(),
                         date_to=today.isoformat(),
-                        timeout=10,
-                        max_pages=1,
+                        timeout=16,
+                        max_pages=40,
                     )
                     or [],
                 )
             )
-            products_raw = fut_p.result(timeout=12) or []
-            sales = fut_s.result(timeout=12) or []
+            products_raw = fut_p.result(timeout=18) or []
+            sales = fut_s.result(timeout=20) or []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -2037,13 +2030,15 @@ def _enrich_shift_with_sales(
                     matched.append(s)
         shift["sale_ids"] = [str(s.get("id")) for s in matched if s.get("id")]
     if matched:
-        gross = sum((_dec(s.get("total")) for s in matched), Decimal("0"))
-        shift["gross"] = float(gross)
-        shift["checks"] = len(matched)
-        if not shift.get("profit"):
-            profit = (gross * margin_ratio).quantize(Decimal("0.01")) if margin_ratio > 0 else Decimal("0")
-            shift["profit"] = float(profit)
-            shift["margin"] = float((profit / gross * 100) if gross > 0 else 0)
+        prev_checks = int(shift.get("checks") or 0)
+        if len(matched) >= prev_checks:
+            gross = sum((_dec(s.get("total")) for s in matched), Decimal("0"))
+            shift["gross"] = float(gross)
+            shift["checks"] = len(matched)
+            if not shift.get("profit") or len(matched) >= prev_checks:
+                profit = (gross * margin_ratio).quantize(Decimal("0.01")) if margin_ratio > 0 else Decimal("0")
+                shift["profit"] = float(profit)
+                shift["margin"] = float((profit / gross * 100) if gross > 0 else 0)
     return shift
 
 
@@ -2984,11 +2979,11 @@ def cabinet_view(request):
 
     def _load_chart_sales():
         if section == "reports":
-            days, pages, timeout = 30, 3, 20
+            days, pages, timeout = 30, 40, 20
         elif section == "abc":
-            days, pages, timeout = 14, 3, 18
+            days, pages, timeout = 14, 40, 18
         else:
-            days, pages, timeout = 7, 2, 16
+            days, pages, timeout = 7, 40, 16
         key = f"sales:{server}:{days}:{pages}"
 
         def _loader():
@@ -3036,8 +3031,8 @@ def cabinet_view(request):
                     server,
                     date_from=(today - timedelta(days=14)).isoformat(),
                     date_to=today.isoformat(),
-                    timeout=10,
-                    max_pages=2,
+                    timeout=12,
+                    max_pages=20,
                 )
             except (tezpos_api.TezPosApiError, TimeoutError, OSError):
                 return []
@@ -3693,25 +3688,27 @@ def cabinet_range_stats(request):
     # fast: faqat jami (tez). To‘liq: Optom uchun chek + katalog namuna (deadline ichida).
     single_day = span <= 1
     if fast:
-        max_pages, product_pages, sales_timeout = 1, 0, 8
+        # Jami to‘liq (barcha cheklar). Optom detallari yo‘q — 504 bo‘lmasin.
+        max_pages = 80 if single_day else (40 if span <= 7 else 25)
+        product_pages, sales_timeout = 0, 16 if single_day else 18
         detail_cap, detail_each, detail_budget = 0, 0.0, 0.0
-        hard_deadline = 12.0
+        hard_deadline = 22.0
     elif single_day:
-        max_pages, product_pages, sales_timeout = 1, 4, 10
+        max_pages, product_pages, sales_timeout = 80, 4, 16
         detail_cap, detail_each, detail_budget = 45, 2.2, 10.0
-        hard_deadline = 22.0
+        hard_deadline = 24.0
     elif span <= 7:
-        max_pages, product_pages, sales_timeout = 1, 3, 10
+        max_pages, product_pages, sales_timeout = 50, 3, 16
         detail_cap, detail_each, detail_budget = 30, 2.2, 9.0
-        hard_deadline = 20.0
-    elif span <= 31:
-        max_pages, product_pages, sales_timeout = 2, 2, 12
-        detail_cap, detail_each, detail_budget = 24, 2.2, 8.0
-        hard_deadline = 20.0
-    else:
-        max_pages, product_pages, sales_timeout = 2, 2, 12
-        detail_cap, detail_each, detail_budget = 20, 2.0, 8.0
         hard_deadline = 22.0
+    elif span <= 31:
+        max_pages, product_pages, sales_timeout = 40, 2, 18
+        detail_cap, detail_each, detail_budget = 24, 2.2, 8.0
+        hard_deadline = 22.0
+    else:
+        max_pages, product_pages, sales_timeout = 30, 2, 18
+        detail_cap, detail_each, detail_budget = 20, 2.0, 8.0
+        hard_deadline = 24.0
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     sales: list = []
@@ -3723,20 +3720,12 @@ def cabinet_range_stats(request):
         if single_day:
             day = start.isoformat()
             return _memo_get(
-                f"{memo_prefix}|day|{day}",
+                f"{memo_prefix}|dayv3|{day}",
                 90.0,
-                lambda: tezpos_api.get_sales(
-                    token,
-                    server,
-                    date_from=day,
-                    date_to=day,
-                    timeout=sales_timeout,
-                    max_pages=1,
-                )
-                or [],
+                lambda: tezpos_api.get_sales_for_day(token, server, day) or [],
             )
         return _memo_get(
-            f"{memo_prefix}|sales|{start}|{end}|{max_pages}",
+            f"{memo_prefix}|salesv3|{start}|{end}|{max_pages}",
             60.0,
             lambda: tezpos_api.get_sales(
                 token,
@@ -3836,6 +3825,24 @@ def cabinet_range_stats(request):
     chart = _chart_pack_for_dates(sales, start, end)
     checks = len(sales)
     gross = float(sum((_dec(s.get("total")) for s in sales), Decimal("0")))
+    # Desktop /api/sales/stats/daily/ — bugungi jami list kesilgan bo‘lsa ham to‘g‘ri
+    if single_day and start == today:
+        try:
+            daily = tezpos_api.get_daily_stats(token, server) or {}
+        except (tezpos_api.TezPosApiError, TimeoutError, OSError, TypeError, ValueError):
+            daily = {}
+        if isinstance(daily, dict):
+            try:
+                api_count = int(daily.get("sales_count") or 0)
+            except (TypeError, ValueError):
+                api_count = 0
+            api_rev = daily.get("total_revenue")
+            if api_count > checks:
+                checks = api_count
+            if api_rev is not None:
+                api_gross = float(_dec(api_rev))
+                if api_gross > gross:
+                    gross = api_gross
     profit = gross * float(margin_ratio)
     margin = (profit / gross * 100.0) if gross > 0 else 0.0
 
@@ -4082,13 +4089,13 @@ def cabinet_top_stats(request):
         limit = 100
 
     if span <= 1:
-        detail_cap, max_pages, product_pages = 100, 4, 6
+        detail_cap, max_pages, product_pages = 100, 80, 6
     elif span <= 7:
-        detail_cap, max_pages, product_pages = 80, 4, 6
+        detail_cap, max_pages, product_pages = 80, 50, 6
     elif span <= 31:
-        detail_cap, max_pages, product_pages = 60, 4, 5
+        detail_cap, max_pages, product_pages = 60, 40, 5
     else:
-        detail_cap, max_pages, product_pages = 40, 3, 4
+        detail_cap, max_pages, product_pages = 40, 30, 4
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
 
@@ -4241,15 +4248,15 @@ def cabinet_shift_detail(request):
         date_from = (today - timedelta(days=2)).isoformat()
         date_to = today.isoformat()
 
-    # Ochiq smena: ochilgandan hozirgacha — sahifa cheklangan (504 yo‘q)
-    sale_pages = 3 if is_open else 2
+    # Smena ochilgandan yopilguncha — barcha cheklar
+    sale_pages = 60 if is_open else 40
     try:
         sales = tezpos_api.get_sales(
             token,
             server,
             date_from=date_from,
             date_to=date_to,
-            timeout=12,
+            timeout=16,
             max_pages=sale_pages,
         )
     except (tezpos_api.TezPosApiError, TimeoutError, OSError) as exc:
@@ -4375,8 +4382,8 @@ def _shift_report_bundle(
         server,
         date_from=date_from,
         date_to=date_to,
-        timeout=15,
-        max_pages=8,
+        timeout=16,
+        max_pages=40,
     )
     sales = [s for s in sales if isinstance(s, dict)]
     sale_ids = set(str(x) for x in (shift.get("sale_ids") or []) if x)

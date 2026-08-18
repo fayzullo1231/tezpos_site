@@ -791,6 +791,32 @@ def get_products_page(
     }
 
 
+def _sale_rows(payload) -> list:
+    """Desktop / DRF sotuv javobi: list yoki {results|items|sales}."""
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("results", "items", "sales", "data"):
+        val = payload.get(key)
+        if isinstance(val, list):
+            return [r for r in val if isinstance(r, dict)]
+        if isinstance(val, dict):
+            nested = val.get("results") or val.get("items") or val.get("sales")
+            if isinstance(nested, list):
+                return [r for r in nested if isinstance(r, dict)]
+    return []
+
+
+def _sale_total_hint(payload) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    try:
+        return int(payload.get("count") or payload.get("total") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def get_sales(
     token: str,
     server_name: str,
@@ -798,37 +824,123 @@ def get_sales(
     date_from: str | None = None,
     date_to: str | None = None,
     timeout: float = 18,
-    max_pages: int = 3,
+    max_pages: int = 60,
+    try_all: bool = True,
 ) -> list:
-    """Sotuvlar. all=true katta javob/timeout beradi — sahifa bilan cheklanadi."""
-    results: list = []
-    for page in range(1, max(1, max_pages) + 1):
-        data = api_request(
-            "GET",
-            "/api/sales/",
-            token=token,
-            server_name=server_name,
-            query={
-                "page": str(page),
-                "date_from": date_from,
-                "date_to": date_to,
-            },
-            timeout=timeout if page == 1 else min(timeout, 12),
-        )
+    """Desktop kabi: /api/sales/?all=true&date_from=&date_to=, so‘ng sahifa.
+
+    DRF 20 ta qaytarib next bermasa ham davom etadi. all=true list bo‘lsa — to‘liq.
+    """
+    max_pages = max(1, int(max_pages))
+    collected: list = []
+    seen: set[str] = set()
+
+    def _absorb(rows: list) -> int:
+        n = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("id") or row.get("uuid") or "").strip()
+            if sid:
+                if sid in seen:
+                    continue
+                seen.add(sid)
+            collected.append(row)
+            n += 1
+        return n
+
+    start_page = 1
+    use_all = bool(try_all and (date_from or date_to))
+    if use_all:
+        try:
+            data = api_request(
+                "GET",
+                "/api/sales/",
+                token=token,
+                server_name=server_name,
+                query={
+                    "all": "true",
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+                timeout=timeout,
+            )
+        except TezPosApiError:
+            data = None
         if isinstance(data, list):
-            return data
+            _absorb(data)
+            return collected
+        if isinstance(data, dict):
+            chunk = _sale_rows(data)
+            _absorb(chunk)
+            has_next = bool(data.get("next"))
+            total = _sale_total_hint(data)
+            # 20 ta DRF sahifa emas: all=true to‘liq list
+            complete = (not has_next) and (
+                len(chunk) != 20 or (total > 0 and len(collected) >= total)
+            )
+            if complete or not catalog_has_more(
+                actual=len(chunk),
+                requested=max(len(chunk), 20),
+                has_next=has_next,
+                total=total,
+                loaded=len(collected),
+            ):
+                return collected
+            start_page = 2
+
+    page = start_page
+    while page <= max_pages:
+        try:
+            data = api_request(
+                "GET",
+                "/api/sales/",
+                token=token,
+                server_name=server_name,
+                query={
+                    "page": str(page),
+                    "page_size": "100",
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+                timeout=timeout if page == start_page else min(timeout, 12),
+            )
+        except TezPosApiError:
+            break
+        if isinstance(data, list):
+            _absorb(data)
+            break
         if not isinstance(data, dict):
             break
-        chunk = list(data.get("results") or [])
-        results.extend(chunk)
-        if not data.get("next") or not chunk:
+        chunk = _sale_rows(data)
+        if not chunk:
             break
-    return results
+        added = _absorb(chunk)
+        if added <= 0:
+            break
+        if not catalog_has_more(
+            actual=len(chunk),
+            requested=100,
+            has_next=bool(data.get("next")),
+            total=_sale_total_hint(data),
+            loaded=len(collected),
+        ):
+            break
+        page += 1
+    return collected
 
 
 def get_sales_for_day(token: str, server_name: str, day: str) -> list:
-    """Bitta kun uchun sotuvlar (tez)."""
-    return get_sales(token, server_name, date_from=day, date_to=day, timeout=12, max_pages=1)
+    """Bitta kun — barcha cheklar (desktop all=true)."""
+    return get_sales(
+        token,
+        server_name,
+        date_from=day,
+        date_to=day,
+        timeout=18,
+        max_pages=80,
+        try_all=True,
+    )
 
 
 def get_sale(token: str, server_name: str, sale_id: str) -> dict:
@@ -908,6 +1020,21 @@ def _shift_rows(payload) -> list:
     return []
 
 
+def merge_shift_summary(shift: dict, summary: dict | None) -> dict:
+    """Desktop /api/auth/shift/current/ dagi summary ni smena obyektiga qo‘shadi."""
+    if not isinstance(shift, dict):
+        return {}
+    if not isinstance(summary, dict) or not summary:
+        return shift
+    if shift.get("sales_count") in (None, "", 0) and summary.get("sales_count") is not None:
+        shift["sales_count"] = summary.get("sales_count")
+    if not shift.get("sales_total") and summary.get("sales_total") is not None:
+        shift["sales_total"] = summary.get("sales_total")
+    if not shift.get("total_sales") and summary.get("sales_total") is not None:
+        shift["total_sales"] = summary.get("sales_total")
+    return shift
+
+
 def get_current_shift(token: str, server_name: str, timeout: float = 8) -> dict | None:
     """Desktop bilan bir xil: ochiq smena yoki None."""
     try:
@@ -924,11 +1051,12 @@ def get_current_shift(token: str, server_name: str, timeout: float = 8) -> dict 
         return None
     if not isinstance(data, dict):
         return None
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else None
     shift = data.get("shift")
     if isinstance(shift, dict) and (shift.get("id") or shift.get("opened_at")):
-        return shift
+        return merge_shift_summary(shift, summary)
     if data.get("id") and (data.get("opened_at") or data.get("status")):
-        return data
+        return merge_shift_summary(data, summary)
     return None
 
 
@@ -939,12 +1067,13 @@ def get_shifts(
     date_from: str | None = None,
     date_to: str | None = None,
     timeout: float = 12,
-    max_pages: int = 4,
+    max_pages: int = 20,
 ) -> list:
     """Haqiqiy TezPOS smenalari. Bo‘sh /api/shifts/ ni 'topildi' deb eshlamaydi."""
     global _SHIFT_PATH_OK
     by_id: dict[str, dict] = {}
     order: list[str] = []
+    max_pages = max(1, int(max_pages))
 
     def _add(rows: list) -> None:
         for raw in rows:
@@ -965,9 +1094,13 @@ def get_shifts(
     paths = list(SHIFT_LIST_PATHS)
     if _SHIFT_PATH_OK and _SHIFT_PATH_OK in paths:
         paths = [_SHIFT_PATH_OK] + [p for p in paths if p != _SHIFT_PATH_OK]
+    desktop_paths = {"/api/auth/shift/history/", "/api/auth/shifts/"}
 
     for path in paths:
-        probe_timeout = timeout if path == _SHIFT_PATH_OK else min(timeout, 2.2)
+        if path == _SHIFT_PATH_OK or path in desktop_paths:
+            probe_timeout = timeout
+        else:
+            probe_timeout = min(timeout, 2.2)
         query = {
             "all": "true",
             "date_from": date_from,
@@ -989,9 +1122,27 @@ def get_shifts(
                 raise
             continue
         rows = _shift_rows(data)
-        next_url = data.get("next") if isinstance(data, dict) else None
+        # all=true to‘liq list — sahifa yo‘q
+        if isinstance(data, list):
+            if not rows:
+                continue
+            _SHIFT_PATH_OK = path
+            _add(rows)
+            break
+        last_n = len(rows)
+        has_next = bool(data.get("next")) if isinstance(data, dict) else False
+        total = _sale_total_hint(data) if isinstance(data, dict) else 0
         page = 2
-        while next_url and page <= max_pages:
+        need_pages = catalog_has_more(
+            actual=last_n,
+            requested=20,
+            has_next=has_next,
+            total=total,
+            loaded=len(rows),
+        )
+        if last_n > 20 and not has_next:
+            need_pages = False
+        while need_pages and page <= max_pages:
             try:
                 page_data = api_request(
                     "GET",
@@ -1009,10 +1160,20 @@ def get_shifts(
             except TezPosApiError:
                 break
             chunk = _shift_rows(page_data)
-            rows.extend(chunk)
-            next_url = page_data.get("next") if isinstance(page_data, dict) else None
             if not chunk:
                 break
+            rows.extend(chunk)
+            last_n = len(chunk)
+            has_next = bool(page_data.get("next")) if isinstance(page_data, dict) else False
+            if isinstance(page_data, dict):
+                total = max(total, _sale_total_hint(page_data))
+            need_pages = catalog_has_more(
+                actual=last_n,
+                requested=20,
+                has_next=has_next,
+                total=total,
+                loaded=len(rows),
+            )
             page += 1
         if not rows:
             # Bo‘sh 200 — bu yo‘l smena API emas (masalan /api/shifts/)
