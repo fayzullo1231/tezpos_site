@@ -488,6 +488,12 @@ def get_products(
             timeout=wait,
         )
 
+    def _maybe_drop_capped_total(loaded: int, page_len: int) -> None:
+        """TezPOS count=100/200 da kesiladi — to‘liq sahifada totalga ishonmaymiz."""
+        nonlocal total
+        if page_len >= size and total and total <= loaded and total % 50 == 0:
+            total = 0
+
     def _done(n: int, page_len: int) -> bool:
         nonlocal last_short
         if page_len <= 0:
@@ -555,6 +561,7 @@ def get_products(
 
     page = 2
     deadline = time.time() + 80.0
+    _maybe_drop_capped_total(len(results), first_len)
     if _done(len(results), first_len) and (not total or len(results) >= total):
         page = max_pages + 1
     while page <= max_pages and time.time() < deadline:
@@ -573,6 +580,7 @@ def get_products(
         _add(chunk)
         if isinstance(page_data, dict):
             total = _count(page_data) or total
+        _maybe_drop_capped_total(len(results), len(chunk))
         if _done(len(results), len(chunk)):
             break
         if len(results) == before:
@@ -656,14 +664,14 @@ def get_products_page(
     total = _count(data)
     nxt = data.get("next") if isinstance(data, dict) else None
     actual = len(rows)
-    # TezPOS ko‘pincha max 100 qaytaradi; count=100 bo‘lsa ham davom etamiz.
-    if page == 1 and total and total <= actual and actual >= 50:
-        total = 0
+    # TezPOS ko‘pincha count ni 100/200 da kesadi — to‘liq sahifa bo‘lsa davom etamiz
     loaded = (page - 1) * size + actual
-    has_more = bool(nxt) or (total > 0 and loaded < total) or actual >= size
+    if actual >= size and total and total <= loaded and total % 50 == 0:
+        total = 0
+    has_more = bool(nxt) or actual >= size
     if actual == 0:
         has_more = False
-    elif total > 0 and loaded >= total:
+    elif total > 0 and loaded >= total and actual < size:
         has_more = False
     return {
         "rows": rows,

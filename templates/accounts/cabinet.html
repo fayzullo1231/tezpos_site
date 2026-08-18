@@ -824,7 +824,7 @@
       <div class="cabinet-card-head">
         <div>
           <h3>Ombor qiymati</h3>
-          <p class="cabinet-hint">Har bir tovar qoldig‘i × tannarx va sotuv / narx ro‘yxatlari — omborda qancha pulik tovar borligi.</p>
+          <p class="cabinet-hint">Tannarx jami = barcha ombor qoldig‘i × TezPOS sotib olish narxi. Sotuv jami va narx ro‘yxatlari ham shu qoldiqdan. Farq = sotuv jami − tannarx jami (katalog to‘liq yuklangach).</p>
         </div>
       </div>
       <div class="debtors-kpis" id="stock-value-kpis">
@@ -834,6 +834,7 @@
         <div class="debtors-kpi"><span>Sotuv jami</span><strong class="is-profit" id="sv-sell-total">—</strong></div>
         <div class="debtors-kpi"><span>Farq (sotuv − tannarx)</span><strong class="is-profit" id="sv-margin-total">—</strong></div>
       </div>
+      <p class="cabinet-hint" id="sv-load-hint" hidden></p>
       <div class="stock-value-toolbar">
         <label class="products-search">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 104.47 10l4.26 4.27 1.42-1.42-4.27-4.26A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z"/></svg>
@@ -1293,7 +1294,7 @@
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
   (function () {
-    var P = "tezpos_v2_";
+    var P = "tezpos_v4_";
     function g(k) {
       try {
         var s = sessionStorage.getItem(P + k);
@@ -1347,5 +1348,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=shift-stock-tg-1" defer></script>
+<script src="/static/cabinet.js?v=stock-value-all-1" defer></script>
 {% endblock %}

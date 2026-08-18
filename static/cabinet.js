@@ -8,7 +8,7 @@
   ];
 
   // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
-  const CACHE_P = "tezpos_v2_";
+  const CACHE_P = "tezpos_v4_";
   const cacheGet = (key) => {
     try {
       const raw = sessionStorage.getItem(CACHE_P + key);
@@ -95,7 +95,7 @@
       }
       if (json.priceLists) data.priceLists = json.priceLists;
       if (json.nearMin) data.nearMin = json.nearMin;
-      const reportedTotal = Number(json.total || 0);
+      const reportedTotal = Number(json.catalog_count || json.total || 0);
       if (reportedTotal > (data.catalogCount || 0)) data.catalogCount = reportedTotal;
       else data.catalogCount = Math.max(Number(data.catalogCount || 0), data.products.length);
       if ("complete" in json) data.catalogComplete = Boolean(json.complete);
@@ -105,7 +105,7 @@
         priceLists: data.priceLists,
         nearMin: data.nearMin,
         ts: Date.now(),
-        complete: Boolean(data.catalogComplete) && data.products.length >= 500,
+        complete: Boolean(data.catalogComplete) && data.products.length >= 100,
         total: data.catalogCount,
       });
     }
@@ -120,7 +120,7 @@
 
   const incomingOk = (json) => Array.isArray(json?.products);
   const CATALOG_PAGE_SIZE = 100;
-  const CATALOG_MAX_PAGES = 40;
+  const CATALOG_MAX_PAGES = 80;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -178,21 +178,15 @@
           const before = (data.products || []).length;
           applyCatalogPayload(json, { emit: true, merge: true });
           const got = (json.products || []).length;
-          if (got > 0 && got < chunkSize) chunkSize = Math.max(got, 50);
-          const reported = Number(json.total || 0);
-          if (reported > total) total = reported;
           const after = (data.products || []).length;
-          const fullPage = got >= 50 && got >= Math.min(chunkSize, 100);
+          if (got > 0 && got < chunkSize) chunkSize = Math.max(got, 50);
+          const reported = Number(json.catalog_count || json.total || 0);
+          if (reported > total) total = reported;
+          const fullPage = got >= 90;
+          const apiHasMore = json.has_more === true || json.complete === false;
           if (!got) {
             applyCatalogPayload(
               { products: data.products, complete: true, total: total || after, count: after },
-              { emit: true, merge: false }
-            );
-            break;
-          }
-          if (total && after >= total) {
-            applyCatalogPayload(
-              { products: data.products, complete: true, total, count: after },
               { emit: true, merge: false }
             );
             break;
@@ -204,9 +198,17 @@
             );
             break;
           }
-          if (!fullPage) {
+          // count=200 kabi yolg‘on total — to‘liq sahifa yoki catalog_count katta bo‘lsa davom
+          if (!fullPage && json.has_more !== true && !(total && after < total)) {
             applyCatalogPayload(
               { products: data.products, complete: true, total: total || after, count: after },
+              { emit: true, merge: false }
+            );
+            break;
+          }
+          if (total && after >= total && !fullPage && !apiHasMore) {
+            applyCatalogPayload(
+              { products: data.products, complete: true, total, count: after },
               { emit: true, merge: false }
             );
             break;
@@ -258,7 +260,7 @@
         applyCatalogPayload(
           {
             ...cached,
-            complete: Boolean(cached.complete) && cached.products.length >= 500,
+            complete: Boolean(cached.complete) && cached.products.length >= 100,
           },
           { emit: false }
         );
@@ -2929,6 +2931,8 @@
     }
     const editIcon =
       '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M4 17.2V20h2.8l8.2-8.2-2.8-2.8L4 17.2zM18.1 7.7c.3-.3.3-.8 0-1.1l-1.7-1.7a.8.8 0 0 0-1.1 0l-1.3 1.3 2.8 2.8 1.3-1.3z"/></svg>';
+    const moneyDot = (n) =>
+      Math.round(Number(n || 0)).toLocaleString("de-DE", { maximumFractionDigits: 0 });
     const rows = list.map((p) => {
       const stock = Number(p.stock_qty || 0);
       const minStock = Number(p.min_stock || 0);
@@ -2972,9 +2976,9 @@
             </div>
           </div>
         </td>
-        <td class="col-num col-cost"><span data-cost-display></span> <span class="price-unit">SUM</span></td>
-        <td class="col-num col-margin ${marginClass}" data-margin-display>${cost ? "" : "—"}</td>
-        <td class="col-num col-price"><span class="price-value" data-price-display></span> <span class="price-unit">SUM</span></td>
+        <td class="col-num col-cost"><span data-cost-display>${moneyDot(cost)}</span> <span class="price-unit">SUM</span></td>
+        <td class="col-num col-margin ${marginClass}" data-margin-display>${cost ? `${margin.toFixed(1).replace(".", ",")}%` : "—"}</td>
+        <td class="col-num col-price"><span class="price-value" data-price-display>${moneyDot(selling)}</span> <span class="price-unit">SUM</span></td>
         <td class="col-num col-stock ${stockClass}">
           ${Math.round(stock)}
           <span class="stock-unit">${esc(p.unit || "dona")}</span>
@@ -2988,13 +2992,6 @@
     tbody.innerHTML = rows.join("");
   };
   renderProductsTable();
-  document.addEventListener("tezpos:catalog", () => {
-    Object.keys(productsMap).forEach((k) => delete productsMap[k]);
-    (data.products || []).forEach((p) => {
-      productsMap[String(p.id)] = p;
-    });
-    renderProductsTable();
-  });
 
   const barcodeList = document.getElementById("barcode-list");
   const mediaGallery = document.getElementById("media-gallery");
@@ -3831,7 +3828,7 @@
   const productsTotal = document.getElementById("products-total");
   const priceHeader = table?.querySelector("thead th.col-price");
   const catalogPriceLists = Array.isArray(data.priceLists) ? data.priceLists : [];
-  const productsById = Object.fromEntries(
+  let productsById = Object.fromEntries(
     (Array.isArray(data.products) ? data.products : []).map((p) => [String(p.id), p])
   );
 
@@ -3842,7 +3839,7 @@
     return Number.isFinite(n) ? n : 0;
   };
   const fmtMoney = (n) =>
-    parseMoney(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+    parseMoney(n).toLocaleString("de-DE", { maximumFractionDigits: 0 });
   const fmtMargin = (n) => {
     const v = parseMoney(n);
     const rounded = Math.round(v * 10) / 10;
@@ -3855,9 +3852,10 @@
   const fillPriceTypeOptions = () => {
     if (!priceType) return;
     const current = priceType.value || "selling";
+    const lists = Array.isArray(data.priceLists) ? data.priceLists : catalogPriceLists;
     const options = [
       { value: "selling", label: "Sotuv narxi" },
-      ...catalogPriceLists
+      ...lists
         .filter((pl) => pl && pl.id)
         .map((pl) => ({
           value: String(pl.id),
@@ -3875,7 +3873,7 @@
     if (key === "selling") return parseMoney(row.getAttribute("data-selling"));
     if (key === "cost") return parseMoney(row.getAttribute("data-cost"));
     const pid = row.getAttribute("data-edit-product");
-    const product = productsById[pid];
+    const product = productsById[pid] || (data.products || []).find((p) => String(p.id) === String(pid));
     const listPrices = (product && product.list_prices) || {};
     if (listPrices[key] != null && listPrices[key] !== "") {
       return parseMoney(listPrices[key]);
@@ -3886,7 +3884,9 @@
   const priceTypeLabel = (key) => {
     if (key === "selling") return "Narxi";
     if (key === "cost") return "Tannarx";
-    const pl = catalogPriceLists.find((x) => String(x.id) === String(key));
+    const pl = (Array.isArray(data.priceLists) ? data.priceLists : catalogPriceLists).find(
+      (x) => String(x.id) === String(key)
+    );
     return pl?.name ? String(pl.name) : "Narxi";
   };
 
@@ -3952,6 +3952,19 @@
   priceType?.addEventListener("change", applyPriceType);
   applyPriceType();
   applyProductFilters();
+  document.addEventListener("tezpos:catalog", () => {
+    Object.keys(productsMap).forEach((k) => delete productsMap[k]);
+    (data.products || []).forEach((p) => {
+      productsMap[String(p.id)] = p;
+    });
+    productsById = Object.fromEntries(
+      (Array.isArray(data.products) ? data.products : []).map((p) => [String(p.id), p])
+    );
+    renderProductsTable();
+    fillPriceTypeOptions();
+    applyPriceType();
+    applyProductFilters();
+  });
 
   if (document.querySelector(".form-error-box")) {
     openModal(null);
@@ -4900,7 +4913,7 @@
       maximumFractionDigits: 0,
     });
   const fmtMoney = (n) =>
-    Math.round(Number(n || 0)).toLocaleString("uz-UZ", {
+    Math.round(Number(n || 0)).toLocaleString("de-DE", {
       maximumFractionDigits: 0,
     });
   const esc = (s) =>
@@ -4938,6 +4951,12 @@
     return qty > 0;
   };
 
+  const productQty = (p) => Number(p.stock_qty ?? p.quantity ?? p.stock ?? 0);
+  const productCost = (p) =>
+    Number(p.cost_price || p.purchase_price || p.buy_price || p.cost || 0);
+  const productSell = (p) =>
+    Number(p.selling_price || p.price || p.sale_price || 0);
+
   const paint = () => {
     const products = Array.isArray(data.products) ? data.products : [];
     const extraLists = getExtraLists();
@@ -4945,6 +4964,31 @@
       .trim()
       .toLowerCase();
     const mode = filterEl?.value || "all";
+    const loading = !data.catalogComplete && products.length > 0;
+    const expected = Number(data.catalogCount || 0);
+
+    // KPI: qidiruv/filtrsiz — barcha ombor (qoldiq × API narxi)
+    let whCount = 0;
+    let whQty = 0;
+    let whCost = 0;
+    let whSell = 0;
+    const whLists = {};
+    extraLists.forEach((pl) => {
+      whLists[String(pl.id)] = 0;
+    });
+    products.forEach((p) => {
+      const qty = productQty(p);
+      const cost = productCost(p);
+      const sell = productSell(p);
+      whCount += 1;
+      whQty += qty;
+      whCost += qty * cost;
+      whSell += qty * sell;
+      extraLists.forEach((pl) => {
+        const id = String(pl.id);
+        whLists[id] += qty * listPrice(p, id);
+      });
+    });
 
     const rows = [];
     let sumQty = 0;
@@ -4956,7 +5000,7 @@
     });
 
     products.forEach((p) => {
-      const qty = Number(p.stock_qty || 0);
+      const qty = productQty(p);
       if (!matchesFilter(qty, mode)) return;
       const name = String(p.name || "");
       const barcode = String(p.barcode || "");
@@ -4967,8 +5011,8 @@
       ) {
         return;
       }
-      const cost = Number(p.cost_price || p.purchase_price || 0);
-      const sell = Number(p.selling_price || 0);
+      const cost = productCost(p);
+      const sell = productSell(p);
       const costVal = qty * cost;
       const sellVal = qty * sell;
       const listVals = {};
@@ -5010,13 +5054,27 @@
     const costEl = document.getElementById("sv-cost-total");
     const sellEl = document.getElementById("sv-sell-total");
     const marginEl = document.getElementById("sv-margin-total");
-    if (countEl) countEl.textContent = fmtQty(rows.length);
-    if (qtyEl) qtyEl.textContent = fmtQty(sumQty);
-    if (costEl) costEl.textContent = fmtMoney(sumCost) + " so'm";
-    if (sellEl) sellEl.textContent = fmtMoney(sumSell) + " so'm";
-    if (marginEl) marginEl.textContent = fmtMoney(sumSell - sumCost) + " so'm";
+    const loadHint = document.getElementById("sv-load-hint");
+    if (countEl) countEl.textContent = fmtQty(whCount);
+    if (qtyEl) qtyEl.textContent = fmtQty(whQty);
+    if (costEl) costEl.textContent = fmtMoney(whCost) + " so'm";
+    if (sellEl) sellEl.textContent = fmtMoney(whSell) + " so'm";
+    if (marginEl) marginEl.textContent = fmtMoney(whSell - whCost) + " so'm";
+    if (loadHint) {
+      if (loading) {
+        loadHint.hidden = false;
+        loadHint.textContent =
+          "Katalog yuklanmoqda… " +
+          fmtQty(products.length) +
+          (expected > products.length ? " / " + fmtQty(expected) : "") +
+          " ta. Tannarx jami va Farq to‘liq chiqgach aniq bo‘ladi.";
+      } else {
+        loadHint.hidden = true;
+        loadHint.textContent = "";
+      }
+    }
 
-    // Narx ro‘yxatlari KPI
+    // Narx ro‘yxatlari KPI — barcha ombor
     if (kpisEl) {
       kpisEl.querySelectorAll("[data-sv-pl]").forEach((el) => el.remove());
       extraLists.forEach((pl) => {
@@ -5028,7 +5086,7 @@
           "<span>" +
           esc(pl.name || "Narx") +
           " jami</span><strong>" +
-          fmtMoney(sumLists[id] || 0) +
+          fmtMoney(whLists[id] || 0) +
           " so'm</strong>";
         kpisEl.appendChild(card);
       });

@@ -9,6 +9,6 @@ User=www-data
 Group=www-data
 WorkingDirectory=/opt/tezpos_site
 EnvironmentFile=/opt/tezpos_site/.env
-TimeoutStartSec=120
+TimeoutStartSec=180
 ExecStart=/opt/tezpos_site/.venv/bin/python /opt/tezpos_site/manage.py sync_telegram_shifts
 Nice=10

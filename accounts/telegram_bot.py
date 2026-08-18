@@ -409,36 +409,72 @@ def build_shift_excel(
         ("Qarzdorlar summasi", shift.get("debtors_total") or 0),
         ("Kam qoldiq (tovar)", shift.get("low_stock_count") or 0),
     ]
+    money_keys = {
+        "Jami savdo",
+        "Sof foyda",
+        "Sotuv narxida",
+        "Narxlar ro‘yxatida (optom)",
+        "Qarzga savdo (smena)",
+        "Qarzdorlar summasi",
+    }
     ws.append(["Ko‘rsatkich", "Qiymat"])
     for k, v in summary:
-        ws.append([k, v])
+        if k in money_keys:
+            ws.append([k, format_money_som(v)])
+        elif k == "Marja %":
+            ws.append([k, format_margin(v)])
+        else:
+            ws.append([k, v])
 
     ws2 = wb.create_sheet("Kunlik sotuv")
-    ws2.append(["#", "Vaqt", "Mijoz", "To‘lov", "Summa", "Foyda"])
-    for i, row in enumerate(sales_rows, start=1):
+    ws2.append(
+        [
+            "Chek raqami",
+            "Vaqt",
+            "Mijoz",
+            "Mahsulotlar",
+            "To‘lov",
+            "Summa",
+            "Foyda",
+        ]
+    )
+    wrap_top = Alignment(wrap_text=True, vertical="top")
+    for row in sales_rows:
+        products_text = (row.get("products_text") or "").strip()
+        line_count = products_text.count("\n") + 1 if products_text else 1
         ws2.append(
             [
-                i,
+                row.get("receipt_no") or row.get("receipt_number") or "",
                 row.get("time") or "",
                 row.get("customer") or "",
+                products_text,
                 row.get("payment") or "",
-                row.get("total") or 0,
-                row.get("profit") or 0,
+                format_money_som(row.get("total") or 0),
+                format_money_som(row.get("profit") or 0),
             ]
         )
+        r_idx = ws2.max_row
+        ws2.cell(r_idx, 4).alignment = wrap_top
+        if line_count > 1:
+            ws2.row_dimensions[r_idx].height = min(180, 15 * line_count)
 
     ws_sold = wb.create_sheet("Sotilgan mahsulotlar")
     ws_sold.append(["#", "Mahsulot nomi", "Shtrixkod", "Miqdor", "Birlik", "Tushum", "Foyda"])
-    for i, row in enumerate(sold_product_rows or [], start=1):
+    sold_i = 0
+    for row in sold_product_rows or []:
+        qty = float(row.get("qty") or 0)
+        if qty <= 0:
+            continue
+        sold_i += 1
         ws_sold.append(
             [
-                i,
+                sold_i,
                 row.get("name") or "",
                 row.get("barcode") or "",
-                row.get("qty") or 0,
+                format_qty(qty),
                 row.get("unit") or "dona",
-                row.get("revenue") or 0,
-                row.get("profit") or 0,
+                format_money_som(row.get("revenue") or 0),
+                format_money_som(row.get("profit") or 0),
             ]
         )
 
@@ -449,16 +485,22 @@ def build_shift_excel(
             [
                 row.get("name") or "",
                 row.get("checks") or 0,
-                row.get("revenue") or 0,
-                row.get("profit") or 0,
-                row.get("share") or 0,
+                format_money_som(row.get("revenue") or 0),
+                format_money_som(row.get("profit") or 0),
+                format_margin(row.get("share") or 0),
             ]
         )
 
     ws4 = wb.create_sheet("Smena qarzlari")
     ws4.append(["Mijoz", "Cheklar", "Qarz summa"])
     for row in credit_rows:
-        ws4.append([row.get("customer") or "", row.get("orders") or 0, row.get("total") or 0])
+        ws4.append(
+            [
+                row.get("customer") or "",
+                row.get("orders") or 0,
+                format_money_som(row.get("total") or 0),
+            ]
+        )
 
     ws5 = wb.create_sheet("Qarzdorlar")
     ws5.append(["#", "Mijoz", "Telefon", "Qarz"])
@@ -468,7 +510,7 @@ def build_shift_excel(
                 i,
                 row.get("name") or row.get("customer") or "",
                 row.get("phone") or "",
-                row.get("debt") or row.get("total") or 0,
+                format_money_som(row.get("debt") or row.get("total") or 0),
             ]
         )
 
@@ -491,7 +533,7 @@ def build_shift_excel(
     # Ustun indekslari (1-based): nom kesilmasin
     name_cols_by_sheet = {
         "Xulosa": {2},
-        "Kunlik sotuv": {3},
+        "Kunlik sotuv": {3, 4},
         "Sotilgan mahsulotlar": {2},
         "Narxlar": {1},
         "Smena qarzlari": {1},
@@ -517,18 +559,56 @@ def build_shift_excel(
                 sheet.column_dimensions[letter].width = min(90, max(28, width))
             else:
                 sheet.column_dimensions[letter].width = min(36, max(10, width))
+        if sheet.title == "Kunlik sotuv":
+            sheet.column_dimensions["A"].width = 14
+            sheet.column_dimensions["D"].width = 55
 
     bio = BytesIO()
     wb.save(bio)
     return bio.getvalue()
 
 
-def format_money(n: float | int) -> str:
+def format_qty(n: float | int) -> str:
     try:
         v = float(n or 0)
     except (TypeError, ValueError):
         v = 0.0
-    return f"{v:,.0f}".replace(",", " ")
+    if abs(v - round(v)) < 1e-9:
+        return str(int(round(v)))
+    text = f"{v:.3f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def format_sale_product_line(
+    name: str,
+    qty: float | int,
+    unit: str,
+    unit_price: float | int,
+    line_total: float | int | None = None,
+) -> str:
+    """bon saryog 10 шт x 33.000 = 330.000"""
+    q = float(qty or 0)
+    price = float(unit_price or 0)
+    total = float(line_total) if line_total is not None else q * price
+    unit_s = (unit or "dona").strip() or "dona"
+    label = (name or "Mahsulot").strip() or "Mahsulot"
+    return f"{label} {format_qty(q)} {unit_s} x {format_money(price)} = {format_money(total)}"
+
+
+def format_money(n: float | int) -> str:
+    """1.000 / 10.000 / 100.000 / 1.000.000"""
+    try:
+        v = float(n or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    sign = "-" if v < 0 else ""
+    whole = int(abs(round(v)))
+    grouped = f"{whole:,}".replace(",", ".")
+    return f"{sign}{grouped}"
+
+
+def format_money_som(n: float | int) -> str:
+    return f"{format_money(n)} so'm"
 
 
 def format_margin(n: float | int) -> str:

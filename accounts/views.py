@@ -51,7 +51,10 @@ PAYMENT_LABELS = {
     "cash": "Naqt",
     "card": "Karta",
     "mixed": "Aralash",
-    "credit": "Qarzga",
+    "credit": "Qarz",
+    "qarz": "Qarz",
+    "debt": "Qarz",
+    "nasiya": "Qarz",
     "click": "Click",
     "payme": "Payme",
     "transfer": "O‘tkazma",
@@ -164,6 +167,56 @@ def download_installer(request):
 
 
 def _dec(value, default="0") -> Decimal:
+    try:
+        if value is None or value == "":
+            return Decimal(default)
+        return Decimal(str(value).replace(",", ".").replace(" ", "").replace("\u00a0", ""))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
+
+
+def _first_dec(*values) -> Decimal:
+    for value in values:
+        if value is None or value == "":
+            continue
+        parsed = _dec(value)
+        return parsed
+    return Decimal("0")
+
+
+def _parse_list_prices(raw) -> dict[str, Decimal]:
+    """TezPOS list_prices: {id: narx} yoki [{price_list_id, price}]."""
+    out: dict[str, Decimal] = {}
+    if isinstance(raw, dict):
+        for key, val in raw.items():
+            if isinstance(val, dict):
+                out[str(key)] = _first_dec(
+                    val.get("price"), val.get("value"), val.get("amount")
+                )
+            else:
+                out[str(key)] = _dec(val)
+        return out
+    if isinstance(raw, list):
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            lid = (
+                row.get("price_list_id")
+                or row.get("list_id")
+                or row.get("price_list")
+                or row.get("id")
+            )
+            if isinstance(lid, dict):
+                lid = lid.get("id")
+            if not lid:
+                continue
+            out[str(lid)] = _first_dec(
+                row.get("price"),
+                row.get("value"),
+                row.get("amount"),
+                row.get("selling_price"),
+            )
+    return out
     try:
         if value is None or value == "":
             return Decimal(default)
@@ -380,13 +433,34 @@ def cabinet_catalog(request):
                 price_lists_payload = []
         actual = len(products)
         total = int(pack.get("total") or 0)
-        if page_n == 1 and total and total <= actual and actual >= 50:
-            total = 0
         loaded = (page_n - 1) * page_size + actual
-        has_more = bool(pack.get("has_more")) or actual >= 100 or (total > 0 and loaded < total)
+        catalog_count = int(pack.get("catalog_count") or 0)
+        if page_n == 1 and not catalog_count:
+            try:
+                catalog_count = int(
+                    _memo_get(
+                        f"{memo_prefix}|product_count",
+                        120.0,
+                        lambda: tezpos_api.get_product_count(token, server) or 0,
+                    )
+                    or 0
+                )
+            except Exception:
+                catalog_count = 0
+        # count=100/200 kesilgan bo‘lsa — to‘liq sahifada davom etamiz
+        if actual >= page_size and total and total <= loaded and total % 50 == 0:
+            if not catalog_count or catalog_count <= loaded:
+                total = 0
+        if catalog_count > total:
+            total = catalog_count
+        has_more = bool(pack.get("has_more")) or actual >= page_size
+        if catalog_count and loaded < catalog_count:
+            has_more = True
         if not products:
             has_more = False
-        elif total > 0 and loaded >= total:
+        elif actual < page_size and not pack.get("has_more") and (
+            not catalog_count or loaded >= catalog_count
+        ):
             has_more = False
         return JsonResponse(
             {
@@ -396,6 +470,7 @@ def cabinet_catalog(request):
                 "page": page_n,
                 "page_size": actual if actual else page_size,
                 "total": total,
+                "catalog_count": catalog_count or total,
                 "has_more": has_more,
                 "count": actual,
                 "complete": not has_more,
@@ -892,6 +967,98 @@ def _payment_label(method):
     return PAYMENT_LABELS.get((method or "").lower(), method or "Naqt")
 
 
+def _sale_items(detail: dict | None) -> list[dict]:
+    if not isinstance(detail, dict):
+        return []
+    for key in ("items", "lines", "details", "sale_items", "products"):
+        rows = detail.get(key)
+        if isinstance(rows, list) and rows:
+            return [x for x in rows if isinstance(x, dict)]
+    return []
+
+
+def _receipt_number(*sources: dict | None) -> str:
+    keys = (
+        "receipt_number",
+        "receipt_no",
+        "check_number",
+        "check_no",
+        "checkNumber",
+        "number",
+        "receipt",
+    )
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in keys:
+            val = src.get(key)
+            if val not in (None, ""):
+                return str(val)
+    for src in sources:
+        if isinstance(src, dict) and src.get("id") not in (None, ""):
+            return str(src.get("id"))
+    return ""
+
+
+def _item_qty(item: dict) -> Decimal:
+    return _dec(item.get("quantity") or item.get("qty") or item.get("count"))
+
+
+def _item_unit_price(item: dict) -> Decimal:
+    return _dec(
+        item.get("unit_price")
+        or item.get("price")
+        or item.get("selling_price")
+        or item.get("sale_price")
+    )
+
+
+def _item_unit(item: dict, product=None) -> str:
+    unit = (
+        item.get("unit")
+        or item.get("unit_name")
+        or (getattr(product, "unit", None) if product else None)
+        or "dona"
+    )
+    return str(unit).strip() or "dona"
+
+
+def _sale_products_text(
+    items: list[dict],
+    products_by_id: dict,
+    products_by_name: dict | None = None,
+) -> str:
+    from . import telegram_bot as tg
+
+    lines: list[str] = []
+    for item in items:
+        qty = float(_item_qty(item))
+        if qty <= 0:
+            continue
+        pid = str(item.get("product_id") or item.get("product") or "").strip()
+        name = (item.get("product_name") or item.get("name") or "").strip()
+        p = _find_product(
+            products_by_id,
+            products_by_name,
+            product_id=pid,
+            product_name=name,
+        )
+        if not name and p:
+            name = p.name
+        unit_price = float(_item_unit_price(item))
+        line_total = float(_dec(item.get("total") or item.get("line_total"), str(qty * unit_price)))
+        lines.append(
+            tg.format_sale_product_line(
+                name or "Mahsulot",
+                qty,
+                _item_unit(item, p),
+                unit_price,
+                line_total,
+            )
+        )
+    return "\n".join(lines)
+
+
 def _parse_dt(raw) -> datetime | None:
     if not raw:
         return None
@@ -933,11 +1100,9 @@ def _map_product(raw: dict) -> SimpleNamespace:
     if barcode and barcode not in codes:
         codes.insert(0, barcode)
 
-    list_prices_raw = raw.get("list_prices") or {}
-    list_prices: dict[str, Decimal] = {}
-    if isinstance(list_prices_raw, dict):
-        for k, v in list_prices_raw.items():
-            list_prices[str(k)] = _dec(v)
+    list_prices = _parse_list_prices(
+        raw.get("list_prices") or raw.get("price_lists") or raw.get("prices")
+    )
     wholesale = Decimal("0")
     if list_prices:
         try:
@@ -959,9 +1124,24 @@ def _map_product(raw: dict) -> SimpleNamespace:
             )
         )
 
-    stock = _dec(raw.get("quantity"))
-    selling = _dec(raw.get("price"))
-    cost = _dec(raw.get("cost_price"))
+    stock = _first_dec(
+        raw.get("quantity"),
+        raw.get("stock_qty"),
+        raw.get("stock"),
+        raw.get("qty"),
+    )
+    selling = _first_dec(
+        raw.get("price"),
+        raw.get("selling_price"),
+        raw.get("sale_price"),
+        raw.get("sell_price"),
+    )
+    cost = _first_dec(
+        raw.get("cost_price"),
+        raw.get("purchase_price"),
+        raw.get("buy_price"),
+        raw.get("cost"),
+    )
     min_stock = _dec(raw.get("min_stock"), "0")
     category = (raw.get("category_name") or "").strip()
     brand = (raw.get("brand_name") or "").strip()
@@ -2093,11 +2273,11 @@ def _estimate_sale_cost(
 ) -> Decimal:
     """Faqat sotib olish narxi bor qatorlar tannarxi."""
     cost = Decimal("0")
-    for item in sale_detail.get("items") or []:
+    for item in _sale_items(sale_detail):
         unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
         if unit_cost <= 0:
             continue
-        cost += _dec(item.get("quantity")) * unit_cost
+        cost += _item_qty(item) * unit_cost
     return cost
 
 
@@ -2113,16 +2293,16 @@ def _estimate_sale_profit(
     Sotib olish narxi yo'q tovarlar tashlab ketiladi — ularning tushumi foydaga kirmaydi.
     """
     del total, margin_ratio  # chek jami / o'rtacha marja bilan taxmin qilinmaydi
-    items = sale_detail.get("items") or []
+    items = _sale_items(sale_detail)
     if not items:
         return Decimal("0"), Decimal("0")
 
     cost = Decimal("0")
     costed_rev = Decimal("0")
     for item in items:
-        qty = _dec(item.get("quantity"))
-        unit_price = _dec(item.get("unit_price"))
-        line_total = _dec(item.get("total"), str(qty * unit_price))
+        qty = _item_qty(item)
+        unit_price = _item_unit_price(item)
+        line_total = _dec(item.get("total") or item.get("line_total"), str(qty * unit_price))
         unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
         if unit_cost <= 0:
             continue
@@ -4157,7 +4337,7 @@ def _shift_report_bundle(
 
     today = timezone.localdate()
     try:
-        products_raw = tezpos_api.get_products(token, server, max_pages=4, timeout=12) or []
+        products_raw = tezpos_api.get_products(token, server, max_pages=20, timeout=8) or []
     except (tezpos_api.TezPosApiError, TimeoutError, OSError):
         tg_logger.exception("shift bundle products failed")
         products_raw = []
@@ -4190,7 +4370,7 @@ def _shift_report_bundle(
         date_from=date_from,
         date_to=date_to,
         timeout=15,
-        max_pages=3,
+        max_pages=8,
     )
     sales = [s for s in sales if isinstance(s, dict)]
     sale_ids = set(str(x) for x in (shift.get("sale_ids") or []) if x)
@@ -4211,14 +4391,14 @@ def _shift_report_bundle(
 
     gross = float(sum((_dec(s.get("total")) for s in matched), Decimal("0")))
     checks = len(matched)
-    # Fon job: Optom/Excel uchun ko‘proq chek (web worker emas)
+    # Fon job: barcha chek detallari (web worker emas)
     details = _fetch_sale_details(
         token,
         server,
         [str(s.get("id")) for s in matched if s.get("id")],
-        limit=50,
+        limit=150,
         per_sale_timeout=2.5,
-        overall_timeout=18.0,
+        overall_timeout=40.0,
     )
     lists = _aggregate_price_list_stats(
         list(details.values()), products_by_id, products_by_name, price_lists
@@ -4258,16 +4438,81 @@ def _shift_report_bundle(
 
     credit_agg: dict[str, dict] = defaultdict(lambda: {"orders": 0, "total": 0.0})
     sales_rows = []
+    sold_agg: dict[str, dict] = {}
     for s in matched:
-        method = (s.get("payment_method") or s.get("payment") or "").strip().lower()
+        method = (
+            s.get("payment_method")
+            or s.get("payment_type")
+            or s.get("payment")
+            or ""
+        )
+        method = str(method).strip().lower()
         total = float(_dec(s.get("total")))
-        cust = (s.get("customer_name") or "").strip() or "—"
-        dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
-        time_s = timezone.localtime(dt).strftime("%d.%m %H:%M") if dt else ""
-        pay_label = PAYMENT_LABELS.get(method, method or "—")
+        cust = (s.get("customer_name") or s.get("customer") or "").strip() or "—"
+        dt = _parse_dt(s.get("completed_at") or s.get("created_at") or s.get("sold_at"))
+        time_s = timezone.localtime(dt).strftime("%d.%m.%Y %H:%M") if dt else ""
         sid = str(s.get("id") or "")
-        detail = details.get(sid) or {}
-        if detail:
+        detail = details.get(sid) if sid else None
+        if not isinstance(detail, dict):
+            detail = {}
+        pay_src = (
+            detail.get("payment_method")
+            or detail.get("payment_type")
+            or s.get("payment_method")
+            or s.get("payment_type")
+            or s.get("payment")
+            or method
+        )
+        pay_label = _payment_label(pay_src)
+        items = _sale_items(detail) or _sale_items(s)
+        products_text = _sale_products_text(items, products_by_id, products_by_name)
+        # To‘liq chek foydasi: sotish − sotib olish
+        line_cost = Decimal("0")
+        line_rev = Decimal("0")
+        for item in items:
+            qty = _item_qty(item)
+            if qty <= 0:
+                continue
+            unit_price = _item_unit_price(item)
+            line_total = _dec(item.get("total") or item.get("line_total"), str(qty * unit_price))
+            unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
+            line_rev += line_total
+            line_cost += qty * unit_cost
+            pid = str(item.get("product_id") or item.get("product") or "").strip()
+            name = (item.get("product_name") or item.get("name") or "").strip()
+            p = _find_product(
+                products_by_id,
+                products_by_name,
+                product_id=pid,
+                product_name=name,
+            )
+            if not name and p:
+                name = p.name
+            if not name:
+                name = "Mahsulot"
+            key = pid or name.lower()
+            bucket = sold_agg.setdefault(
+                key,
+                {
+                    "name": name,
+                    "barcode": (p.barcode if p else "") or (item.get("barcode") or ""),
+                    "unit": _item_unit(item, p),
+                    "qty": 0.0,
+                    "revenue": 0.0,
+                    "profit": 0.0,
+                },
+            )
+            bucket["qty"] += float(qty)
+            bucket["revenue"] += float(line_total)
+            bucket["profit"] += float(line_total - (qty * unit_cost))
+            if not bucket.get("barcode") and p:
+                bucket["barcode"] = p.barcode or ""
+        if items:
+            sale_profit = float((line_rev - line_cost).quantize(Decimal("0.01")))
+            if line_rev > 0 and abs(total - float(line_rev)) > 1:
+                # Chegirma/jami farqi — chek jami asosida
+                sale_profit = float(Decimal(str(total)) - line_cost)
+        elif detail:
             _, pft = _estimate_sale_profit(
                 detail, products_by_id, _dec(total), products_by_name, margin_ratio
             )
@@ -4276,14 +4521,16 @@ def _shift_report_bundle(
             sale_profit = total * float(margin_ratio)
         sales_rows.append(
             {
+                "receipt_no": _receipt_number(s, detail),
                 "time": time_s,
                 "customer": cust,
+                "products_text": products_text,
                 "payment": pay_label,
                 "total": total,
                 "profit": sale_profit,
             }
         )
-        if method in ("credit", "qarz", "debt", "nasiya"):
+        if method in ("credit", "qarz", "debt", "nasiya") or pay_label == "Qarz":
             credit_agg[cust]["orders"] += 1
             credit_agg[cust]["total"] += total
 
@@ -4293,45 +4540,10 @@ def _shift_report_bundle(
     ]
     credit_total = sum(v["total"] for v in credit_rows)
 
-    # Sotilgan mahsulotlar (Excel — nom kesilmasin)
-    sold_agg: dict[str, dict] = {}
-    for detail in details.values():
-        if not isinstance(detail, dict):
-            continue
-        for item in detail.get("items") or detail.get("lines") or []:
-            if not isinstance(item, dict):
-                continue
-            pid = str(item.get("product_id") or item.get("product") or "").strip()
-            name = (item.get("product_name") or item.get("name") or "").strip()
-            p = products_by_id.get(pid) if pid else None
-            if not name and p:
-                name = p.name
-            if not name:
-                name = "Mahsulot"
-            key = pid or name.lower()
-            qty = float(_dec(item.get("quantity")))
-            unit_price = float(_dec(item.get("unit_price")))
-            line_total = float(_dec(item.get("total"), str(qty * unit_price)))
-            unit_cost = float(_resolve_item_unit_cost(item, products_by_id, products_by_name))
-            line_profit = line_total - (qty * unit_cost if unit_cost > 0 else 0.0)
-            bucket = sold_agg.setdefault(
-                key,
-                {
-                    "name": name,
-                    "barcode": (p.barcode if p else "") or (item.get("barcode") or ""),
-                    "unit": (p.unit if p else None) or (item.get("unit") or "dona"),
-                    "qty": 0.0,
-                    "revenue": 0.0,
-                    "profit": 0.0,
-                },
-            )
-            bucket["qty"] += qty
-            bucket["revenue"] += line_total
-            bucket["profit"] += line_profit
-            if not bucket.get("barcode") and p:
-                bucket["barcode"] = p.barcode or ""
     sold_product_rows = sorted(
-        sold_agg.values(), key=lambda r: r.get("revenue") or 0, reverse=True
+        (r for r in sold_agg.values() if float(r.get("qty") or 0) > 0),
+        key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)),
+        reverse=True,
     )
 
     # To'liq qarzdorlar ro'yxati (API)
@@ -4641,7 +4853,7 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
     t0 = time.time()
     api_s = 0.0
     db_s = 0.0
-    deadline = t0 + 75.0
+    deadline = t0 + 140.0
     max_heavy = 2  # yopilish xabari + Excel (fon, web emas)
 
     def _persist_meta(extra: dict | None = None) -> None:
