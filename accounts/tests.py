@@ -300,6 +300,112 @@ class SalesPagingTests(SimpleTestCase):
         self.assertEqual(sh["sales_total"], "150000")
 
 
+class CostedProfitTests(SimpleTestCase):
+    def test_profit_is_selling_minus_purchase(self):
+        from decimal import Decimal
+        from accounts.views import (
+            _estimate_sale_profit,
+            _map_product,
+            _products_by_name,
+        )
+
+        p = _map_product(
+            {"id": "1", "name": "Choy", "price": 1200, "cost_price": 1000}
+        )
+        sale = {
+            "id": "s1",
+            "total": "2400",
+            "items": [
+                {
+                    "product_id": "1",
+                    "quantity": 2,
+                    "unit_price": 1200,
+                    "total": 2400,
+                }
+            ],
+        }
+        cost, profit = _estimate_sale_profit(
+            sale, {"1": p}, Decimal("2400"), _products_by_name([p])
+        )
+        self.assertEqual(float(cost), 2000)
+        self.assertEqual(float(profit), 400)
+
+    def test_items_without_cost_do_not_inflate_profit(self):
+        from decimal import Decimal
+        from accounts.views import (
+            _aggregate_price_list_stats,
+            _estimate_sale_profit,
+            _map_product,
+            _products_by_name,
+        )
+
+        priced = _map_product(
+            {"id": "1", "name": "A", "price": 1200, "cost_price": 1000}
+        )
+        free = _map_product({"id": "2", "name": "B", "price": 5000, "cost_price": 0})
+        by_id = {"1": priced, "2": free}
+        by_name = _products_by_name([priced, free])
+        sale = {
+            "id": "s2",
+            "total": "6200",
+            "items": [
+                {"product_id": "1", "quantity": 1, "unit_price": 1200, "total": 1200},
+                {"product_id": "2", "quantity": 1, "unit_price": 5000, "total": 5000},
+            ],
+        }
+        cost, profit = _estimate_sale_profit(
+            sale, by_id, Decimal("6200"), by_name
+        )
+        self.assertEqual(float(cost), 1000)
+        self.assertEqual(float(profit), 200)
+
+        rows = _aggregate_price_list_stats([sale], by_id, by_name, [])
+        jami = next(r for r in rows if r.get("is_total"))
+        self.assertAlmostEqual(jami["revenue"], 6200)
+        self.assertAlmostEqual(jami["cost"], 1000)
+        self.assertAlmostEqual(jami["profit"], 200)
+        self.assertLess(jami["markup"], 50)
+
+
+class BarcodeExcelTemplateTests(SimpleTestCase):
+    def test_all_codes_go_in_one_cell_with_comma_and_newline(self):
+        from accounts.views import (
+            _export_cell_value,
+            _map_product,
+            format_barcodes_excel_cell,
+            parse_barcodes_cell,
+        )
+
+        codes = [f"478{i:010d}" for i in range(1, 31)]
+        cell = format_barcodes_excel_cell(codes)
+        self.assertIn(",\n", cell)
+        self.assertTrue(cell.endswith(","))
+        self.assertEqual(parse_barcodes_cell(cell), codes)
+
+        p = _map_product(
+            {
+                "id": "1",
+                "name": "Choy",
+                "barcode": codes[0],
+                "barcodes": [{"code": c} for c in codes],
+            }
+        )
+        self.assertEqual(p.barcode_list, codes)
+        exported = _export_cell_value(p, "barcode", {})
+        self.assertEqual(parse_barcodes_cell(exported), codes)
+
+    def test_import_row_reads_template_cell(self):
+        from accounts.views import _product_payload_from_import_row, format_barcodes_excel_cell
+
+        cell = format_barcodes_excel_cell(["111", "222", "333"])
+        payload, err = _product_payload_from_import_row(
+            {"name": "Choy", "barcode": cell, "selling_price": 1200}
+        )
+        self.assertIsNone(err)
+        self.assertEqual(payload["barcodes"], ["111", "222", "333"])
+        self.assertEqual(payload["barcode"], "111")
+
+
 class ProductExportSourceTests(SimpleTestCase):
     def test_snapshot_preferred_over_capped_page(self):
         snap = [{"id": str(i)} for i in range(1516)]

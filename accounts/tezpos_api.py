@@ -860,6 +860,8 @@ def get_sales(
                 server_name=server_name,
                 query={
                     "all": "true",
+                    "include_items": "true",
+                    "with_items": "true",
                     "date_from": date_from,
                     "date_to": date_to,
                 },
@@ -900,6 +902,8 @@ def get_sales(
                 query={
                     "page": str(page),
                     "page_size": "100",
+                    "include_items": "true",
+                    "with_items": "true",
                     "date_from": date_from,
                     "date_to": date_to,
                 },

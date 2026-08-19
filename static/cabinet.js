@@ -8,7 +8,7 @@
   ];
 
   // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
-  const CACHE_P = "tezpos_v7_";
+  const CACHE_P = "tezpos_v8_";
   const cacheGet = (key) => {
     try {
       const raw = sessionStorage.getItem(CACHE_P + key);
@@ -881,8 +881,9 @@
     );
     const gross = Number(pack.gross || 0);
     if (!count && !gross) return false;
-    const profit = Number(pack.profit != null ? pack.profit : gross * 0.25);
-    const margin = gross > 0 ? (profit / gross) * 100 : 0;
+    const profit = Number(pack.profit != null ? pack.profit : 0);
+    const cost = Number(pack.cost != null ? pack.cost : 0);
+    const margin = cost > 0 ? (profit / cost) * 100 : 0;
     const key = rangeCacheKey(todayIso, todayIso);
     // Bo‘sh/eskirgan keshni yozib yubormasin
     const existing = (data.salesStats || {})[key];
@@ -900,7 +901,7 @@
           name: "Sotuv",
           checks: count,
           revenue: gross,
-          cost: Math.max(0, gross - profit),
+          cost,
           profit,
           margin,
           markup: margin,
@@ -912,7 +913,7 @@
           name: "Jami",
           checks: count,
           revenue: gross,
-          cost: Math.max(0, gross - profit),
+          cost,
           profit,
           margin,
           markup: margin,
@@ -3260,6 +3261,45 @@
       document.body.style.overflow = "";
     };
 
+    const collectBarcodes = (p) => {
+      const out = [];
+      const seen = new Set();
+      const add = (v) => {
+        if (v && typeof v === "object") {
+          v = v.barcode || v.code || v.value || v.ean || "";
+        }
+        const s = String(v || "").trim();
+        if (!s || seen.has(s)) return;
+        seen.add(s);
+        out.push(s);
+      };
+      if (!p) return out;
+      add(p.barcode);
+      (Array.isArray(p.barcodes) ? p.barcodes : []).forEach(add);
+      (Array.isArray(p.barcode_list) ? p.barcode_list : []).forEach(add);
+      return out;
+    };
+
+    const formatBarcodesCell = (codes) => {
+      const rows = Array.isArray(codes) ? codes.filter(Boolean) : collectBarcodes(codes);
+      if (!rows.length) return "";
+      return `${rows.join(",\n")},`;
+    };
+
+    const parseBarcodesCell = (value) => {
+      if (value == null || value === "") return [];
+      if (Array.isArray(value)) {
+        return collectBarcodes({ barcodes: value });
+      }
+      return String(value)
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n")
+        .split("\n")
+        .flatMap((line) => line.replace(/[;|]/g, ",").split(","))
+        .map((s) => s.trim())
+        .filter((s, i, arr) => s && arr.indexOf(s) === i);
+    };
+
     const productCellValue = (p, field) => {
       if (!p) return "";
       const listPrices = p.list_prices || {};
@@ -3267,7 +3307,7 @@
         case "name":
           return p.name || "";
         case "barcode":
-          return p.barcode || (Array.isArray(p.barcodes) ? p.barcodes[0] : "") || "";
+          return formatBarcodesCell(collectBarcodes(p));
         case "selling_price":
           return Number(p.selling_price || 0);
         case "cost_price":
@@ -3314,14 +3354,33 @@
       const body = products.map((p) => fields.map((f) => productCellValue(p, f)));
       const aoa = [header].concat(body);
       const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const bcIdx = fields.findIndex((f) => f.key === "barcode");
       ws["!cols"] = fields.map((f, colIdx) => {
         let maxLen = String(f.label || "").length;
         for (let r = 0; r < body.length; r += 1) {
-          const len = String(body[r][colIdx] ?? "").length;
-          if (len > maxLen) maxLen = len;
+          const raw = String(body[r][colIdx] ?? "");
+          const lineMax = raw.split(/\n/).reduce((m, line) => Math.max(m, line.length), 0);
+          if (lineMax > maxLen) maxLen = lineMax;
         }
-        return { wch: Math.min(120, Math.max(14, maxLen + 4)) };
+        const cap = f.key === "barcode" ? 28 : 120;
+        return { wch: Math.min(cap, Math.max(14, maxLen + 4)) };
       });
+      if (bcIdx >= 0) {
+        const col = XLSX.utils.encode_col(bcIdx);
+        const rows = [{ hpt: 22 }];
+        for (let r = 0; r < body.length; r += 1) {
+          const text = String(body[r][bcIdx] ?? "");
+          const addr = `${col}${r + 2}`;
+          if (ws[addr]) {
+            ws[addr].t = "s";
+            ws[addr].z = "@";
+            ws[addr].v = text;
+          }
+          const nlines = Math.max(1, text.split(/\n/).length);
+          rows[r + 1] = { hpt: Math.min(200, Math.max(18, 14 * nlines)) };
+        }
+        ws["!rows"] = rows;
+      }
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Mahsulotlar");
       return { wb, count: products.length };
@@ -3417,7 +3476,15 @@
 
     const HEADER_ALIASES = {
       name: ["name", "nomi", "mahsulot nomi", "product name", "товар", "наименование"],
-      barcode: ["barcode", "shtrixkod", "shtrix-kod", "barkod", "штрихкод", "ean"],
+      barcode: [
+        "barcode",
+        "shtrixkod",
+        "shtrix-kod",
+        "shtrixkod (barkod)",
+        "barkod",
+        "штрихкод",
+        "ean",
+      ],
       selling_price: ["selling_price", "price", "sotuv narxi", "sotuv", "narx", "цена", "sale price"],
       cost_price: ["cost_price", "cost", "sotib olish narxi", "tannarx", "закуп", "purchase"],
       stock_qty: ["stock_qty", "quantity", "stock", "qoldiq", "ombor", "остаток", "qty"],
@@ -3510,6 +3577,10 @@
             if (key.startsWith("pl_")) {
               out.list_prices[key.slice(3)] = money(value);
               out[key] = money(value);
+            } else if (key === "barcode") {
+              const codes = parseBarcodesCell(value);
+              out.barcodes = codes;
+              out.barcode = codes[0] || "";
             } else if (["selling_price", "cost_price", "stock_qty", "min_stock"].includes(key)) {
               out[key] = money(value);
             } else {
@@ -3544,6 +3615,12 @@
               let v = row[f.key];
               if (f.key.startsWith("pl_") && (v == null || v === "")) {
                 v = row.list_prices?.[f.key.slice(3)];
+              }
+              if (f.key === "barcode") {
+                const codes = Array.isArray(row.barcodes)
+                  ? row.barcodes
+                  : parseBarcodesCell(v);
+                return `<td>${codes.map((c) => esc(c)).join(",<br>")}</td>`;
               }
               return `<td>${esc(v ?? "")}</td>`;
             });
@@ -3677,7 +3754,10 @@
       const payloadProducts = parsedRows.map((row) => {
         const item = {
           name: row.name,
-          barcode: row.barcode || "",
+          barcode: row.barcode || (Array.isArray(row.barcodes) ? row.barcodes[0] : "") || "",
+          barcodes: Array.isArray(row.barcodes)
+            ? row.barcodes
+            : parseBarcodesCell(row.barcode),
           selling_price: row.selling_price || 0,
           cost_price: row.cost_price || 0,
           stock_qty: row.stock_qty || 0,

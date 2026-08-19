@@ -594,13 +594,28 @@ def cabinet_day_sales(request):
         or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    margin_ratio = Decimal("0.25")
+    products_raw = []
+    try:
+        products_raw = _memo_get(
+            f"{memo_prefix}|catalog_snap",
+            120.0,
+            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=14) or [],
+        ) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
+        products_raw = []
+    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    products_by_id = {str(p.id): p for p in products}
+    products_by_name = _products_by_name(products)
     payload = []
     day_gross = Decimal("0")
+    day_cost = Decimal("0")
+    day_profit = Decimal("0")
     for s in day_sales_raw:
         total = _dec(s.get("total"))
         day_gross += total
-        profit = total * margin_ratio
+        cost, profit = _estimate_sale_profit(s, products_by_id, total, products_by_name)
+        day_cost += cost
+        day_profit += profit
         dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
         method = s.get("payment_type") or s.get("payment_method") or "cash"
         payload.append(
@@ -609,7 +624,7 @@ def cabinet_day_sales(request):
                 "time": timezone.localtime(dt).strftime("%H:%M") if dt else "",
                 "customer": s.get("customer_name") or "",
                 "total": float(total),
-                "cost": float(total - profit),
+                "cost": float(cost),
                 "profit": float(profit),
                 "payment": method,
                 "payment_label": PAYMENT_LABELS.get(
@@ -623,7 +638,8 @@ def cabinet_day_sales(request):
             "sale_date": sale_date.isoformat(),
             "count": len(payload),
             "gross": float(day_gross),
-            "profit": float(day_gross * margin_ratio),
+            "cost": float(day_cost),
+            "profit": float(day_profit),
             "sales": payload,
         }
     )
@@ -1093,11 +1109,81 @@ def _rel_image_url(url: str | None) -> str:
     return f"{base}/{url}"
 
 
+def _barcode_token(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return str(
+            value.get("barcode")
+            or value.get("code")
+            or value.get("value")
+            or value.get("ean")
+            or value.get("barcode_value")
+            or ""
+        ).strip()
+    text = str(value).strip()
+    if text.lower() in ("none", "null"):
+        return ""
+    return text
+
+
+def collect_product_barcodes(*sources) -> list[str]:
+    """Mahsulotdagi barcha shtrixkodlar (30–40 ta ham). Tartib saqlanadi."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(code: str) -> None:
+        if not code or code in seen:
+            return
+        seen.add(code)
+        out.append(code)
+
+    for src in sources:
+        if src is None or src is False:
+            continue
+        if isinstance(src, (list, tuple, set)):
+            for item in src:
+                _add(_barcode_token(item))
+        else:
+            _add(_barcode_token(src))
+    return out
+
+
+def format_barcodes_excel_cell(codes) -> str:
+    """Excel katak: har bir koddan keyin vergul, keyingisi pastki qatorda."""
+    rows = collect_product_barcodes(codes)
+    if not rows:
+        return ""
+    return ",\n".join(rows) + ","
+
+
+def parse_barcodes_cell(value) -> list[str]:
+    """Shablon: kod,\\nkod,  — vergul/qator/nuqtali vergul."""
+    if value is None or value is False:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return collect_product_barcodes(value)
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    chunks: list[str] = []
+    for line in text.split("\n"):
+        for piece in (
+            line.replace(";", ",").replace("|", ",").replace("\u00a0", " ").split(",")
+        ):
+            chunks.append(piece.strip())
+    return collect_product_barcodes(chunks)
+
+
 def _map_product(raw: dict) -> SimpleNamespace:
-    codes = list(raw.get("barcodes") or [])
-    barcode = (raw.get("barcode") or "").strip()
-    if barcode and barcode not in codes:
-        codes.insert(0, barcode)
+    codes = collect_product_barcodes(
+        raw.get("barcode"),
+        raw.get("barcodes"),
+        raw.get("barcode_list"),
+        raw.get("barcode_codes"),
+        raw.get("extra_barcodes"),
+        raw.get("additional_barcodes"),
+        raw.get("codes"),
+    )
+    barcode = codes[0] if codes else ""
 
     list_prices = _parse_list_prices(
         raw.get("list_prices") or raw.get("price_lists") or raw.get("prices")
@@ -1586,6 +1672,7 @@ def _aggregate_price_list_stats(
             "checks": set(),
             "revenue": 0.0,
             "cost": 0.0,
+            "costed_revenue": 0.0,
         },
     }
     selling_list_ids = {
@@ -1602,6 +1689,7 @@ def _aggregate_price_list_stats(
             "checks": set(),
             "revenue": 0.0,
             "cost": 0.0,
+            "costed_revenue": 0.0,
         }
 
     for detail in sale_details:
@@ -1620,18 +1708,15 @@ def _aggregate_price_list_stats(
             if not isinstance(detail.get("price_list"), dict)
             else (detail.get("price_list") or {}).get("name")
         )
-        for item in detail.get("items") or []:
-            qty_dec = _dec(item.get("quantity"))
+        for item in _sale_items(detail) or []:
+            qty_dec = _item_qty(item)
             qty = float(qty_dec)
-            unit_price = _dec(item.get("unit_price"))
-            line_total_dec = _dec(item.get("total"), str(qty_dec * unit_price))
+            unit_price = _item_unit_price(item)
+            line_total_dec = _dec(item.get("total") or item.get("line_total"), str(qty_dec * unit_price))
             line_total = float(line_total_dec)
             if unit_price <= 0 and qty_dec > 0 and line_total_dec > 0:
                 unit_price = (line_total_dec / qty_dec).quantize(Decimal("0.01"))
-            pid = str(item.get("product_id") or item.get("product") or "")
-            if pid.startswith("{") or pid == "None":
-                pid = ""
-            name = (item.get("product_name") or item.get("name") or "").strip()
+            pid, name, _nested = _item_product_ref(item)
             p = _find_product(
                 products_by_id,
                 products_by_name,
@@ -1668,23 +1753,19 @@ def _aggregate_price_list_stats(
                     "checks": set(),
                     "revenue": 0.0,
                     "cost": 0.0,
+                    "costed_revenue": 0.0,
                 }
             else:
                 list_id = _match_price_list_id(unit_price, p, price_lists)
             if list_id not in buckets:
                 list_id = SELLING_LIST_ID
-            unit_cost = _dec(
-                item.get("unit_cost")
-                or item.get("cost_price")
-                or item.get("purchase_price")
-                or item.get("buy_price")
-            )
-            if unit_cost <= 0 and p:
-                unit_cost = p.cost_price or Decimal("0")
+            unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
             bucket = buckets[list_id]
             bucket["qty"] += qty
             bucket["revenue"] += line_total
-            bucket["cost"] += float(unit_cost) * qty
+            if unit_cost > 0:
+                bucket["cost"] += float(unit_cost * qty_dec)
+                bucket["costed_revenue"] += line_total
             if sid:
                 bucket["checks"].add(sid)
 
@@ -1698,6 +1779,7 @@ def _aggregate_price_list_stats(
     total_rev = 0.0
     total_profit = 0.0
     total_cost = 0.0
+    total_costed = 0.0
     total_qty = 0.0
     all_checks: set = set()
     for lid in order:
@@ -1709,14 +1791,17 @@ def _aggregate_price_list_stats(
         if rev <= 0:
             continue
         cost = float(b["cost"])
-        profit = rev - cost
+        costed_rev = float(b.get("costed_revenue") or 0)
+        # Foyda: faqat sotib olish narxi bor qatorlar (1200 - 1000 = 200)
+        profit = costed_rev - cost
         total_rev += rev
         total_profit += profit
         total_cost += cost
+        total_costed += costed_rev
         total_qty += float(b["qty"])
         all_checks |= b["checks"]
         markup = (profit / cost * 100.0) if cost > 0 else 0.0
-        margin = (profit / rev * 100.0) if rev > 0 else 0.0
+        margin = (profit / costed_rev * 100.0) if costed_rev > 0 else 0.0
         out.append(
             {
                 "id": b["id"],
@@ -1725,6 +1810,7 @@ def _aggregate_price_list_stats(
                 "checks": len(b["checks"]),
                 "revenue": rev,
                 "cost": cost,
+                "costed_revenue": costed_rev,
                 "profit": profit,
                 "margin": margin,
                 "markup": markup,
@@ -1744,8 +1830,9 @@ def _aggregate_price_list_stats(
                 "checks": len(all_checks),
                 "revenue": total_rev,
                 "cost": total_cost,
+                "costed_revenue": total_costed,
                 "profit": total_profit,
-                "margin": (total_profit / total_rev * 100.0) if total_rev > 0 else 0.0,
+                "margin": (total_profit / total_costed * 100.0) if total_costed > 0 else 0.0,
                 "markup": (total_profit / total_cost * 100.0) if total_cost > 0 else 0.0,
                 "share": 100.0,
                 "is_total": True,
@@ -1794,6 +1881,7 @@ def _scale_price_list_stats(
         out = [r for r in lists if not r.get("is_total")]
         total_cost = sum(float(r.get("cost") or 0) for r in out)
         total_profit = sum(float(r.get("profit") or 0) for r in out)
+        total_costed = sum(float(r.get("costed_revenue") or 0) for r in out)
         total_qty = sum(float(r.get("qty") or 0) for r in out)
         for r in out:
             r["share"] = (float(r["revenue"]) / target_gross * 100.0) if target_gross else 0.0
@@ -1805,8 +1893,9 @@ def _scale_price_list_stats(
                 "checks": int(target_checks),
                 "revenue": float(target_gross),
                 "cost": total_cost,
+                "costed_revenue": total_costed,
                 "profit": total_profit,
-                "margin": (total_profit / target_gross * 100.0) if target_gross else 0.0,
+                "margin": (total_profit / total_costed * 100.0) if total_costed else 0.0,
                 "markup": (total_profit / total_cost * 100.0) if total_cost > 0 else 0.0,
                 "share": 100.0,
                 "is_total": True,
@@ -1821,7 +1910,8 @@ def _scale_price_list_stats(
         share = float(r.get("revenue") or 0) / sample_rev
         rev = float(r["revenue"]) * scale
         cost = float(r.get("cost") or 0) * scale
-        profit = rev - cost
+        costed = float(r.get("costed_revenue") or 0) * scale
+        profit = costed - cost
         qty = float(r.get("qty") or 0) * scale
         checks_est = int(round(target_checks * share)) if target_checks and share > 0 else int(r.get("checks") or 0)
         scaled.append(
@@ -1832,8 +1922,9 @@ def _scale_price_list_stats(
                 "checks": max(checks_est, 1) if rev > 0 else 0,
                 "revenue": rev,
                 "cost": cost,
+                "costed_revenue": costed,
                 "profit": profit,
-                "margin": (profit / rev * 100.0) if rev > 0 else 0.0,
+                "margin": (profit / costed * 100.0) if costed > 0 else 0.0,
                 "markup": (profit / cost * 100.0) if cost > 0 else 0.0,
                 "share": share * 100.0,
                 "is_total": False,
@@ -1843,6 +1934,7 @@ def _scale_price_list_stats(
 
     total_cost = sum(float(r["cost"]) for r in scaled)
     total_profit = sum(float(r["profit"]) for r in scaled)
+    total_costed = sum(float(r.get("costed_revenue") or 0) for r in scaled)
     total_qty = sum(float(r["qty"]) for r in scaled)
     scaled.append(
         {
@@ -1852,8 +1944,9 @@ def _scale_price_list_stats(
             "checks": int(target_checks),
             "revenue": float(target_gross),
             "cost": total_cost,
+            "costed_revenue": total_costed,
             "profit": total_profit,
-            "margin": (total_profit / target_gross * 100.0) if target_gross else 0.0,
+            "margin": (total_profit / total_costed * 100.0) if total_costed else 0.0,
             "markup": (total_profit / total_cost * 100.0) if total_cost > 0 else 0.0,
             "share": 100.0,
             "is_total": True,
@@ -2183,50 +2276,31 @@ def _fallback_sotuv_only_lists(
     margin_ratio: Decimal,
     price_lists: list[dict] | None = None,
 ) -> list[dict]:
-    """Detallar bo‘lmasa — butun tushumni Sotuvga, Optom 0 (tez UI)."""
+    """Detallar yo‘q — tushum ko‘rinsin, foyda taxmin qilinmasin."""
+    del margin_ratio, price_lists
     if gross <= 0:
         return []
-    ratio = float(margin_ratio or 0)
-    if ratio <= 0:
-        ratio = 0.25
-    profit = gross * ratio
-    cost = gross - profit
-    out = [
-        {
-            "id": SELLING_LIST_ID,
-            "name": "Sotuv",
-            "qty": 0.0,
-            "checks": int(checks),
-            "revenue": float(gross),
-            "cost": float(cost),
-            "profit": float(profit),
-            "margin": (profit / gross * 100.0) if gross else 0.0,
-            "markup": (profit / cost * 100.0) if cost > 0 else 0.0,
-            "share": 100.0,
-            "is_total": False,
-            "scaled": True,
-            "estimated": True,
-        }
-    ]
-    # Optom ro‘yxatlari bo‘lsa — 0 bilan emas, faqat Sotuv+Jami (UI faqat revenue>0)
-    out.append(
-        {
-            "id": "__all__",
-            "name": "Jami",
-            "qty": 0.0,
-            "checks": int(checks),
-            "revenue": float(gross),
-            "cost": float(cost),
-            "profit": float(profit),
-            "margin": (profit / gross * 100.0) if gross else 0.0,
-            "markup": (profit / cost * 100.0) if cost > 0 else 0.0,
-            "share": 100.0,
-            "is_total": True,
-            "scaled": True,
-            "estimated": True,
-        }
-    )
-    return out
+    row = {
+        "id": SELLING_LIST_ID,
+        "name": "Sotuv",
+        "qty": 0.0,
+        "checks": int(checks),
+        "revenue": float(gross),
+        "cost": 0.0,
+        "costed_revenue": 0.0,
+        "profit": 0.0,
+        "margin": 0.0,
+        "markup": 0.0,
+        "share": 100.0,
+        "is_total": False,
+        "scaled": True,
+        "estimated": True,
+    }
+    jami = dict(row)
+    jami["id"] = "__all__"
+    jami["name"] = "Jami"
+    jami["is_total"] = True
+    return [row, jami]
 
 
 def _catalog_margin_ratio(products: list) -> Decimal:
@@ -2242,25 +2316,49 @@ def _catalog_margin_ratio(products: list) -> Decimal:
     return sum(ratios, Decimal("0")) / Decimal(len(ratios))
 
 
+def _item_product_ref(item: dict) -> tuple[str, str, dict]:
+    """Chek qatoridagi mahsulot id/nomi va ichki obyekt."""
+    nested = item.get("product") if isinstance(item.get("product"), dict) else {}
+    pid = item.get("product_id") or item.get("product") or nested.get("id") or ""
+    if isinstance(pid, dict):
+        nested = pid if not nested else nested
+        pid = pid.get("id") or ""
+    pid = str(pid or "").strip()
+    if pid.startswith("{") or pid in ("None", "null"):
+        pid = ""
+    name = (
+        item.get("product_name")
+        or item.get("name")
+        or nested.get("name")
+        or ""
+    )
+    return pid, str(name or "").strip(), nested
+
+
 def _resolve_item_unit_cost(
     item: dict,
     products_by_id: dict[str, SimpleNamespace],
     products_by_name: dict[str, SimpleNamespace] | None = None,
 ) -> Decimal:
     """Sotib olish narxi; kiritilmagan bo'lsa 0 (foydaga qo'shilmaydi)."""
+    pid, name, nested = _item_product_ref(item)
     unit_cost = _dec(
         item.get("unit_cost")
         or item.get("cost_price")
         or item.get("purchase_price")
         or item.get("buy_price")
+        or nested.get("cost_price")
+        or nested.get("purchase_price")
+        or nested.get("buy_price")
+        or nested.get("cost")
     )
     if unit_cost > 0:
         return unit_cost
     p = _find_product(
         products_by_id,
         products_by_name,
-        product_id=str(item.get("product_id") or item.get("product") or ""),
-        product_name=item.get("product_name") or item.get("name") or "",
+        product_id=pid,
+        product_name=name,
     )
     if p and (p.cost_price or Decimal("0")) > 0:
         return p.cost_price
@@ -2543,10 +2641,11 @@ def _product_payload_from_import_row(row: dict) -> tuple[dict | None, str | None
     if not name:
         return None, "Mahsulot nomi bo‘sh"
 
-    barcode = str(row.get("barcode") or "").strip()
-    codes = [c.strip() for c in (row.get("barcodes") or []) if str(c).strip()]
-    if barcode and barcode not in codes:
-        codes.insert(0, barcode)
+    codes = collect_product_barcodes(
+        parse_barcodes_cell(row.get("barcodes")),
+        parse_barcodes_cell(row.get("barcode")),
+    )
+    barcode = codes[0] if codes else ""
 
     selling = _dec(row.get("selling_price") or row.get("price"))
     cost = _dec(row.get("cost_price"))
@@ -2663,7 +2762,13 @@ def _export_cell_value(product: SimpleNamespace, key: str, price_lists_by_id: di
     if key == "name":
         return product.name or ""
     if key == "barcode":
-        return product.barcode or ""
+        return format_barcodes_excel_cell(
+            collect_product_barcodes(
+                getattr(product, "barcode_list", None),
+                getattr(product, "barcodes", None),
+                getattr(product, "barcode", None),
+            )
+        )
     if key == "selling_price":
         return float(product.selling_price or 0)
     if key == "cost_price":
@@ -2744,6 +2849,7 @@ def cabinet_products_export(request):
 
     try:
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font
         from openpyxl.utils import get_column_letter
     except ImportError:
         return JsonResponse({"error": "openpyxl o‘rnatilmagan"}, status=500)
@@ -2752,20 +2858,37 @@ def cabinet_products_export(request):
     ws = wb.active
     ws.title = "Mahsulotlar"
     ws.append(headers)
+    header_font = Font(bold=True)
+    wrap_top = Alignment(wrap_text=True, vertical="top")
+    barcode_col = fields.index("barcode") + 1 if "barcode" in fields else 0
+    for col_idx in range(1, len(headers) + 1):
+        ws.cell(1, col_idx).font = header_font
+
     for p in products:
         row = [_export_cell_value(p, key, price_lists_by_id) for key in fields]
         ws.append(row)
+        r_idx = ws.max_row
+        if barcode_col:
+            cell = ws.cell(r_idx, barcode_col)
+            cell.alignment = wrap_top
+            cell.number_format = "@"
+            nlines = str(cell.value or "").count("\n") + 1
+            ws.row_dimensions[r_idx].height = min(200, max(18, 14 * nlines))
 
-    # Ustun kengligi — nomlar kesilmasin
+    # Ustun kengligi — shtrixkodda faqat eng uzun qator
     for col_idx, header in enumerate(headers, start=1):
         max_len = len(str(header))
         for row in ws.iter_rows(min_col=col_idx, max_col=col_idx, min_row=2):
             val = row[0].value
             if val is None:
                 continue
-            max_len = max(max_len, len(str(val)))
-        width = min(80, max(14, max_len + 2))
+            for line in str(val).splitlines() or [str(val)]:
+                max_len = max(max_len, len(line))
+        cap = 28 if col_idx == barcode_col else 80
+        width = min(cap, max(14, max_len + 2))
         ws.column_dimensions[get_column_letter(col_idx)].width = width
+        if col_idx == barcode_col:
+            ws.column_dimensions[get_column_letter(col_idx)].width = max(width, 18)
 
     bio = BytesIO()
     wb.save(bio)
@@ -3688,26 +3811,26 @@ def cabinet_range_stats(request):
     # fast: faqat jami (tez). To‘liq: Optom uchun chek + katalog namuna (deadline ichida).
     single_day = span <= 1
     if fast:
-        # Jami to‘liq (barcha cheklar). Optom detallari yo‘q — 504 bo‘lmasin.
+        # Jami to‘liq (barcha cheklar). Foyda — chek qatorlari + katalog tannarxi.
         max_pages = 80 if single_day else (40 if span <= 7 else 25)
-        product_pages, sales_timeout = 0, 16 if single_day else 18
+        sales_timeout = 16 if single_day else 18
         detail_cap, detail_each, detail_budget = 0, 0.0, 0.0
         hard_deadline = 22.0
     elif single_day:
-        max_pages, product_pages, sales_timeout = 80, 4, 16
-        detail_cap, detail_each, detail_budget = 45, 2.2, 10.0
+        max_pages, sales_timeout = 80, 16
+        detail_cap, detail_each, detail_budget = 80, 2.2, 10.0
         hard_deadline = 24.0
     elif span <= 7:
-        max_pages, product_pages, sales_timeout = 50, 3, 16
-        detail_cap, detail_each, detail_budget = 30, 2.2, 9.0
+        max_pages, sales_timeout = 50, 16
+        detail_cap, detail_each, detail_budget = 40, 2.2, 9.0
         hard_deadline = 22.0
     elif span <= 31:
-        max_pages, product_pages, sales_timeout = 40, 2, 18
-        detail_cap, detail_each, detail_budget = 24, 2.2, 8.0
+        max_pages, sales_timeout = 40, 18
+        detail_cap, detail_each, detail_budget = 30, 2.2, 8.0
         hard_deadline = 22.0
     else:
-        max_pages, product_pages, sales_timeout = 30, 2, 18
-        detail_cap, detail_each, detail_budget = 20, 2.0, 8.0
+        max_pages, sales_timeout = 30, 18
+        detail_cap, detail_each, detail_budget = 24, 2.0, 8.0
         hard_deadline = 24.0
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
@@ -3746,23 +3869,18 @@ def cabinet_range_stats(request):
         )
 
     def _load_products():
-        if product_pages <= 0:
-            return []
         return _memo_get(
-            f"{memo_prefix}|products|{product_pages}",
-            600.0,
-            lambda: tezpos_api.get_products(
-                token, server, max_pages=product_pages, timeout=12
-            )
-            or [],
+            f"{memo_prefix}|catalog_snap",
+            120.0,
+            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=16) or [],
         )
 
     try:
-        workers = 3 if product_pages > 0 else 2
+        workers = 3
         with ThreadPoolExecutor(max_workers=workers) as pool:
             fut_s = pool.submit(_load_sales)
             fut_pl = pool.submit(_load_price_lists)
-            fut_p = pool.submit(_load_products) if product_pages > 0 else None
+            fut_p = pool.submit(_load_products)
             remain = max(1.0, hard_deadline - (time.time() - t_start))
             try:
                 sales = fut_s.result(timeout=remain) or []
@@ -3792,6 +3910,7 @@ def cabinet_range_stats(request):
 
     if not products_raw:
         for key in (
+            f"{memo_prefix}|catalog_snap",
             f"{memo_prefix}|products|4",
             f"{memo_prefix}|products|3",
             f"{memo_prefix}|products|2",
@@ -3804,9 +3923,7 @@ def cabinet_range_stats(request):
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     products_by_id = {str(p.id): p for p in products}
     products_by_name = _products_by_name(products)
-    margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0.25")
-    if margin_ratio <= 0:
-        margin_ratio = Decimal("0.25")
+    margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0")
     price_lists = [
         pl for pl in price_lists if isinstance(pl, dict) and pl.get("is_active", True)
     ]
@@ -3843,30 +3960,26 @@ def cabinet_range_stats(request):
                 api_gross = float(_dec(api_rev))
                 if api_gross > gross:
                     gross = api_gross
-    profit = gross * float(margin_ratio)
-    margin = (profit / gross * 100.0) if gross > 0 else 0.0
+    profit = 0.0
+    margin = 0.0
 
     lists: list = []
     details_used = 0
     estimated = False
     remain_budget = hard_deadline - (time.time() - t_start)
     if gross > 0:
-        # Avval tez Jami/Sotuv — UI bo‘sh qolmasin
-        lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
-        estimated = True
+        details: dict[str, dict] = {}
+        for s in sales:
+            if not isinstance(s, dict) or not s.get("id"):
+                continue
+            if _sale_items(s):
+                details[str(s.get("id"))] = s
         if detail_cap > 0 and remain_budget >= 3.0:
-            embedded = [
-                s for s in sales if isinstance(s.get("items"), list) and s.get("items")
-            ]
-            details: dict[str, dict] = {
-                str(s.get("id")): s for s in embedded if s.get("id")
-            }
             need_ids = [
                 str(s.get("id"))
                 for s in sales
                 if s.get("id") and str(s.get("id")) not in details
             ]
-            # Aralash namuna (optom kechki cheklarda bo‘lishi mumkin)
             if len(need_ids) > detail_cap:
                 step = max(1, len(need_ids) // detail_cap)
                 sampled = need_ids[::step][:detail_cap]
@@ -3888,21 +4001,31 @@ def cabinet_range_stats(request):
                     overall_timeout=min(detail_budget, max(2.0, remain_budget - 1.0)),
                 )
                 details.update(fetched)
-            details_used = len(details)
-            if details:
-                refined = _aggregate_price_list_stats(
-                    list(details.values()),
-                    products_by_id,
-                    products_by_name,
-                    price_lists,
+        details_used = len(details)
+        if details:
+            refined = _aggregate_price_list_stats(
+                list(details.values()),
+                products_by_id,
+                products_by_name,
+                price_lists,
+            )
+            if refined:
+                lists = _scale_price_list_stats(refined, gross, checks)
+                estimated = any(
+                    isinstance(r, dict) and r.get("scaled") and not r.get("is_total")
+                    for r in lists
                 )
-                if refined:
-                    lists = _scale_price_list_stats(refined, gross, checks)
-                    estimated = False
-                    jami = next((r for r in lists if r.get("is_total")), None)
-                    if jami and float(jami.get("revenue") or 0) > 0:
-                        profit = float(jami.get("profit") or profit)
-                        margin = float(jami.get("margin") or margin)
+                jami = next((r for r in lists if r.get("is_total")), None)
+                if jami:
+                    profit = float(jami.get("profit") or 0)
+                    margin = float(
+                        jami.get("markup")
+                        if jami.get("markup") is not None
+                        else (jami.get("margin") or 0)
+                    )
+        if not lists:
+            lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
+            estimated = True
 
     has_optom = any(
         isinstance(r, dict)
