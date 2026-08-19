@@ -1133,7 +1133,23 @@ def collect_product_barcodes(*sources) -> list[str]:
     seen: set[str] = set()
 
     def _add(code: str) -> None:
-        if not code or code in seen:
+        if not code:
+            return
+        if any(sep in code for sep in (",", "\n", "\r", ";", "|")):
+            for piece in (
+                code.replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .replace(";", ",")
+                .replace("|", ",")
+                .replace("\n", ",")
+                .split(",")
+            ):
+                part = piece.strip()
+                if part and part not in seen:
+                    seen.add(part)
+                    out.append(part)
+            return
+        if code in seen:
             return
         seen.add(code)
         out.append(code)
@@ -1150,11 +1166,11 @@ def collect_product_barcodes(*sources) -> list[str]:
 
 
 def format_barcodes_excel_cell(codes) -> str:
-    """Excel katak: har bir koddan keyin vergul, keyingisi pastki qatorda."""
+    """Excel katak: har kod o‘z qatorida, oxirida vergul (Wrap Text)."""
     rows = collect_product_barcodes(codes)
     if not rows:
         return ""
-    return ",\n".join(rows) + ","
+    return "\n".join(f"{code}," for code in rows)
 
 
 def parse_barcodes_cell(value) -> list[str]:
@@ -2870,10 +2886,16 @@ def cabinet_products_export(request):
         r_idx = ws.max_row
         if barcode_col:
             cell = ws.cell(r_idx, barcode_col)
+            raw = str(cell.value or "").replace("\r\n", "\n").replace("\r", "\n")
+            cell.value = raw
             cell.alignment = wrap_top
             cell.number_format = "@"
-            nlines = str(cell.value or "").count("\n") + 1
-            ws.row_dimensions[r_idx].height = min(200, max(18, 14 * nlines))
+            nlines = raw.count("\n") + 1 if raw else 1
+            ws.row_dimensions[r_idx].height = min(220, max(18, 15 * nlines))
+    if barcode_col:
+        for cell in ws[get_column_letter(barcode_col)]:
+            cell.alignment = wrap_top
+            cell.number_format = "@"
 
     # Ustun kengligi — shtrixkodda faqat eng uzun qator
     for col_idx, header in enumerate(headers, start=1):

@@ -393,6 +393,24 @@ class BarcodeExcelTemplateTests(SimpleTestCase):
         self.assertEqual(p.barcode_list, codes)
         exported = _export_cell_value(p, "barcode", {})
         self.assertEqual(parse_barcodes_cell(exported), codes)
+        self.assertEqual(exported.split("\n")[0], f"{codes[0]},")
+        self.assertGreaterEqual(len(exported.split("\n")), 30)
+
+    def test_comma_separated_barcode_field_splits(self):
+        from accounts.views import _map_product, parse_barcodes_cell
+
+        p = _map_product(
+            {
+                "id": "2",
+                "name": "X",
+                "barcode": "8003407192271,8003407261168,8003407261175",
+            }
+        )
+        self.assertEqual(
+            p.barcode_list,
+            ["8003407192271", "8003407261168", "8003407261175"],
+        )
+        self.assertEqual(len(parse_barcodes_cell("8001,\n8002,")), 2)
 
     def test_import_row_reads_template_cell(self):
         from accounts.views import _product_payload_from_import_row, format_barcodes_excel_cell

@@ -3264,14 +3264,27 @@
     const collectBarcodes = (p) => {
       const out = [];
       const seen = new Set();
-      const add = (v) => {
-        if (v && typeof v === "object") {
-          v = v.barcode || v.code || v.value || v.ean || "";
-        }
-        const s = String(v || "").trim();
+      const addOne = (s) => {
+        s = String(s || "").trim();
         if (!s || seen.has(s)) return;
         seen.add(s);
         out.push(s);
+      };
+      const add = (v) => {
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          v = v.barcode || v.code || v.value || v.ean || "";
+        }
+        const s = String(v || "").trim();
+        if (!s) return;
+        if (/[,;\n\r|]/.test(s)) {
+          s.replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n")
+            .replace(/[;|]/g, ",")
+            .split(/[\n,]+/)
+            .forEach(addOne);
+          return;
+        }
+        addOne(s);
       };
       if (!p) return out;
       add(p.barcode);
@@ -3283,7 +3296,7 @@
     const formatBarcodesCell = (codes) => {
       const rows = Array.isArray(codes) ? codes.filter(Boolean) : collectBarcodes(codes);
       if (!rows.length) return "";
-      return `${rows.join(",\n")},`;
+      return rows.map((c) => `${c},`).join("\n");
     };
 
     const parseBarcodesCell = (value) => {
@@ -3397,28 +3410,16 @@
         return;
       }
       const exportUrl = data.productsExportUrl;
-      const local = Array.isArray(data.products) ? data.products : [];
-      // Brauzerda to‘liq katalog bor bo‘lsa — 200 ta server kesimidan qochamiz
-      if (local.length > 250) {
-        try {
-          setStatus("Excel tayyorlanmoqda…", "");
-          const pack = buildExportSheet();
-          if (!pack) return;
-          XLSX.writeFile(pack.wb, "barcha_mahsulotlar.xlsx");
-          setStatus(`${pack.count} ta mahsulot Excelga yozildi.`, "");
-        } catch (err) {
-          setStatus(`Excel yaratilmadi: ${err.message || err}`, "error");
-          alert(`Excel yuklanmadi: ${err.message || err}`);
-        }
-        return;
-      }
+      const writeLocal = () => {
+        const pack = buildExportSheet();
+        if (!pack) return;
+        XLSX.writeFile(pack.wb, "barcha_mahsulotlar.xlsx");
+        setStatus(`${pack.count} ta mahsulot Excelga yozildi.`, "");
+      };
       if (!exportUrl) {
         try {
           setStatus("Excel tayyorlanmoqda…", "");
-          const pack = buildExportSheet();
-          if (!pack) return;
-          XLSX.writeFile(pack.wb, "barcha_mahsulotlar.xlsx");
-          setStatus(`${pack.count} ta mahsulot Excelga yozildi.`, "");
+          writeLocal();
         } catch (err) {
           setStatus(`Excel yaratilmadi: ${err.message || err}`, "error");
           alert(`Excel yuklanmadi: ${err.message || err}`);
@@ -3457,8 +3458,12 @@
         setTimeout(() => URL.revokeObjectURL(objUrl), 2000);
         setStatus("Excel yuklab olindi.", "");
       } catch (err) {
-        setStatus(`Excel yuklanmadi: ${err.message || err}`, "error");
-        alert(`Excel yuklanmadi: ${err.message || err}`);
+        try {
+          writeLocal();
+        } catch (_e) {
+          setStatus(`Excel yuklanmadi: ${err.message || err}`, "error");
+          alert(`Excel yuklanmadi: ${err.message || err}`);
+        }
       } finally {
         if (runBtn) {
           runBtn.disabled = false;
