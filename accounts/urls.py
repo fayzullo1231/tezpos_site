@@ -6,6 +6,7 @@ from .suppliers import (
     cabinet_supplier_product,
     cabinet_supplier_save,
     cabinet_suppliers,
+    cabinet_suppliers_export,
     cabinet_suppliers_history,
     cabinet_suppliers_summary,
 )
@@ -68,6 +69,7 @@ urlpatterns = [
     path("cabinet/suppliers/", cabinet_suppliers, name="cabinet_suppliers"),
     path("cabinet/suppliers/summary/", cabinet_suppliers_summary, name="cabinet_suppliers_summary"),
     path("cabinet/suppliers/history/", cabinet_suppliers_history, name="cabinet_suppliers_history"),
+    path("cabinet/suppliers/export/", cabinet_suppliers_export, name="cabinet_suppliers_export"),
     path("cabinet/suppliers/save/", cabinet_supplier_save, name="cabinet_supplier_save"),
     path("cabinet/suppliers/delete/", cabinet_supplier_delete, name="cabinet_supplier_delete"),
     path("cabinet/suppliers/product/", cabinet_supplier_product, name="cabinet_supplier_product"),

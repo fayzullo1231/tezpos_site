@@ -178,7 +178,7 @@ def cabinet_suppliers(request):
             {
                 "ok": True,
                 "supplier": _serialize_supplier(
-                    row, with_products=True, with_ledger=True, ledger_limit=200
+                    row, with_products=True, with_ledger=True, ledger_limit=1000
                 ),
                 "summary": _summary_for_shop(shop),
             }
@@ -202,11 +202,9 @@ def cabinet_suppliers_summary(request):
     shop = _shop(request)
     summary = _summary_for_shop(shop)
     recent = (
-        SupplierLedger.objects.filter(
-            supplier__shop_key=shop, supplier__is_active=True
-        )
+        SupplierLedger.objects.filter(supplier__shop_key=shop)
         .select_related("supplier")
-        .order_by("-created_at", "-id")[:40]
+        .order_by("-created_at", "-id")[:60]
     )
     return JsonResponse(
         {
@@ -220,17 +218,16 @@ def cabinet_suppliers_summary(request):
 @login_required
 @require_GET
 def cabinet_suppliers_history(request):
-    """Barcha eski qarz/to‘lov yozuvlari."""
+    """Barcha eski qarz/to‘lov yozuvlari (to‘langanlar ham)."""
     shop = _shop(request)
     supplier_id = request.GET.get("supplier_id")
+    kind = str(request.GET.get("kind") or "").strip()
     try:
-        limit = max(1, min(500, int(request.GET.get("limit") or 200)))
+        limit = max(1, min(5000, int(request.GET.get("limit") or 2000)))
     except (TypeError, ValueError):
-        limit = 200
+        limit = 2000
     qs = (
-        SupplierLedger.objects.filter(
-            supplier__shop_key=shop, supplier__is_active=True
-        )
+        SupplierLedger.objects.filter(supplier__shop_key=shop)
         .select_related("supplier")
         .order_by("-created_at", "-id")
     )
@@ -239,8 +236,148 @@ def cabinet_suppliers_history(request):
             qs = qs.filter(supplier_id=int(supplier_id))
         except (TypeError, ValueError):
             pass
+    if kind in {c[0] for c in SupplierLedger.KIND_CHOICES}:
+        qs = qs.filter(kind=kind)
+    elif kind == "debt":
+        qs = qs.filter(
+            kind__in=[SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_OWE]
+        )
+    elif kind == "pay":
+        qs = qs.filter(
+            kind__in=[SupplierLedger.KIND_WE_PAY, SupplierLedger.KIND_THEY_PAY]
+        )
     rows = [_serialize_ledger(x) for x in qs[:limit]]
     return JsonResponse({"ok": True, "entries": rows, "count": len(rows)})
+
+
+@login_required
+@require_GET
+def cabinet_suppliers_export(request):
+    """Tanlangan (yoki barcha) taminotchilar qarzlari — Excel."""
+    from io import BytesIO
+
+    from django.http import HttpResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    shop = _shop(request)
+    ids_raw = str(request.GET.get("ids") or "").strip()
+    id_list: list[int] = []
+    if ids_raw:
+        for part in ids_raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                id_list.append(int(part))
+            except ValueError:
+                continue
+
+    suppliers_qs = Supplier.objects.filter(shop_key=shop, is_active=True).order_by("name")
+    if id_list:
+        suppliers_qs = suppliers_qs.filter(pk__in=id_list)
+    suppliers = list(suppliers_qs)
+    supplier_ids = [s.pk for s in suppliers]
+
+    ledger_qs = (
+        SupplierLedger.objects.filter(supplier_id__in=supplier_ids)
+        .select_related("supplier")
+        .order_by("supplier__name", "-created_at", "-id")
+        if supplier_ids
+        else SupplierLedger.objects.none()
+    )
+
+    wb = Workbook()
+    ws_sum = wb.active
+    ws_sum.title = "Jami"
+    ws_sum.append(
+        ["#", "Taminotchi", "Telefon", "Holat", "Biz qarz", "Ular qarz", "Mahsulotlar"]
+    )
+    for cell in ws_sum[1]:
+        cell.font = Font(bold=True)
+
+    for i, s in enumerate(suppliers, start=1):
+        bal = s.balance()
+        we = float(bal) if bal > 0 else 0.0
+        they = float(-bal) if bal < 0 else 0.0
+        status = (
+            "Biz qarzdamiz" if bal > 0 else ("Taminotchi qarz" if bal < 0 else "Qarz yo‘q")
+        )
+        products = ", ".join(p.product_name for p in s.products.all()[:40])
+        ws_sum.append(
+            [
+                i,
+                s.name,
+                s.phone or "",
+                status,
+                we,
+                they,
+                products,
+            ]
+        )
+
+    ws_led = wb.create_sheet("Tarix")
+    ws_led.append(
+        [
+            "#",
+            "Sana",
+            "Soat",
+            "Taminotchi",
+            "Amal",
+            "Summa",
+            "Izoh",
+            "Kim yozgan",
+        ]
+    )
+    for cell in ws_led[1]:
+        cell.font = Font(bold=True)
+
+    labels = dict(SupplierLedger.KIND_CHOICES)
+    for i, row in enumerate(ledger_qs, start=1):
+        local = timezone.localtime(row.created_at) if row.created_at else None
+        ws_led.append(
+            [
+                i,
+                local.strftime("%d.%m.%Y") if local else "",
+                local.strftime("%H:%M") if local else "",
+                row.supplier.name if row.supplier_id else "",
+                labels.get(row.kind, row.kind),
+                float(row.amount),
+                row.note or "",
+                row.created_by or "",
+            ]
+        )
+
+    for ws in (ws_sum, ws_led):
+        ws.column_dimensions["A"].width = 6
+        ws.column_dimensions["B"].width = 16
+        ws.column_dimensions["C"].width = 14
+        ws.column_dimensions["D"].width = 22
+        ws.column_dimensions["E"].width = 14
+        ws.column_dimensions["F"].width = 14
+        ws.column_dimensions["G"].width = 36
+        if ws is ws_led:
+            ws.column_dimensions["H"].width = 18
+
+    for col in ("E", "F"):
+        for cell in ws_sum[col][1:]:
+            cell.number_format = "#,##0.##"
+            cell.alignment = Alignment(horizontal="right")
+    for cell in ws_led["F"][1:]:
+        cell.number_format = "#,##0.##"
+        cell.alignment = Alignment(horizontal="right")
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    stamp = timezone.localtime().strftime("%Y%m%d_%H%M")
+    fname = f"taminotchilar_{stamp}.xlsx"
+    response = HttpResponse(
+        bio.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{fname}"'
+    return response
 
 
 @login_required
@@ -419,7 +556,7 @@ def cabinet_supplier_ledger(request):
             "ok": True,
             "entry": _serialize_ledger(entry),
             "supplier": _serialize_supplier(
-                supplier, with_products=True, with_ledger=True, ledger_limit=80
+                supplier, with_products=True, with_ledger=True, ledger_limit=1000
             ),
             "summary": _summary_for_shop(shop),
         }

@@ -5878,19 +5878,30 @@
     if (!res.ok) throw new Error(json.error || "Xato");
     return json;
   };
+  const filterLedger = (rows, mode) => {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!mode || mode === "all") return list;
+    if (mode === "debt") return list.filter((e) => e.kind === "we_owe" || e.kind === "they_owe");
+    if (mode === "pay") return list.filter((e) => e.kind === "we_pay" || e.kind === "they_pay");
+    return list.filter((e) => e.kind === mode);
+  };
   const timelineHtml = (rows, { showSupplier = false } = {}) => {
     if (!rows || !rows.length) return "";
     return rows
       .map((e) => {
         const tone = e.tone || "blue";
+        const isPay = e.kind === "we_pay" || e.kind === "they_pay";
         const title = showSupplier
           ? `${esc(e.supplier_name)} · ${esc(e.kind_label)}`
           : esc(e.kind_label);
         const note = e.note ? `<p>${esc(e.note)}</p>` : "";
+        const tag = isPay
+          ? `<span class="sup-tl-tag is-pay">To‘lov</span>`
+          : `<span class="sup-tl-tag is-debt">Qarz</span>`;
         return `<article class="sup-tl-item is-${esc(tone)}">
           <span class="sup-tl-dot" aria-hidden="true"></span>
           <div>
-            <h5>${title}</h5>
+            <h5>${title} ${tag}</h5>
             <p>${esc(e.created_display)}${e.created_by ? ` · ${esc(e.created_by)}` : ""}</p>
             ${note}
           </div>
@@ -5949,6 +5960,11 @@
   let query = "";
   let activeId = null;
   let activeDetail = null;
+  let selectedIds = new Set();
+  let histFilter = "all";
+  let detailHistFilter = "all";
+  let historyRows = [];
+  let prodPick = null;
 
   const countEl = document.getElementById("sup-count");
   const weEl = document.getElementById("sup-we-owe");
@@ -5963,6 +5979,23 @@
   const modal = document.getElementById("sup-modal");
   const detailModal = document.getElementById("sup-detail-modal");
   const form = document.getElementById("sup-form");
+  const exportBtn = document.getElementById("sup-export-btn");
+  const selectAll = document.getElementById("sup-select-all");
+  const selectedCountEl = document.getElementById("sup-selected-count");
+  const prodResults = document.getElementById("sup-prod-results");
+  const prodSearch = document.getElementById("sup-prod-search");
+
+  const syncExportHref = () => {
+    if (!exportBtn || !data.suppliersExportUrl) return;
+    const ids = [...selectedIds];
+    const qs = ids.length ? `?ids=${ids.join(",")}` : "";
+    exportBtn.href = `${data.suppliersExportUrl}${qs}`;
+    if (selectedCountEl) {
+      selectedCountEl.textContent = ids.length
+        ? `(${ids.length} ta belgilangan)`
+        : "(barchasi)";
+    }
+  };
 
   const paintSummary = (summary) => {
     const s = summary || {};
@@ -5973,6 +6006,7 @@
 
   const cardHtml = (row) => {
     const st = row.status || "clear";
+    const checked = selectedIds.has(String(row.id)) ? "checked" : "";
     const chips = (row.products || [])
       .slice(0, 6)
       .map((p) => `<span class="sup-chip">${esc(p.name)}</span>`)
@@ -5989,13 +6023,16 @@
           : "Qarz yo‘q";
     return `<article class="sup-card is-${esc(st)}" data-id="${row.id}">
       <div class="sup-card-head">
-        <div>
-          <h4>${esc(row.name)}</h4>
-          <p>${esc(row.phone || "Telefon yo‘q")}${row.note ? ` · ${esc(row.note)}` : ""}</p>
-        </div>
+        <label class="sup-check">
+          <input type="checkbox" class="sup-pick" data-id="${row.id}" ${checked}>
+          <span>
+            <h4>${esc(row.name)}</h4>
+            <p>${esc(row.phone || "Telefon yo‘q")}${row.note ? ` · ${esc(row.note)}` : ""}</p>
+          </span>
+        </label>
         <div class="sup-bal is-${esc(st)}">${balLabel} so‘m</div>
       </div>
-      ${chips || more ? `<div class="sup-chips">${chips}${more}</div>` : `<p class="cabinet-hint" style="margin:0">Mahsulot biriktirilmagan (ixtiyoriy)</p>`}
+      ${chips || more ? `<div class="sup-chips">${chips}${more}</div>` : ""}
       <div class="sup-card-actions">
         <button type="button" class="btn-soft sup-open" data-id="${row.id}">Ochish</button>
         <button type="button" class="btn-soft sup-quick-owe" data-id="${row.id}" data-kind="we_owe">Biz qarz</button>
@@ -6023,10 +6060,21 @@
     if (!rows.length) {
       listEl.innerHTML = "";
       if (emptyEl) emptyEl.hidden = false;
+      syncExportHref();
       return;
     }
     if (emptyEl) emptyEl.hidden = true;
     listEl.innerHTML = rows.map(cardHtml).join("");
+    syncExportHref();
+  };
+
+  const paintHistory = () => {
+    if (!historyList) return;
+    const rows = filterLedger(historyRows, histFilter);
+    historyList.innerHTML = rows.length
+      ? timelineHtml(rows, { showSupplier: true })
+      : "";
+    if (historyEmpty) historyEmpty.hidden = rows.length > 0;
   };
 
   const loadList = async () => {
@@ -6057,16 +6105,13 @@
   const loadHistory = async () => {
     if (!data.suppliersHistoryUrl || !historyList) return;
     try {
-      const res = await fetch(`${data.suppliersHistoryUrl}?limit=300`, {
+      const res = await fetch(`${data.suppliersHistoryUrl}?limit=3000`, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
       const json = await res.json();
-      const rows = Array.isArray(json.entries) ? json.entries : [];
-      historyList.innerHTML = rows.length
-        ? timelineHtml(rows, { showSupplier: true })
-        : "";
-      if (historyEmpty) historyEmpty.hidden = rows.length > 0;
+      historyRows = Array.isArray(json.entries) ? json.entries : [];
+      paintHistory();
     } catch (_e) {
       historyList.innerHTML = `<p class="cabinet-hint">Tarix yuklanmadi.</p>`;
     }
@@ -6096,18 +6141,50 @@
     document.body.style.overflow = "";
   };
 
-  const fillProdDatalist = () => {
-    const dl = document.getElementById("sup-prod-datalist");
-    if (!dl) return;
-    const products = Array.isArray(data.products) ? data.products : [];
-    dl.innerHTML = products
-      .slice(0, 400)
-      .map((p) => {
-        const name = p.name || p.title || "";
-        if (!name) return "";
-        return `<option value="${esc(name)}" data-id="${esc(p.id || "")}"></option>`;
-      })
+  const catalogProducts = () => {
+    const fromData = Array.isArray(data.products) ? data.products : [];
+    const fromWin = Array.isArray(window.TEZPOS_CHARTS?.products)
+      ? window.TEZPOS_CHARTS.products
+      : [];
+    return fromData.length ? fromData : fromWin;
+  };
+
+  const paintProdResults = (q) => {
+    if (!prodResults) return;
+    const queryText = String(q || "").trim().toLowerCase();
+    if (queryText.length < 1) {
+      prodResults.hidden = true;
+      prodResults.innerHTML = "";
+      return;
+    }
+    const hits = catalogProducts()
+      .filter((p) => String(p.name || "").toLowerCase().includes(queryText))
+      .slice(0, 25);
+    if (!hits.length) {
+      prodResults.hidden = false;
+      prodResults.innerHTML = `<button type="button" class="sup-prod-hit" data-manual="1" data-name="${esc(
+        q
+      )}"><strong>${esc(q)}</strong><span>Yangi nom sifatida biriktirish</span></button>`;
+      return;
+    }
+    prodResults.hidden = false;
+    prodResults.innerHTML = hits
+      .map(
+        (p) =>
+          `<button type="button" class="sup-prod-hit" data-id="${esc(p.id || "")}" data-name="${esc(
+            p.name || ""
+          )}"><strong>${esc(p.name || "")}</strong><span>${esc(p.sku || p.barcode || "")}</span></button>`
+      )
       .join("");
+  };
+
+  const paintDetailLedger = () => {
+    const ledgerEl = document.getElementById("sup-detail-ledger");
+    if (!ledgerEl || !activeDetail) return;
+    const rows = filterLedger(activeDetail.ledger || [], detailHistFilter);
+    ledgerEl.innerHTML = rows.length
+      ? timelineHtml(rows)
+      : `<p class="cabinet-hint">Hali yozuv yo‘q.</p>`;
   };
 
   const paintDetail = (row) => {
@@ -6117,7 +6194,7 @@
     const status = document.getElementById("sup-detail-status");
     const bal = document.getElementById("sup-detail-balance");
     const prodList = document.getElementById("sup-prod-list");
-    const ledgerEl = document.getElementById("sup-detail-ledger");
+    const detailExport = document.getElementById("sup-detail-export");
     if (title) title.textContent = row.name;
     if (status) {
       status.textContent = `${row.phone || "Telefon yo‘q"}${
@@ -6133,6 +6210,9 @@
             ? `Taminotchi qarz: ${fmt(row.they_owe)} so‘m`
             : "Qarz yo‘q";
     }
+    if (detailExport && data.suppliersExportUrl) {
+      detailExport.href = `${data.suppliersExportUrl}?ids=${row.id}`;
+    }
     if (prodList) {
       const prods = row.products || [];
       prodList.innerHTML = prods.length
@@ -6144,12 +6224,13 @@
             .join("")
         : `<li style="border:0;padding:.2rem 0;color:#94a3b8">Biriktirilgan mahsulot yo‘q</li>`;
     }
-    if (ledgerEl) {
-      ledgerEl.innerHTML = (row.ledger || []).length
-        ? timelineHtml(row.ledger)
-        : `<p class="cabinet-hint">Hali yozuv yo‘q.</p>`;
+    if (prodSearch) prodSearch.value = "";
+    prodPick = null;
+    if (prodResults) {
+      prodResults.hidden = true;
+      prodResults.innerHTML = "";
     }
-    fillProdDatalist();
+    paintDetailLedger();
   };
 
   const openDetail = async (id) => {
@@ -6218,7 +6299,27 @@
     paintList();
   });
 
+  selectAll?.addEventListener("change", () => {
+    const rows = filtered();
+    if (selectAll.checked) {
+      rows.forEach((r) => selectedIds.add(String(r.id)));
+    } else {
+      rows.forEach((r) => selectedIds.delete(String(r.id)));
+    }
+    paintList();
+  });
+
+  listEl.addEventListener("change", (ev) => {
+    const cb = ev.target.closest(".sup-pick");
+    if (!cb) return;
+    const id = String(cb.getAttribute("data-id") || "");
+    if (cb.checked) selectedIds.add(id);
+    else selectedIds.delete(id);
+    syncExportHref();
+  });
+
   listEl.addEventListener("click", (ev) => {
+    if (ev.target.closest(".sup-pick") || ev.target.closest(".sup-check")) return;
     const openBtn = ev.target.closest(".sup-open");
     if (openBtn) {
       openDetail(openBtn.getAttribute("data-id"));
@@ -6246,23 +6347,69 @@
     });
   });
 
+  document.getElementById("sup-hist-filters")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-hist]");
+    if (!btn) return;
+    document
+      .querySelectorAll("#sup-hist-filters .sup-chip-btn")
+      .forEach((b) => b.classList.remove("is-active"));
+    btn.classList.add("is-active");
+    histFilter = btn.getAttribute("data-hist") || "all";
+    paintHistory();
+  });
+
+  document.getElementById("sup-detail-hist-filters")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-dhist]");
+    if (!btn) return;
+    document
+      .querySelectorAll("#sup-detail-hist-filters .sup-chip-btn")
+      .forEach((b) => b.classList.remove("is-active"));
+    btn.classList.add("is-active");
+    detailHistFilter = btn.getAttribute("data-dhist") || "all";
+    paintDetailLedger();
+  });
+
+  prodSearch?.addEventListener("input", () => {
+    prodPick = null;
+    paintProdResults(prodSearch.value);
+  });
+  prodSearch?.addEventListener("focus", () => paintProdResults(prodSearch.value));
+
+  prodResults?.addEventListener("click", (ev) => {
+    const hit = ev.target.closest(".sup-prod-hit");
+    if (!hit) return;
+    prodPick = {
+      id: hit.getAttribute("data-id") || "",
+      name: hit.getAttribute("data-name") || "",
+    };
+    if (prodSearch) prodSearch.value = prodPick.name;
+    prodResults.hidden = true;
+  });
+
+  document.addEventListener("click", (ev) => {
+    if (!prodResults || prodResults.hidden) return;
+    if (ev.target.closest(".sup-prod-search-wrap")) return;
+    prodResults.hidden = true;
+  });
+
   document.getElementById("sup-prod-add-btn")?.addEventListener("click", async () => {
     if (!activeId) return;
-    const input = document.getElementById("sup-prod-search");
-    const name = (input?.value || "").trim();
+    const name = (prodPick?.name || prodSearch?.value || "").trim();
     if (!name) return;
-    const products = Array.isArray(data.products) ? data.products : [];
-    const found = products.find(
-      (p) => String(p.name || "").toLowerCase() === name.toLowerCase()
-    );
+    const products = catalogProducts();
+    const found =
+      prodPick?.id
+        ? { id: prodPick.id, name }
+        : products.find((p) => String(p.name || "").toLowerCase() === name.toLowerCase());
     try {
       const json = await postJson(data.supplierProductUrl, {
         supplier_id: activeId,
-        product_name: name,
-        product_id: found?.id || "",
+        product_name: found?.name || name,
+        product_id: found?.id || prodPick?.id || "",
         action: "add",
       });
-      if (input) input.value = "";
+      if (prodSearch) prodSearch.value = "";
+      prodPick = null;
       if (json.supplier) paintDetail(json.supplier);
       await loadList();
     } catch (e) {
@@ -6337,8 +6484,9 @@
     if (Array.isArray(window.TEZPOS_CHARTS?.products)) {
       data.products = window.TEZPOS_CHARTS.products;
     }
-    fillProdDatalist();
+    if (prodSearch && !prodResults?.hidden) paintProdResults(prodSearch.value);
   });
 
+  syncExportHref();
   loadList();
 })();

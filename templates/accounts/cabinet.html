@@ -928,10 +928,13 @@
       <div class="cabinet-card-head">
         <div>
           <h3>Taminotchilar</h3>
-          <p class="cabinet-hint">Nom qo‘shing, mahsulotni ixtiyoriy biriktiring. Biz qarz — qizil, ular qarz — yashil.</p>
         </div>
         <div class="debtors-toolbar">
           <button type="button" class="btn-soft" id="sup-refresh">Yangilash</button>
+          <a class="btn-export" id="sup-export-btn" href="{% url 'accounts:cabinet_suppliers_export' %}">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 3v10.2l3.2-3.2 1.4 1.4L12 17l-4.6-4.6 1.4-1.4L11 13.2V3h1zM5 19h14v2H5v-2z"/></svg>
+            Excel
+          </a>
           <button type="button" class="btn-save" id="sup-add-btn">+ Taminotchi</button>
         </div>
       </div>
@@ -949,6 +952,7 @@
         <button type="button" class="sup-tab" data-tab="history" id="sup-tab-history">Barcha tarix</button>
       </div>
       <div id="sup-list-wrap">
+        <p class="sup-select-hint"><label><input type="checkbox" id="sup-select-all"> Excel uchun belgilash</label> <span id="sup-selected-count"></span></p>
         <div class="debtors-list" id="suppliers-list">
           <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
             <span class="sk"></span><span class="sk"></span><span class="sk"></span>
@@ -957,6 +961,15 @@
         <p class="cabinet-empty" id="suppliers-empty" hidden>Taminotchilar yo‘q. «+ Taminotchi» bilan qo‘shing.</p>
       </div>
       <div id="sup-history-wrap" hidden>
+        <div class="sup-hist-filters" id="sup-hist-filters">
+          <button type="button" class="sup-chip-btn is-active" data-hist="all">Hammasi</button>
+          <button type="button" class="sup-chip-btn" data-hist="debt">Qarzlar</button>
+          <button type="button" class="sup-chip-btn" data-hist="pay">To‘lovlar</button>
+          <button type="button" class="sup-chip-btn" data-hist="we_owe">Biz qarz</button>
+          <button type="button" class="sup-chip-btn" data-hist="they_owe">Ular qarz</button>
+          <button type="button" class="sup-chip-btn" data-hist="we_pay">Biz to‘ladik</button>
+          <button type="button" class="sup-chip-btn" data-hist="they_pay">Ular to‘ladi</button>
+        </div>
         <div class="sup-timeline" id="sup-history-list"></div>
         <p class="cabinet-empty" id="sup-history-empty" hidden>Tarix bo‘sh.</p>
       </div>
@@ -1004,12 +1017,17 @@
           <button type="button" class="sup-modal-x" data-sup-detail-close aria-label="Yopish">×</button>
         </div>
         <div class="sup-detail-balance" id="sup-detail-balance"></div>
+        <div class="sup-detail-actions-row">
+          <a class="btn-export" id="sup-detail-export" href="#">Excel (shu firma)</a>
+        </div>
         <div class="sup-detail-grid">
           <div class="sup-detail-block">
             <h4>Mahsulotlar <small>(ixtiyoriy)</small></h4>
             <div class="sup-prod-add">
-              <input type="search" id="sup-prod-search" placeholder="Katalogdan qidirish yoki nom yozing…" list="sup-prod-datalist" autocomplete="off">
-              <datalist id="sup-prod-datalist"></datalist>
+              <div class="sup-prod-search-wrap">
+                <input type="search" id="sup-prod-search" placeholder="Nom bo‘yicha qidirish…" autocomplete="off">
+                <div class="sup-prod-results" id="sup-prod-results" hidden></div>
+              </div>
               <button type="button" class="btn-soft" id="sup-prod-add-btn">Biriktirish</button>
             </div>
             <ul class="sup-prod-list" id="sup-prod-list"></ul>
@@ -1018,8 +1036,8 @@
             <h4>Qarz / to‘lov</h4>
             <div class="sup-ledger-form">
               <select id="sup-ledger-kind" aria-label="Amal">
-                <option value="we_owe">Biz qarz oldik (qizil)</option>
-                <option value="they_owe">Ular bizdan qarz (yashil)</option>
+                <option value="we_owe">Biz qarz oldik</option>
+                <option value="they_owe">Ular bizdan qarz</option>
                 <option value="we_pay">Biz pul berdik</option>
                 <option value="they_pay">Ular pul berdi</option>
               </select>
@@ -1028,6 +1046,11 @@
               <button type="button" class="btn-save" id="sup-ledger-btn">Yozish</button>
             </div>
             <p class="cabinet-hint" id="sup-ledger-msg" hidden></p>
+            <div class="sup-hist-filters" id="sup-detail-hist-filters">
+              <button type="button" class="sup-chip-btn is-active" data-dhist="all">Hammasi</button>
+              <button type="button" class="sup-chip-btn" data-dhist="debt">Qarzlar</button>
+              <button type="button" class="sup-chip-btn" data-dhist="pay">To‘lovlar</button>
+            </div>
             <div class="sup-timeline" id="sup-detail-ledger"></div>
           </div>
         </div>
@@ -1542,6 +1565,7 @@
     suppliersUrl: "{% url 'accounts:cabinet_suppliers' %}",
     suppliersSummaryUrl: "{% url 'accounts:cabinet_suppliers_summary' %}",
     suppliersHistoryUrl: "{% url 'accounts:cabinet_suppliers_history' %}",
+    suppliersExportUrl: "{% url 'accounts:cabinet_suppliers_export' %}",
     supplierSaveUrl: "{% url 'accounts:cabinet_supplier_save' %}",
     supplierDeleteUrl: "{% url 'accounts:cabinet_supplier_delete' %}",
     supplierProductUrl: "{% url 'accounts:cabinet_supplier_product' %}",
@@ -1554,7 +1578,7 @@
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
   (function () {
-    var P = "tezpos_v12_";
+    var P = "tezpos_v13_";
     function g(k) {
       try {
         var s = sessionStorage.getItem(P + k);
@@ -1608,5 +1632,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=suppliers-1" defer></script>
+<script src="/static/cabinet.js?v=suppliers-2" defer></script>
 {% endblock %}
