@@ -44,6 +44,7 @@ from .views import (
     cabinet_warm,
     download_installer,
     telegram_cron_sync,
+    telegram_shift_ping,
 )
 
 app_name = "accounts"
@@ -71,6 +72,7 @@ urlpatterns = [
     path("cabinet/bot-chats/", cabinet_bot_chats, name="cabinet_bot_chats"),
     path("cabinet/telegram-sync/", cabinet_telegram_sync, name="cabinet_telegram_sync"),
     path("cabinet/telegram-cron/", telegram_cron_sync, name="telegram_cron_sync"),
+    path("telegram-shift-ping/", telegram_shift_ping, name="telegram_shift_ping"),
     path("cabinet/label-template/", cabinet_label_template, name="cabinet_label_template"),
     path("cabinet/debtors/", cabinet_debtors, name="cabinet_debtors"),
     path("cabinet/debtors/pay/", cabinet_debtor_pay, name="cabinet_debtor_pay"),

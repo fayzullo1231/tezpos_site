@@ -21,7 +21,8 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 import os
 import re
@@ -5709,7 +5710,7 @@ def _shift_report_bundle(
         "gross": gross,
         "profit": profit,
         "margin": margin,
-        "selling_revenue": selling_rev if selling_rev > 0 else gross,
+        "selling_revenue": selling_rev,
         "wholesale_revenue": wholesale_rev,
         "credit_total": credit_total,
         "credit_customers": credit_rows[:20],
@@ -5959,6 +5960,77 @@ def telegram_cron_sync(request):
         for t in tenants.only("business_name", "telegram_last_sync")
     ]
     return JsonResponse({"ok": True, "sync": "systemd", "results": results})
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def telegram_shift_ping(request):
+    """
+    Desktop TezPOS: smena ochilishi/yopilishi bilan darhol Telegram sync.
+    Body: { "server": "kuloloptom", "token": "<tezpos api token>", "event": "open"|"close" }
+    """
+    if request.method == "OPTIONS":
+        resp = HttpResponse(status=204)
+        resp["Access-Control-Allow-Origin"] = "*"
+        resp["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def _cors(payload, status=200):
+        r = JsonResponse(payload, status=status)
+        r["Access-Control-Allow-Origin"] = "*"
+        return r
+
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        return _cors({"ok": False, "error": "json"}, status=400)
+
+    server = re.sub(r"[^a-z0-9_-]", "", str(body.get("server") or "").strip().lower())
+    token = str(body.get("token") or "").strip()
+    if not server or not token:
+        return _cors({"ok": False, "error": "server_token_required"}, status=400)
+
+    tenant = (
+        TenantProfile.objects.filter(telegram_enabled=True)
+        .exclude(telegram_bot_token="")
+        .filter(tezpos_server_name__iexact=server)
+        .first()
+    )
+    if not tenant:
+        tenant = (
+            TenantProfile.objects.filter(telegram_enabled=True, tezpos_api_token=token)
+            .exclude(telegram_bot_token="")
+            .first()
+        )
+    if not tenant:
+        return _cors({"ok": False, "error": "bot_not_configured", "server": server}, status=404)
+
+    TenantProfile.objects.filter(pk=tenant.pk).update(
+        tezpos_api_token=token,
+        tezpos_server_name=server,
+    )
+    tenant.tezpos_api_token = token
+    tenant.tezpos_server_name = server
+
+    def _run():
+        try:
+            # Yopilishda API smena statusi biroz kechikishi mumkin
+            time.sleep(1.2)
+            sync_telegram_shifts_for_tenant(tenant, token, server)
+        except Exception:
+            tg_logger.exception(
+                "telegram_shift_ping failed tenant=%s server=%s",
+                getattr(tenant, "business_name", ""),
+                server,
+            )
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"tg-ping-{server[:20]}",
+    ).start()
+    return _cors({"ok": True, "queued": True, "tenant": tenant.business_name})
 
 
 def _tg_any_ok(results: list | None) -> bool:
