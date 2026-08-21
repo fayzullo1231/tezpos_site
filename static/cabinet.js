@@ -6596,7 +6596,7 @@
       <div class="sup-card-head">
         <div>
           <h4>${esc(row.name)}</h4>
-          <p>${esc(row.phone || "Telefon yo‘q")}${row.note ? ` · ${esc(row.note)}` : ""}</p>
+          <p>${esc(row.phone || "Telefon yo‘q")}</p>
         </div>
         <div class="sup-bal ${bal > 0 ? "is-we-owe" : "is-clear"}">${fmt(bal)} so‘m</div>
       </div>
@@ -6612,7 +6612,7 @@
     const q = query.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) =>
-      [r.name, r.phone, r.note].some((x) => String(x || "").toLowerCase().includes(q))
+      [r.name, r.phone].some((x) => String(x || "").toLowerCase().includes(q))
     );
   };
 
@@ -6653,20 +6653,8 @@
 
   const paintSms = (tpl) => {
     if (!tpl) return;
-    const title = document.getElementById("cd-sms-title");
-    const updated = document.getElementById("cd-sms-updated");
-    const preview = document.getElementById("cd-sms-preview");
-    const badge = document.getElementById("cd-sms-badge");
-    if (title) title.textContent = tpl.title || "Qarzdorlik";
-    if (updated) updated.textContent = tpl.updated_display || "";
-    if (preview) preview.textContent = tpl.preview || "";
-    if (badge) badge.textContent = tpl.is_approved ? "Tasdiqlangan" : "Qoralama";
-    const tIn = document.getElementById("cd-sms-title-input");
     const shop = document.getElementById("cd-sms-shop");
-    const body = document.getElementById("cd-sms-body");
-    if (tIn) tIn.value = tpl.title || "";
     if (shop) shop.value = tpl.shop_label || "";
-    if (body) body.value = tpl.body || "";
   };
 
   const loadSms = async () => {
@@ -6687,11 +6675,6 @@
     document.getElementById("cd-form-id").value = "";
     document.getElementById("cd-form-name").value = "";
     document.getElementById("cd-form-phone").value = "";
-    document.getElementById("cd-form-note").value = "";
-    const customWrap = document.getElementById("cd-form-note-custom-wrap");
-    const customInp = document.getElementById("cd-form-note-custom");
-    if (customWrap) customWrap.hidden = true;
-    if (customInp) customInp.value = "";
     document.getElementById("cd-form-amount").value = "";
     const wrap = document.getElementById("cd-form-amount-wrap");
     if (wrap) wrap.hidden = false;
@@ -6713,9 +6696,7 @@
     active = row;
     activeId = row.id;
     document.getElementById("cd-detail-title").textContent = row.name;
-    document.getElementById("cd-detail-meta").textContent = `${row.phone || "Telefon yo‘q"}${
-      row.note ? ` · ${row.note}` : ""
-    }`;
+    document.getElementById("cd-detail-meta").textContent = row.phone || "Telefon yo‘q";
     const bal = document.getElementById("cd-detail-balance");
     bal.className = `sup-detail-balance ${Number(row.balance) > 0 ? "is-we-owe" : "is-clear"}`;
     bal.textContent = `Qarz: ${fmt(row.balance)} so‘m`;
@@ -6777,29 +6758,15 @@
     paintList();
   });
 
-  document.getElementById("cd-form-note")?.addEventListener("change", () => {
-    const sel = document.getElementById("cd-form-note");
-    const wrap = document.getElementById("cd-form-note-custom-wrap");
-    if (wrap) wrap.hidden = sel?.value !== "__custom__";
-    if (sel?.value === "__custom__") {
-      document.getElementById("cd-form-note-custom")?.focus();
-    }
-  });
-
   form?.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const err = document.getElementById("cd-form-error");
-    const noteSel = document.getElementById("cd-form-note")?.value || "";
-    const note =
-      noteSel === "__custom__"
-        ? document.getElementById("cd-form-note-custom")?.value || ""
-        : noteSel;
     try {
       await postJson(data.clientDebtorSaveUrl, {
         id: document.getElementById("cd-form-id").value || undefined,
         name: document.getElementById("cd-form-name").value,
         phone: document.getElementById("cd-form-phone").value,
-        note,
+        note: "",
         amount: document.getElementById("cd-form-amount").value,
       });
       closeModal();
@@ -6878,14 +6845,12 @@
     const msg = document.getElementById("cd-sms-msg");
     try {
       const json = await postJson(data.smsTemplateSaveUrl, {
-        title: document.getElementById("cd-sms-title-input")?.value,
         shop_label: document.getElementById("cd-sms-shop")?.value,
-        body: document.getElementById("cd-sms-body")?.value,
       });
       if (json.template) paintSms(json.template);
       if (msg) {
         msg.hidden = false;
-        msg.textContent = "Shablon saqlandi.";
+        msg.textContent = "Do‘kon nomi saqlandi.";
       }
     } catch (e) {
       if (msg) {

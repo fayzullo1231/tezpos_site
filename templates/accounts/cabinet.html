@@ -1095,35 +1095,17 @@
         <p class="cabinet-empty" id="cd-empty" hidden>Mijoz yo‘q. «+ Mijoz / qarz» bilan qo‘shing.</p>
       </div>
       <div id="cd-sms-wrap" hidden>
-        <article class="sms-tpl-card" id="cd-sms-card">
-          <div class="sms-tpl-head">
-            <div>
-              <h4 id="cd-sms-title">Qarzdorlik</h4>
-              <p class="cabinet-hint" id="cd-sms-updated"></p>
-            </div>
-            <span class="sms-tpl-badge" id="cd-sms-badge">Tasdiqlangan</span>
+        <form id="cd-sms-form" class="sup-form">
+          <label class="sup-field">
+            <span>Do‘kon nomi</span>
+            <input type="text" id="cd-sms-shop" maxlength="180" placeholder="Kulol Optom" required>
+          </label>
+          <p class="cabinet-hint">Saqlangan do‘kon nomi SMS boshida chiqadi.</p>
+          <p class="cabinet-hint" id="cd-sms-msg" hidden></p>
+          <div class="sup-modal-actions">
+            <button type="submit" class="btn-save">Saqlash</button>
           </div>
-          <div class="sms-tpl-preview" id="cd-sms-preview"></div>
-          <form id="cd-sms-form" class="sup-form" style="margin-top:.85rem">
-            <label class="sup-field">
-              <span>Shablon nomi</span>
-              <input type="text" id="cd-sms-title-input" maxlength="120" placeholder="Kulol optom qarzdorlik">
-            </label>
-            <label class="sup-field">
-              <span>Do‘kon nomi</span>
-              <input type="text" id="cd-sms-shop" maxlength="180" placeholder="Kulol Optom">
-            </label>
-            <label class="sup-field">
-              <span>SMS matni</span>
-              <textarea id="cd-sms-body" rows="5" placeholder="{shop}:&#10;Qarzdorligingiz : {amount} so'm.&#10;Iltimos, qarzdorlikni to'lashni unutmang."></textarea>
-            </label>
-            <p class="cabinet-hint">O‘zgaruvchilar: {shop} {amount} {balance} {name} {note}</p>
-            <p class="cabinet-hint" id="cd-sms-msg" hidden></p>
-            <div class="sup-modal-actions">
-              <button type="submit" class="btn-save">Shablonni saqlash</button>
-            </div>
-          </form>
-        </article>
+        </form>
       </div>
       <p class="cabinet-hint" id="cd-error" hidden></p>
     </section>
@@ -1148,21 +1130,6 @@
           <label class="sup-field" id="cd-form-amount-wrap">
             <span>Boshlang‘ich qarz (ixtiyoriy)</span>
             <input type="text" id="cd-form-amount" inputmode="decimal" placeholder="Masalan: 1456000">
-          </label>
-          <label class="sup-field">
-            <span>Izoh (ixtiyoriy)</span>
-            <select id="cd-form-note" class="cabinet-select">
-              <option value="">— Izoh yo‘q —</option>
-              <option value="Kokcha market">Kokcha market</option>
-              <option value="Oziq ovqat">Oziq ovqat</option>
-              <option value="Optom">Optom</option>
-              <option value="Chakana">Chakana</option>
-              <option value="__custom__">Boshqa…</option>
-            </select>
-          </label>
-          <label class="sup-field" id="cd-form-note-custom-wrap" hidden>
-            <span>Izoh matni</span>
-            <input type="text" id="cd-form-note-custom" maxlength="180" placeholder="Kokcha market">
           </label>
           <p class="cabinet-hint" id="cd-form-error" hidden></p>
           <div class="sup-modal-actions">
@@ -1190,8 +1157,8 @@
             <option value="sub">Qarz ayirish (to‘lov)</option>
           </select>
           <input type="text" id="cd-adj-amount" inputmode="decimal" placeholder="Summa (so‘m)">
-          <input type="text" id="cd-adj-note" placeholder="Izoh — Kokcha market (ixtiyoriy)">
-          <label class="cd-sms-check"><input type="checkbox" id="cd-adj-sms" checked> DevSMS yuborish</label>
+          <input type="text" id="cd-adj-note" placeholder="Izoh (ixtiyoriy)" hidden>
+          <label class="cd-sms-check"><input type="checkbox" id="cd-adj-sms" checked> SMS yuborish</label>
           <button type="button" class="btn-save" id="cd-adj-btn">Saqlash</button>
         </div>
         <p class="cabinet-hint" id="cd-adj-msg" hidden></p>
@@ -1751,5 +1718,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=client-debts-2" defer></script>
+<script src="/static/cabinet.js?v=client-debts-3" defer></script>
 {% endblock %}

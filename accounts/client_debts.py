@@ -80,15 +80,13 @@ def _render_sms(
     note: str = "",
 ) -> str:
     shop = (tpl.shop_label or "").strip() or "TezPOS"
-    if note:
-        shop = f"{shop}-{note}" if shop else note
     body = (tpl.body or DebtSmsTemplate.DEFAULT_BODY).strip()
     mapping = {
         "{shop}": shop,
         "{amount}": _fmt_money(amount),
         "{balance}": _fmt_money(balance if balance is not None else amount),
         "{name}": (name or "").strip() or "Mijoz",
-        "{note}": (note or "").strip(),
+        "{note}": "",
     }
     out = body
     for k, v in mapping.items():
@@ -333,17 +331,13 @@ def cabinet_sms_template_save(request):
         return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
 
     tpl = _get_or_create_template(shop, tenant)
-    title = str(body.get("title") or tpl.title).strip()[:120]
     shop_label = str(body.get("shop_label") or "").strip()[:180]
-    text = str(body.get("body") or "").strip()
-    if not text:
-        return JsonResponse({"error": "Shablon matni bo‘sh bo‘lmasin"}, status=400)
-    if len(text) > 600:
-        return JsonResponse({"error": "SMS matni juda uzun (max 600)"}, status=400)
+    if not shop_label:
+        return JsonResponse({"error": "Do‘kon nomi kerak"}, status=400)
 
-    tpl.title = title or tpl.title
-    tpl.shop_label = shop_label or (tenant.business_name or "TezPOS")
-    tpl.body = text
+    tpl.shop_label = shop_label
+    if not (tpl.body or "").strip():
+        tpl.body = DebtSmsTemplate.DEFAULT_BODY
     tpl.is_approved = True
-    tpl.save()
+    tpl.save(update_fields=["shop_label", "body", "is_approved", "updated_at"])
     return JsonResponse({"ok": True, "template": _serialize_template(tpl)})
