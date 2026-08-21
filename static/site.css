@@ -4044,6 +4044,12 @@ body.cabinet-body {
   white-space: pre-wrap; color: #0f172a; font-size: .92rem; line-height: 1.45;
   font-family: "Space Grotesk", Manrope, sans-serif;
 }
+.cd-sms-sample {
+  background: #f8fafc; border: 1px solid #e2e8f2; border-radius: 12px;
+  padding: .75rem .9rem; white-space: pre-wrap; color: #0f172a;
+  font-size: .88rem; line-height: 1.4; margin: .5rem 0 .75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 .cd-sms-check {
   display: flex; align-items: center; gap: .45rem;
   font-size: .85rem; font-weight: 650; color: #475569;

@@ -6843,14 +6843,29 @@
   document.getElementById("cd-sms-form")?.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const msg = document.getElementById("cd-sms-msg");
+    const sampleEl = document.getElementById("cd-sms-sample");
     try {
       const json = await postJson(data.smsTemplateSaveUrl, {
         shop_label: document.getElementById("cd-sms-shop")?.value,
       });
       if (json.template) paintSms(json.template);
+      if (sampleEl) {
+        const sample = json.sample_sms || "";
+        sampleEl.textContent = sample;
+        sampleEl.hidden = !sample;
+      }
+      const mod = json.moderation || {};
       if (msg) {
         msg.hidden = false;
-        msg.textContent = "Do‘kon nomi saqlandi.";
+        if (mod.ok) {
+          msg.textContent =
+            "Saqlandi. Shablon moderatsiyaga yuborildi — DevSMS/Eskiz tasdiqlagach SMS ishlaydi.";
+        } else {
+          msg.textContent =
+            "Saqlandi. " +
+            (mod.error ||
+              "Shablonni my.eskiz.uz → СМС → Мои тексты da qo‘lda tasdiqlang (namuna pastda).");
+        }
       }
     } catch (e) {
       if (msg) {

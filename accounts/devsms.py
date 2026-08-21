@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -16,6 +17,12 @@ from django.conf import settings
 
 
 DEVSMS_URL = "https://devsms.uz/api/send_sms.php"
+DEVSMS_TEMPLATE_URLS = (
+    "https://devsms.uz/api/add_template.php",
+    "https://devsms.uz/api/submit_template.php",
+    "https://devsms.uz/api/template.php",
+    "https://devsms.uz/api/templates.php",
+)
 
 
 def normalize_phone(raw: str) -> str:
@@ -71,6 +78,16 @@ def build_debt_message(
     return "\n".join(lines)
 
 
+def sample_debt_template(shop: str) -> str:
+    """Moderatsiyaga yuboriladigan namuna (TezPOS format)."""
+    return build_debt_message(
+        shop=shop,
+        debt_amount=1456000,
+        balance=1456000,
+        check_link="—",
+    )
+
+
 def resolve_token(explicit: str | None = None) -> str:
     """Env → settings → TezPOS lokal token fayllari."""
     if explicit and str(explicit).strip():
@@ -106,16 +123,128 @@ def resolve_token(explicit: str | None = None) -> str:
     return ""
 
 
+def _api_post(url: str, auth: str, payload: dict, *, form: bool = False) -> dict:
+    if form:
+        data = urllib.parse.urlencode(
+            {k: v for k, v in payload.items() if v is not None}
+        ).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {auth}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": "TezPOS-Site/1.0",
+        }
+    else:
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {auth}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "TezPOS-Site/1.0",
+        }
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data_out = json.loads(raw) if raw else {}
+            return {"http": resp.status, "data": data_out if isinstance(data_out, dict) else {"raw": raw}}
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+        try:
+            data_out = json.loads(err_body) if err_body else {}
+        except Exception:
+            data_out = {"error": err_body or str(exc)}
+        return {"http": exc.code, "data": data_out if isinstance(data_out, dict) else {"error": str(exc)}}
+    except Exception as exc:  # noqa: BLE001
+        return {"http": 0, "data": {"error": str(exc)}}
+
+
+def _is_moderation_error(err: str) -> bool:
+    low = (err or "").lower()
+    keys = (
+        "модерац",
+        "moderats",
+        "template",
+        "shablon",
+        "шаблон",
+        "мои тексты",
+        "eskiz",
+        "ещё не прошёл",
+        "еще не прошел",
+        "прошёл модерацию",
+        "прошел модерацию",
+    )
+    return any(k in low for k in keys)
+
+
+def submit_template(message: str, *, token: str | None = None) -> dict:
+    """
+    SMS matnini DevSMS/Eskiz moderatsiyasiga yuboradi.
+    Bir nechta endpoint/format urinadi (DevSMS UI: Шаблоны → Отправить шаблон).
+    """
+    auth = resolve_token(token)
+    if not auth:
+        return {"ok": False, "error": "DevSMS token yo‘q."}
+    text = (message or "").strip()
+    if not text:
+        return {"ok": False, "error": "Shablon matni bo‘sh."}
+
+    payloads = (
+        {"template": text},
+        {"message": text},
+        {"text": text},
+        {"sms_text": text},
+        {"content": text},
+    )
+    attempts = []
+    for url in DEVSMS_TEMPLATE_URLS:
+        for payload in payloads:
+            for as_form in (False, True):
+                res = _api_post(url, auth, payload, form=as_form)
+                attempts.append({"url": url, "form": as_form, "http": res.get("http"), "data": res.get("data")})
+                data = res.get("data") or {}
+                if res.get("http") in (200, 201) and (
+                    data.get("success") is True
+                    or data.get("ok") is True
+                    or data.get("status") in ("ok", "success", "pending", "moderation", "waiting")
+                    or data.get("template")
+                    or data.get("id")
+                ):
+                    return {
+                        "ok": True,
+                        "message": str(
+                            data.get("message")
+                            or data.get("template")
+                            or "Shablon moderatsiyaga yuborildi."
+                        ),
+                        "data": data,
+                        "url": url,
+                    }
+
+    # Hech qaysi API topilmasa — aniq yo‘riqnoma
+    return {
+        "ok": False,
+        "error": (
+            "Shablon avtomatik yuborilmadi. DevSMS kabinetida "
+            "Шаблоны → Отправить шаблон yoki my.eskiz.uz → СМС → Мои тексты "
+            "orqali quyidagi matnni qo‘shing va tasdiqlang."
+        ),
+        "template": text,
+        "attempts": attempts[:6],
+    }
+
+
 def send_dev_sms(
     *,
     phone: str,
     message: str,
     token: str | None = None,
     sender: str | None = None,
+    sms_type: str | None = None,
 ) -> dict:
     """
     TezPOS sendDevSms — to'g'ridan-to'g'ri DevSMS API.
-    Qaytaradi: {ok, error?, phone?, sms_id?, status?}
+    Qaytaradi: {ok, error?, phone?, sms_id?, status?, template_submit?}
     """
     auth = resolve_token(token)
     if not auth:
@@ -129,32 +258,23 @@ def send_dev_sms(
     if not text:
         return {"ok": False, "error": "SMS matni bo‘sh."}
 
-    # TezPOS: `from` faqat berilganda yuboriladi (noto‘g‘ri sender → Eskiz REJECTED)
-    body: dict = {"phone": to, "message": text}
-    from_id = (sender if sender is not None else getattr(settings, "DEVSMS_FROM", "") or "").strip()
-    if from_id:
-        body["from"] = from_id
+    preferred = (sms_type or getattr(settings, "DEVSMS_TYPE", "") or "simple").strip().lower()
+    # simple — tezroq (moderatsiyasiz kanal); eskiz — brend/4546, shablon kerak
+    type_order: list[str] = []
+    for t in (preferred, "simple", "eskiz"):
+        if t and t not in type_order:
+            type_order.append(t)
 
-    req = urllib.request.Request(
-        DEVSMS_URL,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {auth}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "TezPOS-Site/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            data = json.loads(raw) if raw else {}
-            if not (isinstance(data, dict) and data.get("success")):
-                err = ""
-                if isinstance(data, dict):
-                    err = str(data.get("error") or data.get("message") or "")
-                return {"ok": False, "error": err or f"DevSMS xato ({resp.status})"}
+    from_id = (sender if sender is not None else getattr(settings, "DEVSMS_FROM", "") or "").strip()
+    last_err = ""
+
+    for t in type_order:
+        body: dict = {"phone": to, "message": text, "type": t}
+        if from_id and t != "simple":
+            body["from"] = from_id
+        res = _api_post(DEVSMS_URL, auth, body)
+        data = res.get("data") or {}
+        if res.get("http") == 200 and data.get("success"):
             payload = data.get("data") if isinstance(data.get("data"), dict) else {}
             return {
                 "ok": True,
@@ -163,14 +283,33 @@ def send_dev_sms(
                 "status": payload.get("status") or "sent",
                 "cost": payload.get("total_cost"),
                 "balance": payload.get("balance"),
+                "type": t,
             }
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-        try:
-            data = json.loads(err_body) if err_body else {}
-            err = str(data.get("error") or data.get("message") or err_body or exc)
-        except Exception:
-            err = err_body or str(exc)
-        return {"ok": False, "error": err}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
+        last_err = str(data.get("error") or data.get("message") or f"DevSMS xato ({res.get('http')})")
+        if not _is_moderation_error(last_err):
+            # Boshqa xato — keyingi typega o‘tmasdan qaytarish shart emas; simple/eskiz farqi uchun davom
+            if "balance" in last_err.lower() or "баланс" in last_err.lower() or "token" in last_err.lower():
+                return {"ok": False, "error": last_err}
+
+    # Moderatsiya: shablonni yuborib, foydalanuvchiga tushunarli javob
+    tpl_res = None
+    if _is_moderation_error(last_err):
+        tpl_res = submit_template(text, token=auth)
+        hint = (
+            "SMS matni Eskiz moderatsiyasidan o‘tmagan. "
+            "Namuna shablon moderatsiyaga yuborildi — tasdiqlangach qayta urinib ko‘ring."
+            if tpl_res.get("ok")
+            else (
+                "SMS matni Eskiz moderatsiyasidan o‘tmagan. "
+                + str(tpl_res.get("error") or "")
+            )
+        )
+        return {
+            "ok": False,
+            "error": hint,
+            "provider_error": last_err,
+            "template_submit": tpl_res,
+            "template": text,
+        }
+
+    return {"ok": False, "error": last_err or "SMS yuborilmadi"}

@@ -344,4 +344,15 @@ def cabinet_sms_template_save(request):
         tpl.body = DebtSmsTemplate.DEFAULT_BODY
     tpl.is_approved = True
     tpl.save(update_fields=["shop_label", "body", "is_approved", "updated_at"])
-    return JsonResponse({"ok": True, "template": _serialize_template(tpl)})
+
+    # Eskiz/DevSMS moderatsiyaga namuna matnni yuborish
+    sample = devsms.sample_debt_template(shop_label)
+    tpl_res = devsms.submit_template(sample)
+    return JsonResponse(
+        {
+            "ok": True,
+            "template": _serialize_template(tpl),
+            "moderation": tpl_res,
+            "sample_sms": sample,
+        }
+    )
