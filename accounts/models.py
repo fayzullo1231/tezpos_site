@@ -299,8 +299,7 @@ class DebtSmsTemplate(models.Model):
         return f"{self.shop_key}: {self.title}"
 
     DEFAULT_BODY = (
-        "{shop}\n"
-        "Qarz: {amount} so'm\n"
-        "Qoldiq: {balance} so'm\n"
-        "Chek: —"
+        "{shop}:\n"
+        "Qarzdorligingiz : {amount} so‘m.\n"
+        "Iltimos, qarzdorlikni to‘lashni unutmang."
     )

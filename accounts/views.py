@@ -6394,16 +6394,13 @@ def _build_debt_payment_sms(
     balance,
     check_url: str,
 ) -> str:
-    """Qarz to‘lovi SMS matni (DevSMS)."""
-    who = " - ".join(x for x in [(cashier or "").strip(), (store or "").strip()] if x) or "TezPOS"
-    lines = [
-        who,
-        f"To‘lov: {_money_sms(paid)} so'm",
-        f"Qoldiq: {_money_sms(balance)} so'm",
-    ]
-    if check_url:
-        lines.append(f"Chek: {check_url}")
-    return "\n".join(lines)
+    """Qarz to‘lovi — tasdiqlangan qarzdorlik shabloni."""
+    shop = (store or cashier or "TezPOS").strip() or "TezPOS"
+    return devsms.build_debt_message(
+        shop=shop,
+        debt_amount=balance,
+        balance=balance,
+    )
 
 
 @login_required

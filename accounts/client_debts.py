@@ -80,18 +80,14 @@ def _render_sms(
     note: str = "",
 ) -> str:
     shop = (tpl.shop_label or "").strip() or "TezPOS"
-    body = (tpl.body or DebtSmsTemplate.DEFAULT_BODY).strip()
-    mapping = {
-        "{shop}": shop,
-        "{amount}": _fmt_money(amount),
-        "{balance}": _fmt_money(balance if balance is not None else amount),
-        "{name}": (name or "").strip() or "Mijoz",
-        "{note}": "",
-    }
-    out = body
-    for k, v in mapping.items():
-        out = out.replace(k, v)
-    return out.strip()
+    note = (note or "").strip()
+    if note and f"-{note}" not in shop:
+        shop = f"{shop}-{note}"
+    return devsms.build_debt_message(
+        shop=shop,
+        debt_amount=amount,
+        balance=balance if balance is not None else amount,
+    )
 
 
 def _serialize_ledger(row: ClientDebtorLedger) -> dict:
@@ -287,18 +283,13 @@ def cabinet_client_debt_adjust(request):
     sms_res = None
     if send_sms and debtor.phone:
         tpl = _get_or_create_template(shop, tenant)
-        # DevSMS/Eskiz faqat tasdiqlangan TezPOS shablonini o‘tkazadi:
-        #   {shop}
-        #   Qarz: X so'm
-        #   Qoldiq: Y so'm
-        #   Chek: —
-        signed = amount if kind == ClientDebtorLedger.KIND_ADD else -amount
-        text = devsms.build_debt_message(
-            shop=(tpl.shop_label or "").strip() or (tenant.business_name if tenant else "") or "TezPOS",
-            branch="",
-            debt_amount=signed,
+        # Tasdiqlangan matn: "{shop}:\nQarzdorligingiz : {amount} so‘m.\n…"
+        text = _render_sms(
+            tpl,
+            amount=bal if bal > 0 else amount,
             balance=bal,
-            check_link="",
+            name=debtor.name,
+            note=note or debtor.note,
         )
         sms_res = devsms.send_dev_sms(phone=debtor.phone, message=text)
         if sms_res.get("ok"):
@@ -340,8 +331,7 @@ def cabinet_sms_template_save(request):
         return JsonResponse({"error": "Do‘kon nomi kerak"}, status=400)
 
     tpl.shop_label = shop_label
-    if not (tpl.body or "").strip():
-        tpl.body = DebtSmsTemplate.DEFAULT_BODY
+    tpl.body = DebtSmsTemplate.DEFAULT_BODY
     tpl.is_approved = True
     tpl.save(update_fields=["shop_label", "body", "is_approved", "updated_at"])
 

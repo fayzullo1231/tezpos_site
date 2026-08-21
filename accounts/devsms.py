@@ -59,32 +59,41 @@ def build_debt_message(
     check_link: str = "",
 ) -> str:
     """
-    TezPOS MpBuildDebtMessage:
-      {shop} - {branch}
-      Qarz: X so'm
-      Qoldiq: Y so'm
-      Chek: url
-    To'lovda debt_amount manfiy bo'ladi (masalan -9000).
+    Tasdiqlangan Eskiz shablon:
+      Kulol Optom-Oziq ovqat:
+      Qarzdorligingiz : 1 456 000 so‘m.
+      Iltimos, qarzdorlikni to‘lashni unutmang.
     """
     shop = (shop or "").strip() or "TezPOS"
     branch = (branch or "").strip()
-    head = f"{shop} - {branch}" if branch else shop
-    lines = [
-        head,
-        f"Qarz: {_fmt_som(debt_amount)} so'm",
-        f"Qoldiq: {_fmt_som(balance)} so'm",
-        f"Chek: {(check_link or '').strip() or '—'}",
-    ]
-    return "\n".join(lines)
+    if branch and f"-{branch}" not in shop:
+        head = f"{shop}-{branch}"
+    else:
+        head = shop
+    try:
+        bal = Decimal(str(balance if balance is not None else 0))
+    except (InvalidOperation, TypeError, ValueError):
+        bal = Decimal("0")
+    try:
+        delta = Decimal(str(debt_amount if debt_amount is not None else 0))
+    except (InvalidOperation, TypeError, ValueError):
+        delta = Decimal("0")
+    show = abs(bal) if bal != 0 else abs(delta)
+    # Apostrof: so‘m / to‘lashni — Eskiz shablonidagi belgi (U+2018)
+    return (
+        f"{head}:\n"
+        f"Qarzdorligingiz : {_fmt_som(show)} so‘m.\n"
+        f"Iltimos, qarzdorlikni to‘lashni unutmang."
+    )
 
 
 def sample_debt_template(shop: str) -> str:
-    """Moderatsiyaga yuboriladigan namuna (TezPOS format)."""
+    """Moderatsiyaga yuboriladigan namuna."""
+    label = (shop or "").strip() or "Kulol Optom-Oziq ovqat"
     return build_debt_message(
-        shop=shop,
+        shop=label,
         debt_amount=1456000,
         balance=1456000,
-        check_link="—",
     )
 
 
