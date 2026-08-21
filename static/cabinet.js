@@ -1135,9 +1135,10 @@
     calendarEl.style.top = `${Math.round(top)}px`;
     calendarEl.style.right = "auto";
     calendarEl.style.width = `${width}px`;
-    calendarEl.style.zIndex = "4000";
+    calendarEl.style.zIndex = "13000";
   };
 
+  let salesCalHome = null;
   const openCalendar = () => {
     if (!calendarEl || !dateTrigger) return;
     draftStart = parseIso(appliedFrom);
@@ -1145,6 +1146,11 @@
     pickMode = "start";
     viewYear = (draftEnd || draftStart || todayDate).getFullYear();
     viewMonth = (draftEnd || draftStart || todayDate).getMonth();
+    if (!salesCalHome) salesCalHome = calendarEl.parentElement;
+    if (calendarEl.parentElement !== document.body) {
+      document.body.appendChild(calendarEl);
+      calendarEl.classList.add("is-portal");
+    }
     calendarEl.hidden = false;
     dateTrigger.setAttribute("aria-expanded", "true");
     datePickerRoot?.classList.add("is-open");
@@ -1157,6 +1163,10 @@
     calendarEl.hidden = true;
     dateTrigger.setAttribute("aria-expanded", "false");
     datePickerRoot?.classList.remove("is-open");
+    if (salesCalHome && calendarEl.parentElement === document.body) {
+      salesCalHome.appendChild(calendarEl);
+      calendarEl.classList.remove("is-portal");
+    }
   };
 
   const applyDraftRange = () => {
@@ -1367,7 +1377,7 @@
         <div class="tops-row-metrics">
           <div class="tops-row-metric">
             <em>${qtyLabel}</em>
-            <strong>${qtyVal}${item.qty != null ? " ta" : ""}</strong>
+            <strong>${qtyVal}</strong>
           </div>
           <div class="tops-row-metric tops-row-metric--rev">
             <em>${moneyLabel}</em>
@@ -1562,6 +1572,7 @@
   }
 
   const productsSelect = document.getElementById("tops-products-select");
+  const topsSortSelect = document.getElementById("tops-sort-select");
   const productsGrid = document.getElementById("tops-products-grid");
   const topsDatePicker = document.getElementById("tops-date-picker");
   const topsDateTrigger = document.getElementById("tops-date-trigger");
@@ -1582,9 +1593,27 @@
   let topsPickMode = "start";
   let topsReq = 0;
   const topsCache = {};
+  let topsCalHome = null;
+
+  const sortTopRows = (rows, mode) => {
+    const list = (rows || []).slice();
+    const key = mode || "qty_desc";
+    list.sort((a, b) => {
+      const aq = Number(a.qty || 0);
+      const bq = Number(b.qty || 0);
+      const ar = Number(a.revenue || 0);
+      const br = Number(b.revenue || 0);
+      if (key === "qty_asc") return aq - bq || ar - br;
+      if (key === "rev_asc") return ar - br || aq - bq;
+      if (key === "rev_desc") return br - ar || bq - aq;
+      return bq - aq || br - ar;
+    });
+    return list;
+  };
 
   const renderProducts = (limit) => {
-    const rows = (data.topProducts || []).slice(0, limit);
+    const sorted = sortTopRows(data.topProducts || [], topsSortSelect?.value || "qty_desc");
+    const rows = sorted.slice(0, limit);
     if (!productsGrid) return;
     productsGrid.className = "tops-list";
     productsGrid.innerHTML = rows.length
@@ -1599,7 +1628,7 @@
     if (topsDateLabel) topsDateLabel.textContent = label;
     if (topsPeriodHint) {
       if (topsFrom && topsTo && topsFrom === topsTo) {
-        topsPeriodHint.textContent = `${label} — shu kunda eng yaxshi sotilgan mahsulotlar (masalan: 150 ta)`;
+        topsPeriodHint.textContent = `${label} — shu kunda eng yaxshi sotilgan mahsulotlar`;
       } else {
         topsPeriodHint.textContent = `${label} — eng yaxshi sotilgan mahsulotlar`;
       }
@@ -1691,7 +1720,7 @@
     topsCalendar.style.top = `${Math.round(top)}px`;
     topsCalendar.style.right = "auto";
     topsCalendar.style.width = `${width}px`;
-    topsCalendar.style.zIndex = "4000";
+    topsCalendar.style.zIndex = "13000";
   };
 
   const openTopsCalendar = () => {
@@ -1701,6 +1730,11 @@
     topsPickMode = "start";
     topsViewYear = (topsDraftEnd || topsDraftStart || todayDate).getFullYear();
     topsViewMonth = (topsDraftEnd || topsDraftStart || todayDate).getMonth();
+    if (!topsCalHome) topsCalHome = topsCalendar.parentElement;
+    if (topsCalendar.parentElement !== document.body) {
+      document.body.appendChild(topsCalendar);
+      topsCalendar.classList.add("is-portal");
+    }
     topsCalendar.hidden = false;
     topsDateTrigger.setAttribute("aria-expanded", "true");
     topsDatePicker?.classList.add("is-open");
@@ -1713,6 +1747,10 @@
     topsCalendar.hidden = true;
     topsDateTrigger.setAttribute("aria-expanded", "false");
     topsDatePicker?.classList.remove("is-open");
+    if (topsCalHome && topsCalendar.parentElement === document.body) {
+      topsCalHome.appendChild(topsCalendar);
+      topsCalendar.classList.remove("is-portal");
+    }
   };
 
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
@@ -1882,6 +1920,9 @@
     productsSelect?.addEventListener("change", () => {
       renderProducts(Number(productsSelect.value));
     });
+    topsSortSelect?.addEventListener("change", () => {
+      renderProducts(Number(productsSelect?.value || 10));
+    });
     loadTopProducts(topsFrom, topsTo, { force: true });
   }
 
@@ -1911,9 +1952,28 @@
     let viewMonth = draftDay.getMonth();
     let req = 0;
     const cache = {};
+    let calHome = null;
+    let productsRows = [];
+    const sortSelect = document.getElementById("stock-in-sort-select");
 
     const fmtMoney = (n) =>
       Math.round(Number(n || 0)).toLocaleString("uz-UZ");
+
+    const sortStockRows = (rows, mode) => {
+      const list = (rows || []).slice();
+      const key = mode || "qty_desc";
+      list.sort((a, b) => {
+        const aq = Number(a.qty || 0);
+        const bq = Number(b.qty || 0);
+        const ac = Number(a.cost || 0);
+        const bc = Number(b.cost || 0);
+        if (key === "qty_asc") return aq - bq || ac - bc;
+        if (key === "cost_asc") return ac - bc || aq - bq;
+        if (key === "cost_desc") return bc - ac || bq - aq;
+        return bq - aq || bc - ac;
+      });
+      return list;
+    };
 
     const syncLabel = () => {
       const label = fmtDayUz(parseIso(dayIso) || todayDate);
@@ -1986,7 +2046,7 @@
       calendar.style.top = `${Math.round(top)}px`;
       calendar.style.right = "auto";
       calendar.style.width = `${width}px`;
-      calendar.style.zIndex = "4000";
+      calendar.style.zIndex = "13000";
     };
 
     const openCalendar = () => {
@@ -1994,6 +2054,11 @@
       draftDay = parseIso(dayIso) || todayDate;
       viewYear = draftDay.getFullYear();
       viewMonth = draftDay.getMonth();
+      if (!calHome) calHome = calendar.parentElement;
+      if (calendar.parentElement !== document.body) {
+        document.body.appendChild(calendar);
+        calendar.classList.add("is-portal");
+      }
       calendar.hidden = false;
       dateTrigger.setAttribute("aria-expanded", "true");
       datePicker?.classList.add("is-open");
@@ -2006,6 +2071,10 @@
       calendar.hidden = true;
       dateTrigger.setAttribute("aria-expanded", "false");
       datePicker?.classList.remove("is-open");
+      if (calHome && calendar.parentElement === document.body) {
+        calHome.appendChild(calendar);
+        calendar.classList.remove("is-portal");
+      }
     };
 
     const paintKpis = (payload) => {
@@ -2017,12 +2086,14 @@
 
     const paintProducts = (rows) => {
       if (!grid) return;
+      productsRows = Array.isArray(rows) ? rows.slice() : [];
+      const sorted = sortStockRows(productsRows, sortSelect?.value || "qty_desc");
       grid.className = "tops-list";
-      if (!rows.length) {
+      if (!sorted.length) {
         grid.innerHTML = `<p class="cabinet-hint">Bu kunda kirim qilingan mahsulot yo‘q.</p>`;
         return;
       }
-      grid.innerHTML = rows
+      grid.innerHTML = sorted
         .map((row, i) =>
           productTileHtml(row, palette[i % palette.length], i + 1, { stockIn: true })
         )
@@ -2040,7 +2111,7 @@
         .map((r) => {
           const names = (r.items || [])
             .slice(0, 4)
-            .map((it) => `${it.name} (${fmt(it.qty)})`)
+            .map((it) => it.name)
             .join(", ");
           const more =
             (r.items || []).length > 4 ? ` +${(r.items || []).length - 4}` : "";
@@ -2166,6 +2237,9 @@
     });
 
     syncLabel();
+    sortSelect?.addEventListener("change", () => {
+      paintProducts(productsRows);
+    });
     loadStockIn(dayIso, { force: true });
   })();
 

@@ -4629,59 +4629,73 @@ def cabinet_top_stats(request):
     except (TypeError, ValueError):
         limit = 100
 
-    if span <= 1:
-        detail_cap, max_pages, product_pages = 300, 80, 8
-    elif span <= 7:
-        detail_cap, max_pages, product_pages = 200, 60, 6
-    elif span <= 31:
-        detail_cap, max_pages, product_pages = 120, 50, 5
-    else:
-        detail_cap, max_pages, product_pages = 80, 40, 4
-
     memo_prefix = f"{server}|{(token or '')[-12:]}"
 
+    # Tez yo‘l: avval API top-products
     try:
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            fut_api = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|topapi2|{start}|{end}|{limit}",
-                    40.0,
-                    lambda: tezpos_api.get_top_products(
-                        token,
-                        server,
-                        days=span,
-                        limit=limit,
-                        date_from=start.isoformat(),
-                        date_to=end.isoformat(),
-                    ),
-                )
-            )
-            fut_s = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|topsales2|{start}|{end}|{max_pages}",
-                    45.0,
-                    lambda: tezpos_api.get_sales(
-                        token,
-                        server,
-                        date_from=start.isoformat(),
-                        date_to=end.isoformat(),
-                        timeout=24,
-                        max_pages=max_pages,
-                    ),
-                )
-            )
-            fut_p = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|catalog_snap",
-                    120.0,
-                    lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=14)
-                    or tezpos_api.get_products(token, server, max_pages=product_pages)
-                    or [],
-                )
-            )
-            top_payload = fut_api.result() or {"items": []}
-            sales = fut_s.result() or []
-            products_raw = fut_p.result() or []
+        top_payload = _memo_get(
+            f"{memo_prefix}|topapi3|{start}|{end}|{limit}",
+            50.0,
+            lambda: tezpos_api.get_top_products(
+                token,
+                server,
+                days=span,
+                limit=limit,
+                date_from=start.isoformat(),
+                date_to=end.isoformat(),
+            ),
+        ) or {"items": []}
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        top_payload = {"items": []}
+    except (TimeoutError, OSError):
+        top_payload = {"items": []}
+
+    products_raw = []
+    try:
+        products_raw = _memo_get(
+            f"{memo_prefix}|catalog_snap",
+            120.0,
+            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=10) or [],
+        ) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
+        products_raw = []
+
+    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    products_by_id = {str(p.id): p for p in products}
+    products_by_name = _products_by_name(products)
+
+    from_api = _top_products_from_api_items(
+        top_payload.get("items") or [], products_by_id, limit=limit
+    )
+    if from_api:
+        return JsonResponse(
+            {
+                "from": start.isoformat(),
+                "to": end.isoformat(),
+                "topProducts": from_api,
+                "count": len(from_api),
+                "source": "api",
+            }
+        )
+
+    detail_cap = 80 if span <= 1 else 40
+    max_pages = 40 if span <= 1 else 20
+    try:
+        sales = _memo_get(
+            f"{memo_prefix}|topsales3|{start}|{end}|{max_pages}",
+            45.0,
+            lambda: tezpos_api.get_sales(
+                token,
+                server,
+                date_from=start.isoformat(),
+                date_to=end.isoformat(),
+                timeout=16,
+                max_pages=max_pages,
+            ),
+        ) or []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -4690,22 +4704,12 @@ def cabinet_top_stats(request):
     except (TimeoutError, OSError) as exc:
         return JsonResponse({"error": str(exc)}, status=504)
 
-    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-    products_by_id = {str(p.id): p for p in products}
-    products_by_name = _products_by_name(products)
-
     sales = [s for s in sales if isinstance(s, dict)]
     sales = [
         s
         for s in sales
         if (d := _sale_day(s)) is not None and start <= d <= end
     ]
-    sales.sort(
-        key=lambda s: _parse_dt(s.get("completed_at") or s.get("created_at"))
-        or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-
     details_map: dict[str, dict] = {}
     need_fetch: list[str] = []
     for s in sales:
@@ -4723,28 +4727,14 @@ def cabinet_top_stats(request):
             server,
             need_fetch,
             limit=min(detail_cap, max(len(need_fetch), 1)),
-            per_sale_timeout=2.5,
-            overall_timeout=35.0 if span <= 1 else 22.0,
+            per_sale_timeout=2.0,
+            overall_timeout=18.0,
         )
         details_map.update(fetched)
 
-    from_details = _top_products_from_details(
+    top_products = _top_products_from_details(
         details_map, products_by_id, products_by_name, limit=limit
     )
-    from_api = _top_products_from_api_items(
-        top_payload.get("items") or [], products_by_id, limit=limit
-    )
-    # To‘liqroq manbani tanlash (namuna qisqa bo‘lsa API ustun)
-    if _top_products_qty_sum(from_api) > _top_products_qty_sum(from_details) * 1.02:
-        top_products = from_api
-        source = "api"
-    elif from_details:
-        top_products = from_details
-        source = "sales"
-    else:
-        top_products = from_api
-        source = "api" if from_api else "none"
-
     return JsonResponse(
         {
             "from": start.isoformat(),
@@ -4752,7 +4742,7 @@ def cabinet_top_stats(request):
             "topProducts": top_products,
             "count": len(top_products),
             "checks": len(sales),
-            "source": source,
+            "source": "sales" if top_products else "none",
             "details_used": len(details_map),
         }
     )

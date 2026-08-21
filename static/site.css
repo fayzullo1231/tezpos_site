@@ -2609,7 +2609,19 @@ html.cabinet-ready .cabinet-content {
   position: relative;
   z-index: 30;
 }
+.sales-date-picker.is-open {
+  z-index: 12000;
+}
 .cabinet-card:has(.sales-date-picker) {
+  overflow: visible;
+}
+.cabinet-card:has(.sales-date-picker.is-open) {
+  position: relative;
+  z-index: 12000;
+  overflow: visible;
+}
+.cabinet-content:has(.sales-date-picker.is-open),
+.cabinet-main:has(.sales-date-picker.is-open) {
   overflow: visible;
 }
 .sales-date-trigger {
@@ -2639,14 +2651,18 @@ html.cabinet-ready .cabinet-content {
   box-shadow: 0 0 0 3px rgba(44, 134, 224, 0.15);
 }
 .sales-calendar {
-  position: fixed;
-  z-index: 4000;
+  position: fixed !important;
+  z-index: 13000 !important;
   width: min(320px, calc(100vw - 2rem));
   background: #fff;
   border: 1px solid #e2e8f2;
   border-radius: 14px;
-  box-shadow: 0 18px 40px -18px rgba(6, 20, 45, 0.35);
+  box-shadow: 0 18px 50px rgba(6, 20, 45, 0.28);
   overflow: hidden;
+}
+.sales-calendar.is-portal {
+  position: fixed !important;
+  z-index: 13000 !important;
 }
 .sales-calendar-banner {
   background: #3d4a5c;
@@ -2917,9 +2933,23 @@ html.cabinet-ready .cabinet-content {
   color: #0b6b5c;
 }
 @media (max-width: 720px) {
+  .tops-toolbar {
+    width: 100%;
+  }
+  .tops-toolbar .cabinet-select-wrap,
+  .tops-toolbar .sales-date-picker {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .tops-toolbar .sales-date-trigger,
+  .tops-toolbar .cabinet-select {
+    width: 100%;
+    max-width: none;
+  }
   .tops-row {
-    grid-template-columns: 1.8rem 2.5rem minmax(0, 1fr);
-    gap: .4rem .65rem;
+    grid-template-columns: 1.6rem 2.35rem minmax(0, 1fr);
+    gap: .35rem .55rem;
+    padding: .7rem .75rem;
   }
   .tops-row-rank,
   .tops-row-media {
@@ -2928,20 +2958,55 @@ html.cabinet-ready .cabinet-content {
   }
   .tops-row-name {
     white-space: normal;
+    font-size: .9rem;
+    line-height: 1.25;
   }
   .tops-row-metrics {
     grid-column: 3;
     justify-content: space-between;
-    gap: .75rem;
+    gap: .55rem;
     width: 100%;
   }
   .tops-row-metric {
     text-align: left;
     min-width: 0;
   }
+  .tops-row-metric strong {
+    font-size: .92rem;
+  }
   .tops-row-metric--rev {
     text-align: right;
     min-width: 0;
+  }
+  .sales-calendar {
+    width: min(340px, calc(100vw - 1rem)) !important;
+    max-height: min(78vh, 520px);
+    overflow: auto;
+  }
+  .cabinet-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* Telefon: zoom / pinch o‘chirish */
+html.cabinet-ready,
+body.cabinet-body {
+  touch-action: pan-x pan-y;
+  -ms-touch-action: pan-x pan-y;
+}
+body.cabinet-body {
+  overscroll-behavior-x: none;
+}
+@media (max-width: 900px) {
+  body.cabinet-body {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body.cabinet-body input,
+  body.cabinet-body select,
+  body.cabinet-body textarea {
+    font-size: 16px !important; /* iOS auto-zoom oldini olish */
   }
 }
 

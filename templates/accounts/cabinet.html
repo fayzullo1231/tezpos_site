@@ -3,6 +3,7 @@
 {% block title %}Shaxsiy kabinet — {{ tenant.business_name }}{% endblock %}
 {% block body_class %}cabinet-body{% endblock %}
 {% block extra_head %}
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="preload" href="/static/img/logo.png" as="image">
@@ -487,6 +488,14 @@
             </div>
           </div>
           <label class="cabinet-select-wrap">
+            <select id="tops-sort-select" class="cabinet-select" aria-label="Saralash">
+              <option value="qty_desc" selected>Ko‘p → kam</option>
+              <option value="qty_asc">Kam → ko‘p</option>
+              <option value="rev_desc">Tushum: ko‘p → kam</option>
+              <option value="rev_asc">Tushum: kam → ko‘p</option>
+            </select>
+          </label>
+          <label class="cabinet-select-wrap">
             <select id="tops-products-select" class="cabinet-select" aria-label="Top miqdor">
               <option value="10" selected>Top 10</option>
               <option value="30">Top 30</option>
@@ -561,6 +570,14 @@
               </div>
             </div>
           </div>
+          <label class="cabinet-select-wrap">
+            <select id="stock-in-sort-select" class="cabinet-select" aria-label="Saralash">
+              <option value="qty_desc" selected>Ko‘p → kam</option>
+              <option value="qty_asc">Kam → ko‘p</option>
+              <option value="cost_desc">Tannarx: ko‘p → kam</option>
+              <option value="cost_asc">Tannarx: kam → ko‘p</option>
+            </select>
+          </label>
         </div>
       </div>
 
@@ -1431,5 +1448,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=stock-in-tops-1" defer></script>
+<script src="/static/cabinet.js?v=tops-ui-2" defer></script>
 {% endblock %}
