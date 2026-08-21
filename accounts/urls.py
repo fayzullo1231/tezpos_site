@@ -1,5 +1,14 @@
 from django.urls import path
 
+from .suppliers import (
+    cabinet_supplier_delete,
+    cabinet_supplier_ledger,
+    cabinet_supplier_product,
+    cabinet_supplier_save,
+    cabinet_suppliers,
+    cabinet_suppliers_history,
+    cabinet_suppliers_summary,
+)
 from .views import (
     cabinet_abc,
     cabinet_api_status,
@@ -56,4 +65,11 @@ urlpatterns = [
     path("cabinet/label-template/", cabinet_label_template, name="cabinet_label_template"),
     path("cabinet/debtors/", cabinet_debtors, name="cabinet_debtors"),
     path("cabinet/debtors/pay/", cabinet_debtor_pay, name="cabinet_debtor_pay"),
+    path("cabinet/suppliers/", cabinet_suppliers, name="cabinet_suppliers"),
+    path("cabinet/suppliers/summary/", cabinet_suppliers_summary, name="cabinet_suppliers_summary"),
+    path("cabinet/suppliers/history/", cabinet_suppliers_history, name="cabinet_suppliers_history"),
+    path("cabinet/suppliers/save/", cabinet_supplier_save, name="cabinet_supplier_save"),
+    path("cabinet/suppliers/delete/", cabinet_supplier_delete, name="cabinet_supplier_delete"),
+    path("cabinet/suppliers/product/", cabinet_supplier_product, name="cabinet_supplier_product"),
+    path("cabinet/suppliers/ledger/", cabinet_supplier_ledger, name="cabinet_supplier_ledger"),
 ]

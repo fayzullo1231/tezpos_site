@@ -212,6 +212,7 @@
       <a href="?section=inventory" class="{% if section == 'inventory' %}is-active{% endif %}"><span class="nav-dot"></span> Ombor</a>
       <a href="?section=stock_value" class="{% if section == 'stock_value' %}is-active{% endif %}"><span class="nav-dot"></span> Ombor qiymati</a>
       <a href="?section=bot" class="{% if section == 'bot' %}is-active{% endif %}"><span class="nav-dot"></span> Bot sozlamalari</a>
+      <a href="?section=suppliers" class="{% if section == 'suppliers' %}is-active{% endif %}"><span class="nav-dot"></span> Taminotchilar</a>
       <a href="?section=debtors" class="{% if section == 'debtors' %}is-active{% endif %}"><span class="nav-dot"></span> Qarzdorlar ro‘yxati</a>
     </nav>
     <div class="cabinet-side-foot">
@@ -285,6 +286,37 @@
         <h2 id="kpi-today-count">{{ today_count }}</h2>
         <small><span id="kpi-today-gross" data-fmt-money="{{ today_gross }}">0</span> so'm</small>
       </article>
+      <article class="kpi-supplier-owe">
+        <p>Taminotchiga qarz</p>
+        <h2 class="is-debt" id="kpi-supplier-we-owe">—</h2>
+        <small><a href="?section=suppliers">Qizil · biz qarzdamiz →</a></small>
+      </article>
+      <article class="kpi-supplier-credit">
+        <p>Taminotchidan qarz</p>
+        <h2 class="is-profit" id="kpi-supplier-they-owe">—</h2>
+        <small><a href="?section=suppliers">Yashil · ular qarz →</a></small>
+      </article>
+    </section>
+
+    <section class="cabinet-card" id="overview-suppliers-card">
+      <div class="cabinet-card-head">
+        <div>
+          <h3>Taminotchi qarzlari</h3>
+          <p class="cabinet-hint">Qachon qarz olingan, qachon to‘langan — sana, soat va summa</p>
+        </div>
+        <a class="btn-soft" href="?section=suppliers">Barchasi →</a>
+      </div>
+      <div class="sup-ov-kpis" id="overview-sup-kpis">
+        <div class="debtors-kpi"><span>Taminotchilar</span><strong id="ov-sup-count">—</strong></div>
+        <div class="debtors-kpi"><span>Biz qarz</span><strong class="is-debt" id="ov-sup-we">—</strong></div>
+        <div class="debtors-kpi"><span>Ular qarz</span><strong class="is-profit" id="ov-sup-they">—</strong></div>
+      </div>
+      <div class="sup-timeline" id="overview-sup-timeline">
+        <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
+          <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+        </div>
+      </div>
+      <p class="cabinet-empty" id="overview-sup-empty" hidden>Hali qarz yoki to‘lov yo‘q.</p>
     </section>
 
     <section class="cabinet-card" id="price-list-stats-card">
@@ -891,6 +923,122 @@
     </section>
     {% endif %}
 
+    {% if section == 'suppliers' %}
+    <section class="cabinet-card suppliers-panel" id="suppliers-panel">
+      <div class="cabinet-card-head">
+        <div>
+          <h3>Taminotchilar</h3>
+          <p class="cabinet-hint">Nom qo‘shing, mahsulotni ixtiyoriy biriktiring. Biz qarz — qizil, ular qarz — yashil.</p>
+        </div>
+        <div class="debtors-toolbar">
+          <button type="button" class="btn-soft" id="sup-refresh">Yangilash</button>
+          <button type="button" class="btn-save" id="sup-add-btn">+ Taminotchi</button>
+        </div>
+      </div>
+      <div class="debtors-kpis" id="sup-kpis">
+        <div class="debtors-kpi"><span>Jami</span><strong id="sup-count">—</strong></div>
+        <div class="debtors-kpi"><span>Biz qarzdamiz</span><strong class="is-debt" id="sup-we-owe">—</strong></div>
+        <div class="debtors-kpi"><span>Ular bizdan qarz</span><strong class="is-profit" id="sup-they-owe">—</strong></div>
+      </div>
+      <label class="products-search debtors-search">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 104.47 10l4.26 4.27 1.42-1.42-4.27-4.26A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z"/></svg>
+        <input type="search" id="sup-search" placeholder="Qidiruv: taminotchi yoki mahsulot…" autocomplete="off">
+      </label>
+      <div class="sup-tabs" role="tablist">
+        <button type="button" class="sup-tab is-active" data-tab="list" id="sup-tab-list">Ro‘yxat</button>
+        <button type="button" class="sup-tab" data-tab="history" id="sup-tab-history">Barcha tarix</button>
+      </div>
+      <div id="sup-list-wrap">
+        <div class="debtors-list" id="suppliers-list">
+          <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
+            <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+          </div>
+        </div>
+        <p class="cabinet-empty" id="suppliers-empty" hidden>Taminotchilar yo‘q. «+ Taminotchi» bilan qo‘shing.</p>
+      </div>
+      <div id="sup-history-wrap" hidden>
+        <div class="sup-timeline" id="sup-history-list"></div>
+        <p class="cabinet-empty" id="sup-history-empty" hidden>Tarix bo‘sh.</p>
+      </div>
+      <p class="cabinet-hint" id="suppliers-error" hidden></p>
+    </section>
+
+    <div class="sup-modal" id="sup-modal" hidden>
+      <div class="sup-modal-backdrop" data-sup-close></div>
+      <div class="sup-modal-sheet" role="dialog" aria-modal="true" aria-labelledby="sup-modal-title">
+        <div class="sup-modal-head">
+          <h3 id="sup-modal-title">Yangi taminotchi</h3>
+          <button type="button" class="sup-modal-x" data-sup-close aria-label="Yopish">×</button>
+        </div>
+        <form id="sup-form" class="sup-form">
+          <input type="hidden" id="sup-form-id" value="">
+          <label class="sup-field">
+            <span>Nomi *</span>
+            <input type="text" id="sup-form-name" required maxlength="180" placeholder="Masalan: Balton Trading" autocomplete="organization">
+          </label>
+          <label class="sup-field">
+            <span>Telefon</span>
+            <input type="tel" id="sup-form-phone" maxlength="40" placeholder="+998 …" autocomplete="tel">
+          </label>
+          <label class="sup-field">
+            <span>Izoh</span>
+            <input type="text" id="sup-form-note" maxlength="255" placeholder="Ixtiyoriy">
+          </label>
+          <p class="cabinet-hint" id="sup-form-error" hidden></p>
+          <div class="sup-modal-actions">
+            <button type="button" class="btn-soft" data-sup-close>Bekor</button>
+            <button type="submit" class="btn-save">Saqlash</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="sup-modal" id="sup-detail-modal" hidden>
+      <div class="sup-modal-backdrop" data-sup-detail-close></div>
+      <div class="sup-modal-sheet sup-modal-sheet--wide" role="dialog" aria-modal="true">
+        <div class="sup-modal-head">
+          <div>
+            <h3 id="sup-detail-title">Taminotchi</h3>
+            <p class="cabinet-hint" id="sup-detail-status"></p>
+          </div>
+          <button type="button" class="sup-modal-x" data-sup-detail-close aria-label="Yopish">×</button>
+        </div>
+        <div class="sup-detail-balance" id="sup-detail-balance"></div>
+        <div class="sup-detail-grid">
+          <div class="sup-detail-block">
+            <h4>Mahsulotlar <small>(ixtiyoriy)</small></h4>
+            <div class="sup-prod-add">
+              <input type="search" id="sup-prod-search" placeholder="Katalogdan qidirish yoki nom yozing…" list="sup-prod-datalist" autocomplete="off">
+              <datalist id="sup-prod-datalist"></datalist>
+              <button type="button" class="btn-soft" id="sup-prod-add-btn">Biriktirish</button>
+            </div>
+            <ul class="sup-prod-list" id="sup-prod-list"></ul>
+          </div>
+          <div class="sup-detail-block">
+            <h4>Qarz / to‘lov</h4>
+            <div class="sup-ledger-form">
+              <select id="sup-ledger-kind" aria-label="Amal">
+                <option value="we_owe">Biz qarz oldik (qizil)</option>
+                <option value="they_owe">Ular bizdan qarz (yashil)</option>
+                <option value="we_pay">Biz pul berdik</option>
+                <option value="they_pay">Ular pul berdi</option>
+              </select>
+              <input type="text" id="sup-ledger-amount" inputmode="decimal" placeholder="Summa (so‘m)">
+              <input type="text" id="sup-ledger-note" placeholder="Izoh (ixtiyoriy)">
+              <button type="button" class="btn-save" id="sup-ledger-btn">Yozish</button>
+            </div>
+            <p class="cabinet-hint" id="sup-ledger-msg" hidden></p>
+            <div class="sup-timeline" id="sup-detail-ledger"></div>
+          </div>
+        </div>
+        <div class="sup-modal-actions">
+          <button type="button" class="btn-soft is-danger" id="sup-delete-btn">O‘chirish</button>
+          <button type="button" class="btn-soft" data-sup-detail-close>Yopish</button>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     {% if section == 'debtors' %}
     <section class="cabinet-card debtors-panel" id="debtors-panel">
       <div class="cabinet-card-head">
@@ -1391,6 +1539,13 @@
     telegramSyncUrl: "{% url 'accounts:cabinet_telegram_sync' %}",
     debtorsUrl: "{% url 'accounts:cabinet_debtors' %}",
     debtorPayUrl: "{% url 'accounts:cabinet_debtor_pay' %}",
+    suppliersUrl: "{% url 'accounts:cabinet_suppliers' %}",
+    suppliersSummaryUrl: "{% url 'accounts:cabinet_suppliers_summary' %}",
+    suppliersHistoryUrl: "{% url 'accounts:cabinet_suppliers_history' %}",
+    supplierSaveUrl: "{% url 'accounts:cabinet_supplier_save' %}",
+    supplierDeleteUrl: "{% url 'accounts:cabinet_supplier_delete' %}",
+    supplierProductUrl: "{% url 'accounts:cabinet_supplier_product' %}",
+    supplierLedgerUrl: "{% url 'accounts:cabinet_supplier_ledger' %}",
     botSettings: {{ bot_settings_json|default:"{}"|safe }},
     labelTemplate: {{ label_template_json|default:"{}"|safe }},
     daySales: {{ day_sales_json|default:"[]"|safe }},
@@ -1399,7 +1554,7 @@
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
   (function () {
-    var P = "tezpos_v11_";
+    var P = "tezpos_v12_";
     function g(k) {
       try {
         var s = sessionStorage.getItem(P + k);
@@ -1453,5 +1608,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=tops-full-excel-1" defer></script>
+<script src="/static/cabinet.js?v=suppliers-1" defer></script>
 {% endblock %}

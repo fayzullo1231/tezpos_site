@@ -1,5 +1,9 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
+from django.db.models import Sum
+from django.utils import timezone
 
 
 class TenantProfile(models.Model):
@@ -85,3 +89,115 @@ class DesktopInstaller(models.Model):
     @classmethod
     def get_active(cls):
         return cls.objects.filter(is_active=True).exclude(file="").first()
+
+
+class Supplier(models.Model):
+    """Do‘kon bo‘yicha taminotchilar (TezPOS server_name = shop_key)."""
+
+    shop_key = models.CharField(max_length=140, db_index=True)
+    name = models.CharField(max_length=180)
+    phone = models.CharField(max_length=40, blank=True, default="")
+    note = models.CharField(max_length=255, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["shop_key", "name"], name="acct_supplier_shop_name_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shop_key", "name"],
+                name="acct_supplier_shop_name_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def balance(self) -> Decimal:
+        """
+        >0 — biz taminotchiga qarzdamiz (qizil)
+        <0 — taminotchi bizdan qarz (yashil)
+        """
+        total = self.ledger.aggregate(s=Sum("signed_amount"))["s"]
+        return total if total is not None else Decimal("0")
+
+
+class SupplierProduct(models.Model):
+    """Taminotchiga ixtiyoriy mahsulot biriktirish."""
+
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.CASCADE, related_name="products"
+    )
+    product_id = models.CharField(max_length=64, blank=True, default="")
+    product_name = models.CharField(max_length=220)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["product_name"]
+        indexes = [
+            models.Index(
+                fields=["supplier", "product_name"],
+                name="acct_supprod_name_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["supplier", "product_id", "product_name"],
+                name="acct_supprod_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.supplier_id}: {self.product_name}"
+
+
+class SupplierLedger(models.Model):
+    """
+    Taminotchi qarz/to‘lov tarixi.
+    signed_amount: + biz qarz / ular to‘ladi; − ular qarz / biz to‘ladik.
+    """
+
+    KIND_WE_OWE = "we_owe"  # biz qarz oldik
+    KIND_THEY_OWE = "they_owe"  # taminotchi bizdan qarz
+    KIND_WE_PAY = "we_pay"  # biz pul berdık
+    KIND_THEY_PAY = "they_pay"  # ular pul berdı
+
+    KIND_CHOICES = (
+        (KIND_WE_OWE, "Biz qarz oldik"),
+        (KIND_THEY_OWE, "Taminotchi qarz"),
+        (KIND_WE_PAY, "Biz to‘ladik"),
+        (KIND_THEY_PAY, "Ular to‘ladi"),
+    )
+
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.CASCADE, related_name="ledger"
+    )
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    signed_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    note = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.CharField(max_length=180, blank=True, default="")
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["supplier", "-created_at"],
+                name="acct_supled_sup_dt_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.supplier_id} {self.kind} {self.amount}"
+
+    @staticmethod
+    def sign_for(kind: str, amount: Decimal) -> Decimal:
+        amt = abs(amount)
+        if kind in (SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_PAY):
+            return amt
+        return -amt

@@ -1,12 +1,27 @@
 from django.contrib import admin
 
-from .models import DesktopInstaller, LabelTemplate, TenantProfile
+from .models import DesktopInstaller, LabelTemplate, Supplier, SupplierLedger, TenantProfile
 
 
 @admin.register(TenantProfile)
 class TenantProfileAdmin(admin.ModelAdmin):
     list_display = ("business_name", "phone", "telegram_enabled", "created_at")
     search_fields = ("business_name", "phone")
+
+
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    list_display = ("name", "shop_key", "phone", "is_active", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "shop_key", "phone")
+
+
+@admin.register(SupplierLedger)
+class SupplierLedgerAdmin(admin.ModelAdmin):
+    list_display = ("supplier", "kind", "amount", "created_at", "created_by")
+    list_filter = ("kind",)
+    search_fields = ("supplier__name", "note", "created_by")
+    readonly_fields = ("signed_amount",)
 
 
 @admin.register(LabelTemplate)

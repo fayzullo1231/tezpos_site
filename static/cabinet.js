@@ -267,6 +267,7 @@
       document.getElementById("label-designer") ||
       document.getElementById("label-print-view") ||
       document.getElementById("labels-table") ||
+      document.getElementById("suppliers-list") ||
       document.querySelector(".cabinet-products");
 
     if (!data.products?.length) {
@@ -5844,4 +5845,500 @@
         }
       });
   }
+})();
+
+
+/* —— Taminotchilar —— */
+(() => {
+  const data = window.TEZPOS_CHARTS || {};
+  const fmt = (n) => Number(n || 0).toLocaleString("uz-UZ");
+  const esc = (s) =>
+    String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  const csrfToken = () => {
+    const m = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    if (m) return decodeURIComponent(m[1]);
+    return "";
+  };
+  const postJson = async (url, body) => {
+    const res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRFToken": csrfToken(),
+      },
+      body: JSON.stringify(body || {}),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || "Xato");
+    return json;
+  };
+  const timelineHtml = (rows, { showSupplier = false } = {}) => {
+    if (!rows || !rows.length) return "";
+    return rows
+      .map((e) => {
+        const tone = e.tone || "blue";
+        const title = showSupplier
+          ? `${esc(e.supplier_name)} · ${esc(e.kind_label)}`
+          : esc(e.kind_label);
+        const note = e.note ? `<p>${esc(e.note)}</p>` : "";
+        return `<article class="sup-tl-item is-${esc(tone)}">
+          <span class="sup-tl-dot" aria-hidden="true"></span>
+          <div>
+            <h5>${title}</h5>
+            <p>${esc(e.created_display)}${e.created_by ? ` · ${esc(e.created_by)}` : ""}</p>
+            ${note}
+          </div>
+          <div class="sup-tl-amt">${fmt(e.amount)} so‘m</div>
+        </article>`;
+      })
+      .join("");
+  };
+
+  const ovTimeline = document.getElementById("overview-sup-timeline");
+  const loadOverviewSuppliers = async () => {
+    const url = data.suppliersSummaryUrl;
+    if (!url) return;
+    const weEl = document.getElementById("kpi-supplier-we-owe");
+    const theyEl = document.getElementById("kpi-supplier-they-owe");
+    const countEl = document.getElementById("ov-sup-count");
+    const weK = document.getElementById("ov-sup-we");
+    const theyK = document.getElementById("ov-sup-they");
+    const emptyEl = document.getElementById("overview-sup-empty");
+    try {
+      const res = await fetch(url, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error("fail");
+      const s = json.summary || {};
+      if (weEl) weEl.textContent = `${fmt(s.we_owe)} so‘m`;
+      if (theyEl) theyEl.textContent = `${fmt(s.they_owe)} so‘m`;
+      if (countEl) countEl.textContent = String(s.suppliers_count || 0);
+      if (weK) weK.textContent = `${fmt(s.we_owe)} so‘m`;
+      if (theyK) theyK.textContent = `${fmt(s.they_owe)} so‘m`;
+      const recent = Array.isArray(json.recent) ? json.recent : [];
+      if (ovTimeline) {
+        ovTimeline.innerHTML = recent.length
+          ? timelineHtml(recent, { showSupplier: true })
+          : "";
+      }
+      if (emptyEl) emptyEl.hidden = recent.length > 0;
+    } catch (_e) {
+      if (weEl) weEl.textContent = "—";
+      if (theyEl) theyEl.textContent = "—";
+      if (ovTimeline) {
+        ovTimeline.innerHTML = `<p class="cabinet-hint">Taminotchi ma’lumoti yuklanmadi.</p>`;
+      }
+    }
+  };
+  if (ovTimeline || document.getElementById("kpi-supplier-we-owe")) {
+    loadOverviewSuppliers();
+  }
+
+  const listEl = document.getElementById("suppliers-list");
+  if (!listEl) return;
+
+  let suppliers = [];
+  let query = "";
+  let activeId = null;
+  let activeDetail = null;
+
+  const countEl = document.getElementById("sup-count");
+  const weEl = document.getElementById("sup-we-owe");
+  const theyEl = document.getElementById("sup-they-owe");
+  const emptyEl = document.getElementById("suppliers-empty");
+  const errorEl = document.getElementById("suppliers-error");
+  const searchEl = document.getElementById("sup-search");
+  const listWrap = document.getElementById("sup-list-wrap");
+  const historyWrap = document.getElementById("sup-history-wrap");
+  const historyList = document.getElementById("sup-history-list");
+  const historyEmpty = document.getElementById("sup-history-empty");
+  const modal = document.getElementById("sup-modal");
+  const detailModal = document.getElementById("sup-detail-modal");
+  const form = document.getElementById("sup-form");
+
+  const paintSummary = (summary) => {
+    const s = summary || {};
+    if (countEl) countEl.textContent = String(s.suppliers_count ?? suppliers.length);
+    if (weEl) weEl.textContent = `${fmt(s.we_owe)} so‘m`;
+    if (theyEl) theyEl.textContent = `${fmt(s.they_owe)} so‘m`;
+  };
+
+  const cardHtml = (row) => {
+    const st = row.status || "clear";
+    const chips = (row.products || [])
+      .slice(0, 6)
+      .map((p) => `<span class="sup-chip">${esc(p.name)}</span>`)
+      .join("");
+    const more =
+      (row.products || []).length > 6
+        ? `<span class="sup-chip">+${(row.products || []).length - 6}</span>`
+        : "";
+    const balLabel =
+      st === "we_owe"
+        ? `Biz qarz: ${fmt(row.we_owe)}`
+        : st === "they_owe"
+          ? `Ular qarz: ${fmt(row.they_owe)}`
+          : "Qarz yo‘q";
+    return `<article class="sup-card is-${esc(st)}" data-id="${row.id}">
+      <div class="sup-card-head">
+        <div>
+          <h4>${esc(row.name)}</h4>
+          <p>${esc(row.phone || "Telefon yo‘q")}${row.note ? ` · ${esc(row.note)}` : ""}</p>
+        </div>
+        <div class="sup-bal is-${esc(st)}">${balLabel} so‘m</div>
+      </div>
+      ${chips || more ? `<div class="sup-chips">${chips}${more}</div>` : `<p class="cabinet-hint" style="margin:0">Mahsulot biriktirilmagan (ixtiyoriy)</p>`}
+      <div class="sup-card-actions">
+        <button type="button" class="btn-soft sup-open" data-id="${row.id}">Ochish</button>
+        <button type="button" class="btn-soft sup-quick-owe" data-id="${row.id}" data-kind="we_owe">Biz qarz</button>
+        <button type="button" class="btn-soft sup-quick-owe" data-id="${row.id}" data-kind="we_pay">To‘lov</button>
+      </div>
+    </article>`;
+  };
+
+  const filtered = () => {
+    const q = query.trim().toLowerCase();
+    if (!q) return suppliers;
+    return suppliers.filter((s) => {
+      const name = String(s.name || "").toLowerCase();
+      const phone = String(s.phone || "").toLowerCase();
+      const note = String(s.note || "").toLowerCase();
+      const prods = (s.products || [])
+        .map((p) => String(p.name || "").toLowerCase())
+        .join(" ");
+      return name.includes(q) || phone.includes(q) || note.includes(q) || prods.includes(q);
+    });
+  };
+
+  const paintList = () => {
+    const rows = filtered();
+    if (!rows.length) {
+      listEl.innerHTML = "";
+      if (emptyEl) emptyEl.hidden = false;
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+    listEl.innerHTML = rows.map(cardHtml).join("");
+  };
+
+  const loadList = async () => {
+    if (!data.suppliersUrl) return;
+    if (errorEl) {
+      errorEl.hidden = true;
+      errorEl.textContent = "";
+    }
+    try {
+      const res = await fetch(data.suppliersUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "fail");
+      suppliers = Array.isArray(json.suppliers) ? json.suppliers : [];
+      paintSummary(json.summary);
+      paintList();
+    } catch (e) {
+      listEl.innerHTML = "";
+      if (errorEl) {
+        errorEl.hidden = false;
+        errorEl.textContent = e.message || "Yuklanmadi";
+      }
+    }
+  };
+
+  const loadHistory = async () => {
+    if (!data.suppliersHistoryUrl || !historyList) return;
+    try {
+      const res = await fetch(`${data.suppliersHistoryUrl}?limit=300`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      const rows = Array.isArray(json.entries) ? json.entries : [];
+      historyList.innerHTML = rows.length
+        ? timelineHtml(rows, { showSupplier: true })
+        : "";
+      if (historyEmpty) historyEmpty.hidden = rows.length > 0;
+    } catch (_e) {
+      historyList.innerHTML = `<p class="cabinet-hint">Tarix yuklanmadi.</p>`;
+    }
+  };
+
+  const openModal = (row) => {
+    if (!modal) return;
+    document.getElementById("sup-modal-title").textContent = row
+      ? "Taminotchini tahrirlash"
+      : "Yangi taminotchi";
+    document.getElementById("sup-form-id").value = row ? row.id : "";
+    document.getElementById("sup-form-name").value = row ? row.name : "";
+    document.getElementById("sup-form-phone").value = row ? row.phone || "" : "";
+    document.getElementById("sup-form-note").value = row ? row.note || "" : "";
+    const err = document.getElementById("sup-form-error");
+    if (err) {
+      err.hidden = true;
+      err.textContent = "";
+    }
+    modal.hidden = false;
+    document.body.style.overflow = "hidden";
+    setTimeout(() => document.getElementById("sup-form-name")?.focus(), 50);
+  };
+  const closeModal = () => {
+    if (!modal) return;
+    modal.hidden = true;
+    document.body.style.overflow = "";
+  };
+
+  const fillProdDatalist = () => {
+    const dl = document.getElementById("sup-prod-datalist");
+    if (!dl) return;
+    const products = Array.isArray(data.products) ? data.products : [];
+    dl.innerHTML = products
+      .slice(0, 400)
+      .map((p) => {
+        const name = p.name || p.title || "";
+        if (!name) return "";
+        return `<option value="${esc(name)}" data-id="${esc(p.id || "")}"></option>`;
+      })
+      .join("");
+  };
+
+  const paintDetail = (row) => {
+    activeDetail = row;
+    activeId = row.id;
+    const title = document.getElementById("sup-detail-title");
+    const status = document.getElementById("sup-detail-status");
+    const bal = document.getElementById("sup-detail-balance");
+    const prodList = document.getElementById("sup-prod-list");
+    const ledgerEl = document.getElementById("sup-detail-ledger");
+    if (title) title.textContent = row.name;
+    if (status) {
+      status.textContent = `${row.phone || "Telefon yo‘q"}${
+        row.note ? ` · ${row.note}` : ""
+      }`;
+    }
+    if (bal) {
+      bal.className = `sup-detail-balance is-${row.status || "clear"}`;
+      bal.textContent =
+        row.status === "we_owe"
+          ? `Biz qarzdamiz: ${fmt(row.we_owe)} so‘m`
+          : row.status === "they_owe"
+            ? `Taminotchi qarz: ${fmt(row.they_owe)} so‘m`
+            : "Qarz yo‘q";
+    }
+    if (prodList) {
+      const prods = row.products || [];
+      prodList.innerHTML = prods.length
+        ? prods
+            .map(
+              (p) =>
+                `<li><span>${esc(p.name)}</span><button type="button" data-remove-prod="${p.id}">Olib tashlash</button></li>`
+            )
+            .join("")
+        : `<li style="border:0;padding:.2rem 0;color:#94a3b8">Biriktirilgan mahsulot yo‘q</li>`;
+    }
+    if (ledgerEl) {
+      ledgerEl.innerHTML = (row.ledger || []).length
+        ? timelineHtml(row.ledger)
+        : `<p class="cabinet-hint">Hali yozuv yo‘q.</p>`;
+    }
+    fillProdDatalist();
+  };
+
+  const openDetail = async (id) => {
+    if (!data.suppliersUrl || !detailModal) return;
+    try {
+      const res = await fetch(`${data.suppliersUrl}?id=${encodeURIComponent(id)}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (!res.ok || !json.supplier) throw new Error(json.error || "Topilmadi");
+      paintDetail(json.supplier);
+      paintSummary(json.summary);
+      detailModal.hidden = false;
+      document.body.style.overflow = "hidden";
+    } catch (e) {
+      if (errorEl) {
+        errorEl.hidden = false;
+        errorEl.textContent = e.message || "Ochilmadi";
+      }
+    }
+  };
+  const closeDetail = () => {
+    if (!detailModal) return;
+    detailModal.hidden = true;
+    document.body.style.overflow = "";
+    activeId = null;
+    activeDetail = null;
+  };
+
+  document.getElementById("sup-add-btn")?.addEventListener("click", () => openModal(null));
+  document.getElementById("sup-refresh")?.addEventListener("click", () => {
+    loadList();
+    loadHistory();
+  });
+  modal?.querySelectorAll("[data-sup-close]").forEach((el) =>
+    el.addEventListener("click", closeModal)
+  );
+  detailModal?.querySelectorAll("[data-sup-detail-close]").forEach((el) =>
+    el.addEventListener("click", closeDetail)
+  );
+
+  form?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const err = document.getElementById("sup-form-error");
+    const payload = {
+      id: document.getElementById("sup-form-id").value || undefined,
+      name: document.getElementById("sup-form-name").value,
+      phone: document.getElementById("sup-form-phone").value,
+      note: document.getElementById("sup-form-note").value,
+    };
+    try {
+      await postJson(data.supplierSaveUrl, payload);
+      closeModal();
+      await loadList();
+    } catch (e) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = e.message || "Saqlanmadi";
+      }
+    }
+  });
+
+  searchEl?.addEventListener("input", () => {
+    query = searchEl.value || "";
+    paintList();
+  });
+
+  listEl.addEventListener("click", (ev) => {
+    const openBtn = ev.target.closest(".sup-open");
+    if (openBtn) {
+      openDetail(openBtn.getAttribute("data-id"));
+      return;
+    }
+    const quick = ev.target.closest(".sup-quick-owe");
+    if (quick) {
+      openDetail(quick.getAttribute("data-id")).then(() => {
+        const kind = quick.getAttribute("data-kind");
+        const sel = document.getElementById("sup-ledger-kind");
+        if (sel && kind) sel.value = kind;
+        document.getElementById("sup-ledger-amount")?.focus();
+      });
+    }
+  });
+
+  document.querySelectorAll(".sup-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".sup-tab").forEach((b) => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      const tab = btn.getAttribute("data-tab");
+      if (listWrap) listWrap.hidden = tab !== "list";
+      if (historyWrap) historyWrap.hidden = tab !== "history";
+      if (tab === "history") loadHistory();
+    });
+  });
+
+  document.getElementById("sup-prod-add-btn")?.addEventListener("click", async () => {
+    if (!activeId) return;
+    const input = document.getElementById("sup-prod-search");
+    const name = (input?.value || "").trim();
+    if (!name) return;
+    const products = Array.isArray(data.products) ? data.products : [];
+    const found = products.find(
+      (p) => String(p.name || "").toLowerCase() === name.toLowerCase()
+    );
+    try {
+      const json = await postJson(data.supplierProductUrl, {
+        supplier_id: activeId,
+        product_name: name,
+        product_id: found?.id || "",
+        action: "add",
+      });
+      if (input) input.value = "";
+      if (json.supplier) paintDetail(json.supplier);
+      await loadList();
+    } catch (e) {
+      alert(e.message || "Biriktirilmadi");
+    }
+  });
+
+  document.getElementById("sup-prod-list")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("[data-remove-prod]");
+    if (!btn || !activeId) return;
+    try {
+      const json = await postJson(data.supplierProductUrl, {
+        supplier_id: activeId,
+        id: btn.getAttribute("data-remove-prod"),
+        action: "remove",
+      });
+      if (json.supplier) paintDetail(json.supplier);
+      await loadList();
+    } catch (e) {
+      alert(e.message || "Olib tashlanmadi");
+    }
+  });
+
+  document.getElementById("sup-ledger-btn")?.addEventListener("click", async () => {
+    if (!activeId) return;
+    const msg = document.getElementById("sup-ledger-msg");
+    const amount = document.getElementById("sup-ledger-amount")?.value;
+    const kind = document.getElementById("sup-ledger-kind")?.value;
+    const note = document.getElementById("sup-ledger-note")?.value;
+    try {
+      const json = await postJson(data.supplierLedgerUrl, {
+        supplier_id: activeId,
+        kind,
+        amount,
+        note,
+      });
+      if (msg) {
+        msg.hidden = false;
+        msg.className = "cabinet-hint";
+        msg.textContent = "Saqlandi.";
+      }
+      const amt = document.getElementById("sup-ledger-amount");
+      const noteEl = document.getElementById("sup-ledger-note");
+      if (amt) amt.value = "";
+      if (noteEl) noteEl.value = "";
+      if (json.supplier) paintDetail(json.supplier);
+      paintSummary(json.summary);
+      await loadList();
+      loadHistory();
+    } catch (e) {
+      if (msg) {
+        msg.hidden = false;
+        msg.textContent = e.message || "Yozilmadi";
+      }
+    }
+  });
+
+  document.getElementById("sup-delete-btn")?.addEventListener("click", async () => {
+    if (!activeId) return;
+    if (!confirm("Taminotchini o‘chirishni tasdiqlaysizmi?")) return;
+    try {
+      await postJson(data.supplierDeleteUrl, { id: activeId });
+      closeDetail();
+      await loadList();
+      loadHistory();
+    } catch (e) {
+      alert(e.message || "O‘chirilmadi");
+    }
+  });
+
+  document.addEventListener("tezpos:catalog", () => {
+    if (Array.isArray(window.TEZPOS_CHARTS?.products)) {
+      data.products = window.TEZPOS_CHARTS.products;
+    }
+    fillProdDatalist();
+  });
+
+  loadList();
 })();

@@ -3403,6 +3403,7 @@ def cabinet_view(request):
         "shifts",
         "bot",
         "debtors",
+        "suppliers",
     }
     if section not in allowed:
         section = "overview"
@@ -3414,6 +3415,7 @@ def cabinet_view(request):
         "stock_in",
         "bot",
         "debtors",
+        "suppliers",
         "products",
         "inventory",
         "stock_value",
@@ -4055,6 +4057,8 @@ def cabinet_view(request):
         "shifts",
         "bot",
         "debtors",
+        "suppliers",
+        "stock_in",
     }
     if section not in allowed:
         section = "overview"
