@@ -201,3 +201,105 @@ class SupplierLedger(models.Model):
         if kind in (SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_PAY):
             return amt
         return -amt
+
+
+class ClientDebtor(models.Model):
+    """Mahalliy mijoz qarzdorlari — qo‘shish/ayirish (DevSMS bilan)."""
+
+    shop_key = models.CharField(max_length=140, db_index=True)
+    name = models.CharField(max_length=180)
+    phone = models.CharField(max_length=40, blank=True, default="")
+    note = models.CharField(
+        max_length=180,
+        blank=True,
+        default="",
+        help_text="Do‘kon / izoh (masalan: Kokcha market)",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["shop_key", "name"], name="acct_clidebt_shop_name_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def balance(self) -> Decimal:
+        total = self.ledger.aggregate(s=Sum("signed_amount"))["s"]
+        return total if total is not None else Decimal("0")
+
+
+class ClientDebtorLedger(models.Model):
+    """Mijoz qarziga qo‘shish (+) yoki ayirish (−)."""
+
+    KIND_ADD = "add"
+    KIND_SUB = "sub"
+    KIND_CHOICES = (
+        (KIND_ADD, "Qarz qo‘shildi"),
+        (KIND_SUB, "Qarz ayirildi"),
+    )
+
+    debtor = models.ForeignKey(
+        ClientDebtor, on_delete=models.CASCADE, related_name="ledger"
+    )
+    kind = models.CharField(max_length=12, choices=KIND_CHOICES)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    signed_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    note = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.CharField(max_length=180, blank=True, default="")
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    sms_sent = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["debtor", "-created_at"],
+                name="acct_clidebt_led_dt_idx",
+            ),
+        ]
+
+    @staticmethod
+    def sign_for(kind: str, amount: Decimal) -> Decimal:
+        amt = abs(amount)
+        return amt if kind == ClientDebtorLedger.KIND_ADD else -amt
+
+
+class DebtSmsTemplate(models.Model):
+    """DevSMS qarz shabloni — do‘kon bo‘yicha."""
+
+    shop_key = models.CharField(max_length=140, unique=True, db_index=True)
+    title = models.CharField(max_length=120, default="Qarzdorlik")
+    shop_label = models.CharField(
+        max_length=180,
+        blank=True,
+        default="",
+        help_text="SMS boshidagi do‘kon nomi (bo‘sh bo‘lsa biznes nomi)",
+    )
+    body = models.TextField(
+        default=(
+            "{shop}:\n"
+            "Qarzdorligingiz : {amount} so'm.\n"
+            "Iltimos, qarzdorlikni to'lashni unutmang."
+        )
+    )
+    is_approved = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "DevSMS qarz shabloni"
+        verbose_name_plural = "DevSMS qarz shablonlari"
+
+    def __str__(self) -> str:
+        return f"{self.shop_key}: {self.title}"
+
+    DEFAULT_BODY = (
+        "{shop}:\n"
+        "Qarzdorligingiz : {amount} so'm.\n"
+        "Iltimos, qarzdorlikni to'lashni unutmang."
+    )

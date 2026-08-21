@@ -6523,3 +6523,359 @@
   syncExportHref();
   loadList();
 })();
+
+
+/* —— Mijoz qarzlari / DevSMS —— */
+(() => {
+  const data = window.TEZPOS_CHARTS || {};
+  const listEl = document.getElementById("cd-list");
+  if (!listEl) return;
+
+  const fmt = (n) => Number(n || 0).toLocaleString("uz-UZ");
+  const esc = (s) =>
+    String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  const csrfToken = () => {
+    const m = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  };
+  const postJson = async (url, body) => {
+    const res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRFToken": csrfToken(),
+      },
+      body: JSON.stringify(body || {}),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || "Xato");
+    return json;
+  };
+
+  let rows = [];
+  let query = "";
+  let activeId = null;
+  let active = null;
+
+  const countEl = document.getElementById("cd-count");
+  const totalEl = document.getElementById("cd-total");
+  const emptyEl = document.getElementById("cd-empty");
+  const errorEl = document.getElementById("cd-error");
+  const searchEl = document.getElementById("cd-search");
+  const listWrap = document.getElementById("cd-list-wrap");
+  const smsWrap = document.getElementById("cd-sms-wrap");
+  const modal = document.getElementById("cd-modal");
+  const detailModal = document.getElementById("cd-detail-modal");
+  const form = document.getElementById("cd-form");
+
+  const timelineHtml = (entries) =>
+    (entries || [])
+      .map((e) => {
+        const tone = e.tone || "red";
+        const sms = e.sms_sent ? " · SMS" : "";
+        return `<article class="sup-tl-item is-${esc(tone)}">
+          <span class="sup-tl-dot"></span>
+          <div>
+            <h5>${esc(e.kind_label)}${sms}</h5>
+            <p>${esc(e.created_display)}${e.note ? ` · ${esc(e.note)}` : ""}</p>
+          </div>
+          <div class="sup-tl-amt">${fmt(e.amount)} so‘m</div>
+        </article>`;
+      })
+      .join("");
+
+  const cardHtml = (row) => {
+    const bal = Number(row.balance || 0);
+    return `<article class="sup-card cd-card ${bal > 0 ? "is-we-owe" : ""}" data-id="${row.id}">
+      <div class="sup-card-head">
+        <div>
+          <h4>${esc(row.name)}</h4>
+          <p>${esc(row.phone || "Telefon yo‘q")}${row.note ? ` · ${esc(row.note)}` : ""}</p>
+        </div>
+        <div class="sup-bal ${bal > 0 ? "is-we-owe" : "is-clear"}">${fmt(bal)} so‘m</div>
+      </div>
+      <div class="sup-card-actions">
+        <button type="button" class="btn-soft cd-open" data-id="${row.id}">Ochish</button>
+        <button type="button" class="btn-soft cd-quick" data-id="${row.id}" data-kind="add">+ Qarz</button>
+        <button type="button" class="btn-soft cd-quick" data-id="${row.id}" data-kind="sub">− To‘lov</button>
+      </div>
+    </article>`;
+  };
+
+  const filtered = () => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) =>
+      [r.name, r.phone, r.note].some((x) => String(x || "").toLowerCase().includes(q))
+    );
+  };
+
+  const paintList = () => {
+    const list = filtered();
+    if (countEl) countEl.textContent = String(rows.length);
+    if (totalEl) {
+      const sum = rows.reduce((a, r) => a + Math.max(0, Number(r.balance || 0)), 0);
+      totalEl.textContent = `${fmt(sum)} so‘m`;
+    }
+    if (!list.length) {
+      listEl.innerHTML = "";
+      if (emptyEl) emptyEl.hidden = false;
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+    listEl.innerHTML = list.map(cardHtml).join("");
+  };
+
+  const loadList = async () => {
+    if (!data.clientDebtsUrl) return;
+    try {
+      const res = await fetch(data.clientDebtsUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "fail");
+      rows = Array.isArray(json.debtors) ? json.debtors : [];
+      paintList();
+    } catch (e) {
+      if (errorEl) {
+        errorEl.hidden = false;
+        errorEl.textContent = e.message || "Yuklanmadi";
+      }
+    }
+  };
+
+  const paintSms = (tpl) => {
+    if (!tpl) return;
+    const title = document.getElementById("cd-sms-title");
+    const updated = document.getElementById("cd-sms-updated");
+    const preview = document.getElementById("cd-sms-preview");
+    const badge = document.getElementById("cd-sms-badge");
+    if (title) title.textContent = tpl.title || "Qarzdorlik";
+    if (updated) updated.textContent = tpl.updated_display || "";
+    if (preview) preview.textContent = tpl.preview || "";
+    if (badge) badge.textContent = tpl.is_approved ? "Tasdiqlangan" : "Qoralama";
+    const tIn = document.getElementById("cd-sms-title-input");
+    const shop = document.getElementById("cd-sms-shop");
+    const body = document.getElementById("cd-sms-body");
+    if (tIn) tIn.value = tpl.title || "";
+    if (shop) shop.value = tpl.shop_label || "";
+    if (body) body.value = tpl.body || "";
+  };
+
+  const loadSms = async () => {
+    if (!data.smsTemplateUrl) return;
+    try {
+      const res = await fetch(data.smsTemplateUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (json.template) paintSms(json.template);
+    } catch (_e) {}
+  };
+
+  const openModal = () => {
+    if (!modal) return;
+    document.getElementById("cd-modal-title").textContent = "Yangi mijoz";
+    document.getElementById("cd-form-id").value = "";
+    document.getElementById("cd-form-name").value = "";
+    document.getElementById("cd-form-phone").value = "";
+    document.getElementById("cd-form-note").value = "";
+    document.getElementById("cd-form-amount").value = "";
+    const wrap = document.getElementById("cd-form-amount-wrap");
+    if (wrap) wrap.hidden = false;
+    const err = document.getElementById("cd-form-error");
+    if (err) {
+      err.hidden = true;
+      err.textContent = "";
+    }
+    modal.hidden = false;
+    document.body.style.overflow = "hidden";
+  };
+  const closeModal = () => {
+    if (!modal) return;
+    modal.hidden = true;
+    document.body.style.overflow = "";
+  };
+
+  const paintDetail = (row) => {
+    active = row;
+    activeId = row.id;
+    document.getElementById("cd-detail-title").textContent = row.name;
+    document.getElementById("cd-detail-meta").textContent = `${row.phone || "Telefon yo‘q"}${
+      row.note ? ` · ${row.note}` : ""
+    }`;
+    const bal = document.getElementById("cd-detail-balance");
+    bal.className = `sup-detail-balance ${Number(row.balance) > 0 ? "is-we-owe" : "is-clear"}`;
+    bal.textContent = `Qarz: ${fmt(row.balance)} so‘m`;
+    document.getElementById("cd-detail-ledger").innerHTML = (row.ledger || []).length
+      ? timelineHtml(row.ledger)
+      : `<p class="cabinet-hint">Hali yozuv yo‘q.</p>`;
+  };
+
+  const openDetail = async (id) => {
+    try {
+      const res = await fetch(`${data.clientDebtsUrl}?id=${encodeURIComponent(id)}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (!res.ok || !json.debtor) throw new Error(json.error || "Topilmadi");
+      paintDetail(json.debtor);
+      detailModal.hidden = false;
+      document.body.style.overflow = "hidden";
+    } catch (e) {
+      if (errorEl) {
+        errorEl.hidden = false;
+        errorEl.textContent = e.message || "Ochilmadi";
+      }
+    }
+  };
+  const closeDetail = () => {
+    detailModal.hidden = true;
+    document.body.style.overflow = "";
+    activeId = null;
+    active = null;
+  };
+
+  document.getElementById("cd-add-btn")?.addEventListener("click", openModal);
+  document.getElementById("cd-refresh")?.addEventListener("click", () => {
+    loadList();
+    loadSms();
+  });
+  modal?.querySelectorAll("[data-cd-close]").forEach((el) =>
+    el.addEventListener("click", closeModal)
+  );
+  detailModal?.querySelectorAll("[data-cd-detail-close]").forEach((el) =>
+    el.addEventListener("click", closeDetail)
+  );
+
+  document.querySelectorAll("[data-cd-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("[data-cd-tab]").forEach((b) => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      const tab = btn.getAttribute("data-cd-tab");
+      if (listWrap) listWrap.hidden = tab !== "list";
+      if (smsWrap) smsWrap.hidden = tab !== "sms";
+      if (tab === "sms") loadSms();
+    });
+  });
+
+  searchEl?.addEventListener("input", () => {
+    query = searchEl.value || "";
+    paintList();
+  });
+
+  form?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const err = document.getElementById("cd-form-error");
+    try {
+      await postJson(data.clientDebtorSaveUrl, {
+        id: document.getElementById("cd-form-id").value || undefined,
+        name: document.getElementById("cd-form-name").value,
+        phone: document.getElementById("cd-form-phone").value,
+        note: document.getElementById("cd-form-note").value,
+        amount: document.getElementById("cd-form-amount").value,
+      });
+      closeModal();
+      await loadList();
+    } catch (e) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = e.message || "Saqlanmadi";
+      }
+    }
+  });
+
+  listEl.addEventListener("click", (ev) => {
+    const openBtn = ev.target.closest(".cd-open");
+    if (openBtn) {
+      openDetail(openBtn.getAttribute("data-id"));
+      return;
+    }
+    const q = ev.target.closest(".cd-quick");
+    if (q) {
+      openDetail(q.getAttribute("data-id")).then(() => {
+        const kind = q.getAttribute("data-kind");
+        const sel = document.getElementById("cd-adj-kind");
+        if (sel && kind) sel.value = kind;
+        document.getElementById("cd-adj-amount")?.focus();
+      });
+    }
+  });
+
+  document.getElementById("cd-adj-btn")?.addEventListener("click", async () => {
+    if (!activeId) return;
+    const msg = document.getElementById("cd-adj-msg");
+    try {
+      const json = await postJson(data.clientDebtAdjustUrl, {
+        debtor_id: activeId,
+        kind: document.getElementById("cd-adj-kind")?.value || "add",
+        amount: document.getElementById("cd-adj-amount")?.value,
+        note: document.getElementById("cd-adj-note")?.value,
+        send_sms: Boolean(document.getElementById("cd-adj-sms")?.checked),
+      });
+      if (msg) {
+        msg.hidden = false;
+        const sms = json.sms;
+        msg.textContent =
+          sms && !sms.ok
+            ? `Saqlandi, SMS: ${sms.error || "xato"}`
+            : sms && sms.ok
+              ? "Saqlandi · SMS yuborildi"
+              : "Saqlandi";
+      }
+      document.getElementById("cd-adj-amount").value = "";
+      document.getElementById("cd-adj-note").value = "";
+      if (json.debtor) paintDetail(json.debtor);
+      await loadList();
+    } catch (e) {
+      if (msg) {
+        msg.hidden = false;
+        msg.textContent = e.message || "Xato";
+      }
+    }
+  });
+
+  document.getElementById("cd-delete-btn")?.addEventListener("click", async () => {
+    if (!activeId || !confirm("Mijozni o‘chirishni tasdiqlaysizmi?")) return;
+    try {
+      await postJson(data.clientDebtorDeleteUrl, { id: activeId });
+      closeDetail();
+      await loadList();
+    } catch (e) {
+      alert(e.message || "O‘chirilmadi");
+    }
+  });
+
+  document.getElementById("cd-sms-form")?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById("cd-sms-msg");
+    try {
+      const json = await postJson(data.smsTemplateSaveUrl, {
+        title: document.getElementById("cd-sms-title-input")?.value,
+        shop_label: document.getElementById("cd-sms-shop")?.value,
+        body: document.getElementById("cd-sms-body")?.value,
+      });
+      if (json.template) paintSms(json.template);
+      if (msg) {
+        msg.hidden = false;
+        msg.textContent = "Shablon saqlandi.";
+      }
+    } catch (e) {
+      if (msg) {
+        msg.hidden = false;
+        msg.textContent = e.message || "Saqlanmadi";
+      }
+    }
+  });
+
+  loadList();
+})();

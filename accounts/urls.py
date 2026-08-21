@@ -1,5 +1,13 @@
 from django.urls import path
 
+from .client_debts import (
+    cabinet_client_debt_adjust,
+    cabinet_client_debtor_delete,
+    cabinet_client_debtor_save,
+    cabinet_client_debts,
+    cabinet_sms_template,
+    cabinet_sms_template_save,
+)
 from .suppliers import (
     cabinet_supplier_delete,
     cabinet_supplier_ledger,
@@ -66,6 +74,12 @@ urlpatterns = [
     path("cabinet/label-template/", cabinet_label_template, name="cabinet_label_template"),
     path("cabinet/debtors/", cabinet_debtors, name="cabinet_debtors"),
     path("cabinet/debtors/pay/", cabinet_debtor_pay, name="cabinet_debtor_pay"),
+    path("cabinet/client-debts/", cabinet_client_debts, name="cabinet_client_debts"),
+    path("cabinet/client-debts/save/", cabinet_client_debtor_save, name="cabinet_client_debtor_save"),
+    path("cabinet/client-debts/delete/", cabinet_client_debtor_delete, name="cabinet_client_debtor_delete"),
+    path("cabinet/client-debts/adjust/", cabinet_client_debt_adjust, name="cabinet_client_debt_adjust"),
+    path("cabinet/sms-template/", cabinet_sms_template, name="cabinet_sms_template"),
+    path("cabinet/sms-template/save/", cabinet_sms_template_save, name="cabinet_sms_template_save"),
     path("cabinet/suppliers/", cabinet_suppliers, name="cabinet_suppliers"),
     path("cabinet/suppliers/summary/", cabinet_suppliers_summary, name="cabinet_suppliers_summary"),
     path("cabinet/suppliers/history/", cabinet_suppliers_history, name="cabinet_suppliers_history"),

@@ -4026,3 +4026,30 @@ body.cabinet-body {
 .sup-prod-hit:hover { background: #f8fafc; }
 .sup-prod-hit strong { color: #0f172a; font-size: .88rem; }
 .sup-prod-hit span { color: #94a3b8; font-size: .75rem; }
+
+.sms-tpl-card {
+  border: 1px solid #e2e8f2; border-radius: 14px; padding: 1rem;
+  background: #fff; border-left: 4px solid #16a34a;
+}
+.sms-tpl-head {
+  display: flex; justify-content: space-between; gap: .75rem; align-items: flex-start;
+  margin-bottom: .75rem;
+}
+.sms-tpl-head h4 { margin: 0; color: #002048; font-size: 1.05rem; }
+.sms-tpl-badge {
+  color: #16a34a; font-weight: 800; font-size: .82rem; white-space: nowrap;
+}
+.sms-tpl-preview {
+  background: #f1f5f9; border-radius: 12px; padding: .85rem 1rem;
+  white-space: pre-wrap; color: #0f172a; font-size: .92rem; line-height: 1.45;
+  font-family: "Space Grotesk", Manrope, sans-serif;
+}
+.cd-sms-check {
+  display: flex; align-items: center; gap: .45rem;
+  font-size: .85rem; font-weight: 650; color: #475569;
+}
+#cd-sms-body {
+  width: 100%; border: 1px solid #dbe3ef; border-radius: 12px;
+  padding: .7rem .8rem; font: inherit; resize: vertical; min-height: 110px;
+}
+.cd-card .sup-bal.is-we-owe { color: #dc2626 !important; }
