@@ -503,6 +503,10 @@
               <option value="100">Top 100</option>
             </select>
           </label>
+          <a class="btn-export" id="tops-export-btn" href="{% url 'accounts:cabinet_top_export' %}">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 3v10.2l3.2-3.2 1.4 1.4L12 17l-4.6-4.6 1.4-1.4L11 13.2V3h1zM5 19h14v2H5v-2z"/></svg>
+            Excel yuklash
+          </a>
         </div>
         </div>
       <div class="product-tile-grid product-tile-grid--list product-tile-grid--full" id="tops-products-grid">
@@ -1368,6 +1372,7 @@
     abcUrl: "{% url 'accounts:cabinet_abc' %}",
     rangeStatsUrl: "{% url 'accounts:cabinet_range_stats' %}",
     topStatsUrl: "{% url 'accounts:cabinet_top_stats' %}",
+    topExportUrl: "{% url 'accounts:cabinet_top_export' %}",
     stockInUrl: "{% url 'accounts:cabinet_stock_in' %}",
     productsImportUrl: "{% url 'accounts:cabinet_products_import' %}",
     productsExportUrl: "{% url 'accounts:cabinet_products_export' %}",
@@ -1394,7 +1399,7 @@
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
   (function () {
-    var P = "tezpos_v10_";
+    var P = "tezpos_v11_";
     function g(k) {
       try {
         var s = sessionStorage.getItem(P + k);
@@ -1448,5 +1453,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=day-sales-receipt-2" defer></script>
+<script src="/static/cabinet.js?v=tops-full-excel-1" defer></script>
 {% endblock %}

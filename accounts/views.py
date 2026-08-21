@@ -4487,7 +4487,13 @@ def _top_products_from_details(
                 else float(meta.get("selling") or unit_price),
             }
     out = []
-    for pid, rev in sorted(product_rev.items(), key=lambda x: x[1], reverse=True)[:limit]:
+    ranked = sorted(
+        product_qty.items(),
+        key=lambda x: (float(x[1]), float(product_rev.get(x[0]) or 0)),
+        reverse=True,
+    )[:limit]
+    for pid, qty in ranked:
+        rev = product_rev.get(pid) or Decimal("0")
         meta = product_meta.get(pid) or {}
         p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
         out.append(
@@ -4495,7 +4501,7 @@ def _top_products_from_details(
                 "id": str(pid),
                 "name": (p.name if p else "") or meta.get("name") or "Mahsulot",
                 "image": (p.display_image if p else "") or meta.get("image") or "",
-                "qty": float(product_qty[pid]),
+                "qty": float(qty),
                 "revenue": float(rev),
                 "stock": float(p.stock_qty) if p else float(meta.get("stock") or 0),
                 "wholesale": float(p.wholesale_price or p.cost_price)
@@ -4704,14 +4710,14 @@ def _top_products_from_api_items(
         )
         if len(out) >= limit:
             break
-    out.sort(key=lambda r: r["revenue"], reverse=True)
+    out.sort(key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)), reverse=True)
     return out[:limit]
 
 
 @login_required
 @require_GET
 def cabinet_top_stats(request):
-    """Top tovarlar — tanlangan sana oralig‘i bo‘yicha (AJAX)."""
+    """Top tovarlar — tanlangan oralig‘dagi BARCHA cheklar yig‘indisi (AJAX)."""
     if not session_has_tezpos(request):
         return JsonResponse({"error": "auth"}, status=401)
 
@@ -4728,44 +4734,86 @@ def cabinet_top_stats(request):
         if (end - start).days > 730:
             start = end - timedelta(days=730)
     else:
-        start, end = today - timedelta(days=6), today
+        start, end = today, today
 
     span = (end - start).days + 1
     try:
-        limit = max(1, min(100, int(request.GET.get("limit") or 100)))
+        limit = max(1, min(500, int(request.GET.get("limit") or 100)))
     except (TypeError, ValueError):
         limit = 100
 
-    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    pack = _build_top_products_pack(
+        token, server, start=start, end=end, limit=limit
+    )
+    if pack.get("error") == "auth":
+        clear_tezpos_session(request)
+        return JsonResponse({"error": "auth"}, status=401)
+    if pack.get("error"):
+        return JsonResponse({"error": pack["error"]}, status=502)
 
-    # Tez yo‘l: avval API top-products
+    return JsonResponse(
+        {
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "topProducts": pack.get("topProducts") or [],
+            "count": len(pack.get("topProducts") or []),
+            "checks": pack.get("checks") or 0,
+            "details_used": pack.get("details_used") or 0,
+            "source": pack.get("source") or "sales",
+            "span_days": span,
+        }
+    )
+
+
+def _build_top_products_pack(
+    token: str,
+    server: str,
+    *,
+    start: date,
+    end: date,
+    limit: int = 100,
+) -> dict:
+    """
+    Belgilangan kun(lar)dagi barcha cheklar bo‘yicha mahsulot yig‘indisi.
+    Bitta mijozga katta savdo emas — kunlik/oralig‘ umumiy sotilgan miqdor.
+    """
+    span = (end - start).days + 1
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    if span <= 1:
+        max_pages, detail_cap, overall = 80, 400, 55.0
+    elif span <= 7:
+        max_pages, detail_cap, overall = 60, 300, 50.0
+    elif span <= 31:
+        max_pages, detail_cap, overall = 50, 200, 45.0
+    else:
+        max_pages, detail_cap, overall = 40, 120, 40.0
+
     try:
-        top_payload = _memo_get(
-            f"{memo_prefix}|topapi3|{start}|{end}|{limit}",
-            50.0,
-            lambda: tezpos_api.get_top_products(
+        sales = _memo_get(
+            f"{memo_prefix}|topsales4|{start}|{end}|{max_pages}",
+            60.0,
+            lambda: tezpos_api.get_sales(
                 token,
                 server,
-                days=span,
-                limit=limit,
                 date_from=start.isoformat(),
                 date_to=end.isoformat(),
+                timeout=22,
+                max_pages=max_pages,
             ),
-        ) or {"items": []}
+        ) or []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
-            clear_tezpos_session(request)
-            return JsonResponse({"error": "auth"}, status=401)
-        top_payload = {"items": []}
-    except (TimeoutError, OSError):
-        top_payload = {"items": []}
+            return {"error": "auth"}
+        return {"error": str(exc)}
+    except (TimeoutError, OSError) as exc:
+        return {"error": str(exc)}
 
     products_raw = []
     try:
         products_raw = _memo_get(
             f"{memo_prefix}|catalog_snap",
             120.0,
-            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=10) or [],
+            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=12) or [],
         ) or []
     except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
         products_raw = []
@@ -4774,49 +4822,13 @@ def cabinet_top_stats(request):
     products_by_id = {str(p.id): p for p in products}
     products_by_name = _products_by_name(products)
 
-    from_api = _top_products_from_api_items(
-        top_payload.get("items") or [], products_by_id, limit=limit
-    )
-    if from_api:
-        return JsonResponse(
-            {
-                "from": start.isoformat(),
-                "to": end.isoformat(),
-                "topProducts": from_api,
-                "count": len(from_api),
-                "source": "api",
-            }
-        )
-
-    detail_cap = 80 if span <= 1 else 40
-    max_pages = 40 if span <= 1 else 20
-    try:
-        sales = _memo_get(
-            f"{memo_prefix}|topsales3|{start}|{end}|{max_pages}",
-            45.0,
-            lambda: tezpos_api.get_sales(
-                token,
-                server,
-                date_from=start.isoformat(),
-                date_to=end.isoformat(),
-                timeout=16,
-                max_pages=max_pages,
-            ),
-        ) or []
-    except tezpos_api.TezPosApiError as exc:
-        if getattr(exc, "status", None) in (401, 403):
-            clear_tezpos_session(request)
-            return JsonResponse({"error": "auth"}, status=401)
-        return JsonResponse({"error": str(exc)}, status=502)
-    except (TimeoutError, OSError) as exc:
-        return JsonResponse({"error": str(exc)}, status=504)
-
     sales = [s for s in sales if isinstance(s, dict)]
     sales = [
         s
         for s in sales
         if (d := _sale_day(s)) is not None and start <= d <= end
     ]
+
     details_map: dict[str, dict] = {}
     need_fetch: list[str] = []
     for s in sales:
@@ -4834,25 +4846,138 @@ def cabinet_top_stats(request):
             server,
             need_fetch,
             limit=min(detail_cap, max(len(need_fetch), 1)),
-            per_sale_timeout=2.0,
-            overall_timeout=18.0,
+            per_sale_timeout=2.2,
+            overall_timeout=overall,
         )
         details_map.update(fetched)
 
     top_products = _top_products_from_details(
         details_map, products_by_id, products_by_name, limit=limit
     )
-    return JsonResponse(
-        {
-            "from": start.isoformat(),
-            "to": end.isoformat(),
-            "topProducts": top_products,
-            "count": len(top_products),
-            "checks": len(sales),
-            "source": "sales" if top_products else "none",
-            "details_used": len(details_map),
-        }
+
+    # Agar cheklar itemsiz qolsa — API ni faqat zaxira sifatida
+    if not top_products:
+        try:
+            top_payload = tezpos_api.get_top_products(
+                token,
+                server,
+                days=span,
+                limit=limit,
+                date_from=start.isoformat(),
+                date_to=end.isoformat(),
+            ) or {"items": []}
+        except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+            top_payload = {"items": []}
+        top_products = _top_products_from_api_items(
+            top_payload.get("items") or [], products_by_id, limit=limit
+        )
+        # API ham revenue bo‘yicha — qty ga o‘tkazamiz
+        top_products.sort(
+            key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)),
+            reverse=True,
+        )
+        source = "api"
+    else:
+        source = "sales"
+
+    return {
+        "topProducts": top_products,
+        "checks": len(sales),
+        "details_used": len(details_map),
+        "source": source,
+        "products_by_id": products_by_id,
+    }
+
+
+@login_required
+@require_GET
+def cabinet_top_export(request):
+    """Top reyting — tanlangan sana oralig‘i Excel."""
+    if not session_has_tezpos(request):
+        return redirect("login")
+
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    today = timezone.localdate()
+    custom_from = _parse_iso_date(request.GET.get("from"))
+    custom_to = _parse_iso_date(request.GET.get("to"))
+    if custom_from and custom_to:
+        start, end = custom_from, custom_to
+        if end < start:
+            start, end = end, start
+        if (end - start).days > 730:
+            start = end - timedelta(days=730)
+    else:
+        start, end = today, today
+
+    try:
+        limit = max(1, min(500, int(request.GET.get("limit") or 100)))
+    except (TypeError, ValueError):
+        limit = 100
+
+    pack = _build_top_products_pack(
+        token, server, start=start, end=end, limit=limit
     )
+    if pack.get("error") == "auth":
+        clear_tezpos_session(request)
+        return redirect("login")
+    if pack.get("error"):
+        return HttpResponse(
+            pack["error"], status=502, content_type="text/plain; charset=utf-8"
+        )
+
+    rows = pack.get("topProducts") or []
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Top reyting"
+    ws.append(
+        [
+            "#",
+            "Mahsulot",
+            "Sotildi",
+            "Tushum",
+            "Sana dan",
+            "Sana gacha",
+            "Cheklar",
+        ]
+    )
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for i, row in enumerate(rows, start=1):
+        ws.append(
+            [
+                i,
+                row.get("name") or "",
+                float(row.get("qty") or 0),
+                float(row.get("revenue") or 0),
+                start.isoformat(),
+                end.isoformat(),
+                int(pack.get("checks") or 0),
+            ]
+        )
+    ws.column_dimensions["A"].width = 6
+    ws.column_dimensions["B"].width = 42
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 16
+    for col in ("C", "D"):
+        for cell in ws[col][1:]:
+            cell.number_format = "#,##0.##"
+            cell.alignment = Alignment(horizontal="right")
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    fname = f"top_reyting_{start.isoformat()}_{end.isoformat()}.xlsx"
+    response = HttpResponse(
+        bio.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{fname}"'
+    return response
 
 
 @login_required

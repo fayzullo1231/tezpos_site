@@ -1586,6 +1586,11 @@
 
   let topsFrom = appliedFrom;
   let topsTo = appliedTo;
+  // Top reyting: default — bugun (to‘liq kun yig‘indisi)
+  if (productsGrid && data.section === "tops") {
+    topsFrom = toIso(todayDate);
+    topsTo = toIso(todayDate);
+  }
   let topsDraftStart = parseIso(topsFrom);
   let topsDraftEnd = parseIso(topsTo);
   let topsViewYear = (topsDraftEnd || todayDate).getFullYear();
@@ -1594,6 +1599,17 @@
   let topsReq = 0;
   const topsCache = {};
   let topsCalHome = null;
+  const topsExportBtn = document.getElementById("tops-export-btn");
+
+  const syncTopsExport = () => {
+    if (!topsExportBtn || !data.topExportUrl) return;
+    const qs = new URLSearchParams({
+      from: topsFrom,
+      to: topsTo,
+      limit: String(productsSelect?.value || 100),
+    });
+    topsExportBtn.href = `${data.topExportUrl}?${qs}`;
+  };
 
   const sortTopRows = (rows, mode) => {
     const list = (rows || []).slice();
@@ -1628,11 +1644,12 @@
     if (topsDateLabel) topsDateLabel.textContent = label;
     if (topsPeriodHint) {
       if (topsFrom && topsTo && topsFrom === topsTo) {
-        topsPeriodHint.textContent = `${label} — shu kunda eng yaxshi sotilgan mahsulotlar`;
+        topsPeriodHint.textContent = `${label} — shu kundagi barcha cheklar bo‘yicha sotilgan miqdor`;
       } else {
-        topsPeriodHint.textContent = `${label} — eng yaxshi sotilgan mahsulotlar`;
+        topsPeriodHint.textContent = `${label} — oralig‘dagi barcha cheklar bo‘yicha sotilgan miqdor`;
       }
     }
+    syncTopsExport();
   };
 
   const updateTopsBanner = () => {
@@ -1754,23 +1771,26 @@
   };
 
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
-    const key = `${fromIso}_${toIsoVal}`;
+    const key = `full_${fromIso}_${toIsoVal}`;
     if (!Object.keys(topsCache).length && data._topsCache) {
-      Object.assign(topsCache, data._topsCache);
+      // Eski API keshi (noto‘g‘ri) — full_ kalitlaridan tashqarisini tashlaymiz
+      Object.keys(data._topsCache).forEach((k) => {
+        if (String(k).startsWith("full_")) topsCache[k] = data._topsCache[k];
+      });
     }
+    syncTopsExport();
     if (!force && topsCache[key]) {
       data.topProducts = topsCache[key];
       renderProducts(Number(productsSelect?.value || 10));
       return;
     }
-    // Boshqa kalitdan kesh — darhol ko‘rsatish
     if (!force && !topsCache[key] && (data.topProducts || []).length) {
       renderProducts(Number(productsSelect?.value || 10));
     }
     const url = data.topStatsUrl;
     if (!url || !productsGrid) return;
     const reqId = ++topsReq;
-    const hasCache = Boolean(topsCache[key] || (data.topProducts || []).length);
+    const hasCache = Boolean(topsCache[key]);
     if (!hasCache) {
       productsGrid.className = "tops-list";
       productsGrid.innerHTML = skelHtml("lines", 8);
@@ -1793,6 +1813,7 @@
       data.topProducts = rows;
       data._topsCache = topsCache;
       if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
+      syncTopsExport();
       renderProducts(Number(productsSelect?.value || 10));
     } catch (_err) {
       if (reqId !== topsReq) return;
@@ -1918,11 +1939,13 @@
       });
     }
     productsSelect?.addEventListener("change", () => {
+      syncTopsExport();
       renderProducts(Number(productsSelect.value));
     });
     topsSortSelect?.addEventListener("change", () => {
       renderProducts(Number(productsSelect?.value || 10));
     });
+    syncTopsHint();
     loadTopProducts(topsFrom, topsTo, { force: true });
   }
 
