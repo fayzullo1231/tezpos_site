@@ -4492,13 +4492,22 @@
     data.daySales = rows;
     const kpis = document.querySelectorAll(".sales-kpis .sales-kpi strong");
     if (kpis[0]) kpis[0].textContent = fmtMoney(payload.gross);
-    if (kpis[1]) kpis[1].innerHTML = fmtMoney((payload.gross || 0) - (payload.profit || 0)) + " <em>SUM</em>";
+    if (kpis[1]) {
+      const costVal =
+        payload.cost != null
+          ? payload.cost
+          : Math.max(0, Number(payload.gross || 0) - Number(payload.profit || 0));
+      kpis[1].innerHTML = fmtMoney(costVal) + " <em>SUM</em>";
+    }
     if (kpis[2]) kpis[2].textContent = fmtMoney(payload.gross);
     if (kpis[3]) kpis[3].textContent = fmtMoney(payload.profit);
     if (kpis[4]) kpis[4].textContent = String(payload.count || 0);
-    const exportBtn = document.querySelector(".btn-export");
-    if (exportBtn && data.daySalesExportUrl && payload.sale_date) {
-      exportBtn.href = data.daySalesExportUrl + "?sale_date=" + encodeURIComponent(payload.sale_date);
+    const exportBtn = document.querySelector("#sales-mgmt-table")
+      ?.closest(".cabinet-card, section, .cabinet-content")
+      ?.querySelector(".btn-export") || document.querySelector(".btn-export");
+    if (exportBtn && data.daySalesExportUrl) {
+      const d = payload.sale_date || data.saleDate || "";
+      exportBtn.href = data.daySalesExportUrl + (d ? "?sale_date=" + encodeURIComponent(d) : "");
     }
     if (!rows.length) {
       tbody.innerHTML =
@@ -4508,11 +4517,21 @@
     tbody.innerHTML = rows
       .map((s) => {
         const id = String(s.id || "");
-        const short = id.length > 8 ? id.slice(0, 8) + "…" : id;
+        const receipt =
+          s.receipt_number || s.receipt_no || (id.length > 10 ? id.slice(0, 8) + "…" : id);
         const total = s.total_amount != null ? s.total_amount : s.total;
         const cost = s.total_cost != null ? s.total_cost : s.cost;
-        return `<tr class="is-clickable" data-sale-id="${id}" data-search="${id} ${(s.customer || "").toLowerCase()}">
-          <td>#${short}</td>
+        const search = [
+          receipt,
+          id,
+          s.customer || "",
+          s.cashier || "",
+          s.payment_label || "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        return `<tr class="is-clickable" data-sale-id="${id}" data-search="${search.replace(/"/g, "")}">
+          <td>No ${receipt}</td>
           <td>${s.time || s.created_display || "—"}</td>
           <td>${s.cashier || "—"}</td>
           <td>${s.customer || "—"}</td>
@@ -4640,6 +4659,7 @@
 
     body.innerHTML = `
       <dl class="receipt-meta">
+        <div class="receipt-row"><dt>Chek</dt><dd>No ${sale.receipt_number || sale.receipt_no || sale.id}</dd></div>
         <div class="receipt-row"><dt>ID</dt><dd>#${sale.id}</dd></div>
         <div class="receipt-row"><dt>Kassir</dt><dd>${sale.cashier || "—"}</dd></div>
         <div class="receipt-row"><dt>Mijoz</dt><dd>${sale.customer || "—"}</dd></div>

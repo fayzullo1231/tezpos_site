@@ -383,6 +383,7 @@ def build_shift_excel(
     debtors_rows: list[dict] | None = None,
     low_stock_rows: list[dict] | None = None,
     sold_product_rows: list[dict] | None = None,
+    stock_in_rows: list[dict] | None = None,
 ) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
@@ -408,6 +409,8 @@ def build_shift_excel(
         ("Qarzdorlar (jami)", shift.get("debtors_count") or 0),
         ("Qarzdorlar summasi", shift.get("debtors_total") or 0),
         ("Kam qoldiq (tovar)", shift.get("low_stock_count") or 0),
+        ("Kirim mahsulot (tur)", shift.get("stock_in_count") or 0),
+        ("Kirim summasi", shift.get("stock_in_total") or 0),
     ]
     money_keys = {
         "Jami savdo",
@@ -416,6 +419,7 @@ def build_shift_excel(
         "Narxlar ro‘yxatida (optom)",
         "Qarzga savdo (smena)",
         "Qarzdorlar summasi",
+        "Kirim summasi",
     }
     ws.append(["Ko‘rsatkich", "Qiymat"])
     for k, v in summary:
@@ -528,6 +532,18 @@ def build_shift_excel(
             ]
         )
 
+    ws7 = wb.create_sheet("Kirim mahsulotlar")
+    ws7.append(["#", "Mahsulot", "Miqdor", "Tannarx"])
+    for i, row in enumerate(stock_in_rows or [], start=1):
+        ws7.append(
+            [
+                i,
+                row.get("name") or "",
+                row.get("qty") or 0,
+                format_money_som(row.get("cost") or 0),
+            ]
+        )
+
     wrap = Alignment(wrap_text=True, vertical="top")
     header_font = Font(bold=True)
     # Ustun indekslari (1-based): nom kesilmasin
@@ -539,6 +555,7 @@ def build_shift_excel(
         "Smena qarzlari": {1},
         "Qarzdorlar": {2},
         "Kam qoldiq": {2},
+        "Kirim mahsulotlar": {2},
     }
 
     for sheet in wb.worksheets:
@@ -714,14 +731,29 @@ def build_shift_message(
             "",
             f"⚠️ <b>Kam qoldiq:</b> {int(shift.get('low_stock_count') or 0)} ta mahsulot",
             "",
+            f"📥 <b>Kirim qilingan mahsulotlar:</b> {int(shift.get('stock_in_count') or 0)} ta",
+            f"💰 <b>Kirim summasi:</b> {format_money(shift.get('stock_in_total') or 0)} so‘m",
+            "",
             "━━━━━━━━━━━━━━━━━━",
             "",
             "📎 <b>Excel hisobot tayyor</b>",
             "• Kunlik sotuvlar",
             "• Sotilgan mahsulotlar",
+            "• Kirim qilingan mahsulotlar",
             "• Qarzdorlar ro‘yxati",
             "• Kam qoldiq mahsulotlar",
         ]
+
+        stock_rows = shift.get("stock_in_products") or []
+        if stock_rows:
+            lines += ["", "📥 <b>Kirim (top)</b>"]
+            for p in stock_rows[:12]:
+                lines.append(
+                    f"• {p.get('name') or 'Mahsulot'}: {format_qty(p.get('qty') or 0)} "
+                    f"— <b>{format_money(p.get('cost') or 0)} so‘m</b>"
+                )
+            if len(stock_rows) > 12:
+                lines.append(f"… yana {len(stock_rows) - 12} ta (Excelda)")
 
         debtors = shift.get("debtors") or []
         if debtors:

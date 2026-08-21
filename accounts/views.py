@@ -576,7 +576,7 @@ def cabinet_day_sales(request):
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     try:
         day_sales_raw = _memo_get(
-            f"{memo_prefix}|dayv3|{sale_date.isoformat()}",
+            f"{memo_prefix}|dayv4|{sale_date.isoformat()}",
             90.0,
             lambda: tezpos_api.get_sales_for_day(token, server, sale_date.isoformat()),
         )
@@ -606,47 +606,57 @@ def cabinet_day_sales(request):
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
     products_by_id = {str(p.id): p for p in products}
     products_by_name = _products_by_name(products)
+    cashier = _cashier_name(request)
+
+    need_fetch = [
+        str(s.get("id"))
+        for s in day_sales_raw
+        if s.get("id")
+        and (
+            not _sale_items(s)
+            or not _display_receipt_number(s)
+            or _sale_level_cost_profit(s, _dec(s.get("total"))) is None
+        )
+    ]
+    details = {}
+    if need_fetch:
+        details = _fetch_sale_details(
+            token,
+            server,
+            need_fetch,
+            limit=min(len(need_fetch), 250),
+            per_sale_timeout=2.2,
+            overall_timeout=40.0,
+        )
+
     payload = []
     day_gross = Decimal("0")
     day_cost = Decimal("0")
     day_profit = Decimal("0")
-    cashier = _cashier_name(request)
     for s in day_sales_raw:
-        total = _dec(s.get("total"))
-        day_gross += total
-        cost, profit = _estimate_sale_profit(s, products_by_id, total, products_by_name)
-        day_cost += cost
-        day_profit += profit
-        dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
-        method = s.get("payment_type") or s.get("payment_method") or "cash"
-        if _sale_items(s):
-            row = _serialize_sale_payload(
-                s, cashier, products_by_id, products_by_name
-            )
+        sid = str(s.get("id") or "")
+        detail = details.get(sid) if sid else None
+        if isinstance(detail, dict):
+            merged = {**s, **detail}
+            if not _sale_items(merged) and _sale_items(s):
+                merged = {**detail, **s}
         else:
-            row = {
-                "id": str(s.get("id") or ""),
-                "time": timezone.localtime(dt).strftime("%H:%M") if dt else "",
-                "created_display": timezone.localtime(dt).strftime("%d.%m.%Y, %H:%M") if dt else "",
-                "customer": s.get("customer_name") or "",
-                "cashier": cashier,
-                "total": float(total),
-                "total_amount": float(total),
-                "cost": float(cost),
-                "total_cost": float(cost),
-                "profit": float(profit),
-                "payment": method,
-                "payment_method": method,
-                "payment_label": PAYMENT_LABELS.get(
-                    str(method).strip().lower(), str(method or "—")
-                ),
-                "status": "Yakunlangan",
-                "type": "Sotilgan",
-                "discount": float(_dec(s.get("discount_amount"))),
-                "items": [],
-                "needs_detail": True,
-            }
+            merged = s
+        total = _dec(merged.get("total") or s.get("total"))
+        day_gross += total
+        row = _serialize_sale_payload(
+            merged, cashier, products_by_id, products_by_name
+        )
+        # Ro‘yxatda chek raqami bo‘lmasa — asosiy sale dan
+        if not _display_receipt_number({"receipt_number": row.get("receipt_number")}):
+            rn = _display_receipt_number(s, merged)
+            if rn:
+                row["receipt_number"] = rn
+                row["receipt_no"] = rn
+        day_cost += _dec(row.get("total_cost"))
+        day_profit += _dec(row.get("profit"))
         payload.append(row)
+
     return JsonResponse(
         {
             "ok": True,
@@ -1138,8 +1148,6 @@ def _receipt_number(*sources: dict | None) -> str:
         "check_number",
         "check_no",
         "checkNumber",
-        "number",
-        "receipt",
     )
     for src in sources:
         if not isinstance(src, dict):
@@ -1147,11 +1155,60 @@ def _receipt_number(*sources: dict | None) -> str:
         for key in keys:
             val = src.get(key)
             if val not in (None, ""):
-                return str(val)
+                return str(val).strip()
     for src in sources:
         if isinstance(src, dict) and src.get("id") not in (None, ""):
             return str(src.get("id"))
     return ""
+
+
+def _display_receipt_number(*sources: dict | None) -> str:
+    """TezPOS dasturidagi chek raqami (UUID emas)."""
+    keys = (
+        "receipt_number",
+        "receipt_no",
+        "check_number",
+        "check_no",
+        "checkNumber",
+    )
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in keys:
+            val = src.get(key)
+            if val in (None, ""):
+                continue
+            text = str(val).strip()
+            # UUID o‘xshash qiymatlarni rad etamiz
+            if len(text) >= 32 and text.count("-") >= 4:
+                continue
+            return text
+    return ""
+
+
+def _sale_level_cost_profit(sale: dict, total: Decimal) -> tuple[Decimal, Decimal] | None:
+    """API chekda tayyor tannarx/foyda bo‘lsa — shundan foydalanamiz."""
+    cost = _dec(
+        sale.get("total_cost")
+        or sale.get("cost_total")
+        or sale.get("purchase_total")
+        or sale.get("cogs")
+        or sale.get("cost_amount")
+    )
+    profit = _dec(
+        sale.get("profit")
+        or sale.get("net_profit")
+        or sale.get("gross_profit")
+    )
+    if cost > 0:
+        if profit == 0 and total > 0:
+            profit = (total - cost).quantize(Decimal("0.01"))
+        return cost.quantize(Decimal("0.01")), profit.quantize(Decimal("0.01"))
+    if profit != 0 and total > 0:
+        cost = (total - profit).quantize(Decimal("0.01"))
+        if cost >= 0:
+            return cost, profit.quantize(Decimal("0.01"))
+    return None
 
 
 def _item_qty(item: dict) -> Decimal:
@@ -2652,7 +2709,10 @@ def _estimate_sale_profit(
     Qaytaradi: (tannarx, foyda).
     Sotib olish narxi yo'q tovarlar tashlab ketiladi — ularning tushumi foydaga kirmaydi.
     """
-    del total, margin_ratio  # chek jami / o'rtacha marja bilan taxmin qilinmaydi
+    del margin_ratio
+    level = _sale_level_cost_profit(sale_detail, total)
+    if level is not None:
+        return level
     items = _sale_items(sale_detail)
     if not items:
         return Decimal("0"), Decimal("0")
@@ -2683,24 +2743,24 @@ def _serialize_sale_payload(
     items = []
     items_cost = Decimal("0")
     costed_rev = Decimal("0")
-    for item in sale_detail.get("items") or []:
-        qty = _dec(item.get("quantity"))
-        unit_price = _dec(item.get("unit_price"))
+    for item in _sale_items(sale_detail):
+        qty = _item_qty(item)
+        unit_price = _item_unit_price(item)
         p = _find_product(
             products_by_id,
             products_by_name,
-            product_id=str(item.get("product_id") or ""),
-            product_name=item.get("product_name") or "",
+            product_id=str(item.get("product_id") or item.get("product") or ""),
+            product_name=item.get("product_name") or item.get("name") or "",
         )
         unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
-        line_total = _dec(item.get("total"), str(qty * unit_price))
+        line_total = _dec(item.get("total") or item.get("line_total"), str(qty * unit_price))
         line_cost = qty * unit_cost if unit_cost > 0 else Decimal("0")
         if unit_cost > 0:
             items_cost += line_cost
             costed_rev += line_total
         items.append(
             {
-                "name": item.get("product_name") or (p.name if p else "Mahsulot"),
+                "name": item.get("product_name") or item.get("name") or (p.name if p else "Mahsulot"),
                 "qty": float(qty),
                 "unit_price": float(unit_price),
                 "unit_cost": float(unit_cost),
@@ -2709,14 +2769,28 @@ def _serialize_sale_payload(
             }
         )
     total_amount = _dec(sale_detail.get("total"))
-    profit = (costed_rev - items_cost).quantize(Decimal("0.01"))
+    level = _sale_level_cost_profit(sale_detail, total_amount)
+    if level is not None and not items:
+        items_cost, profit = level
+    else:
+        profit = (costed_rev - items_cost).quantize(Decimal("0.01"))
+        if items_cost <= 0 and level is not None:
+            items_cost, profit = level
     dt = _parse_dt(sale_detail.get("completed_at") or sale_detail.get("created_at"))
     created_display = timezone.localtime(dt).strftime("%d.%m.%Y, %H:%M") if dt else ""
-    method = sale_detail.get("payment_type") or "cash"
+    method = (
+        sale_detail.get("payment_type")
+        or sale_detail.get("payment_method")
+        or "cash"
+    )
+    receipt_no = _display_receipt_number(sale_detail) or _receipt_number(sale_detail)
     return {
         "id": str(sale_detail.get("id") or ""),
+        "receipt_number": receipt_no,
+        "receipt_no": receipt_no,
         "created_at": dt.isoformat() if dt else "",
         "created_display": created_display,
+        "time": timezone.localtime(dt).strftime("%H:%M") if dt else "",
         "customer": sale_detail.get("customer_name") or "",
         "cashier": cashier,
         "status": "Yakunlangan",
@@ -2724,10 +2798,13 @@ def _serialize_sale_payload(
         "payment_method": method,
         "payment_label": _payment_label(method),
         "total_amount": float(total_amount),
+        "total": float(total_amount),
         "total_cost": float(items_cost),
+        "cost": float(items_cost),
         "profit": float(profit),
         "discount": float(_dec(sale_detail.get("discount_amount"))),
         "items": items,
+        "needs_detail": not bool(items),
     }
 
 
@@ -2826,45 +2903,75 @@ def _build_near_min_stock(products):
 
 
 def _export_daily_sales_excel(day_sales_payload, sale_date, cashier):
-    response = HttpResponse(content_type="text/csv; charset=utf-8")
-    filename = f"kunlik_sotuv_{sale_date.isoformat()}.csv"
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
-    response.write("\ufeff")
-    writer = csv.writer(response, delimiter=";")
-    writer.writerow(
-        [
-            "ID",
-            "Sana",
-            "Kassir",
-            "Mijoz",
-            "Turi",
-            "Status",
-            "To‘lov",
-            "Jami",
-            "Umumiy tannarxi",
-            "Foyda",
-            "Mahsulotlar",
-        ]
-    )
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Kunlik sotuvlar"
+    headers = [
+        "Chek raqami",
+        "ID",
+        "Sana",
+        "Kassir",
+        "Mijoz",
+        "Turi",
+        "Status",
+        "To‘lov",
+        "Jami",
+        "Umumiy tannarxi",
+        "Foyda",
+        "Mahsulotlar",
+    ]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
     for payload in day_sales_payload:
         products_txt = " | ".join(
-            f"{it['name']} ({it['qty']:g} x {it['unit_price']:g})" for it in payload["items"]
+            f"{it['name']} ({it['qty']:g} x {it['unit_price']:g})"
+            for it in (payload.get("items") or [])
         )
-        writer.writerow(
+        receipt = (
+            payload.get("receipt_number")
+            or payload.get("receipt_no")
+            or payload.get("id")
+            or ""
+        )
+        ws.append(
             [
-                f"#{payload['id']}",
+                str(receipt),
+                str(payload.get("id") or ""),
                 payload.get("created_display") or "",
-                cashier,
-                payload["customer"],
-                payload["type"],
-                payload["status"],
-                payload["payment_label"],
-                f'{payload["total_amount"]:.2f}'.replace(".", ","),
-                f'{payload["total_cost"]:.2f}'.replace(".", ","),
-                f'{payload["profit"]:.2f}'.replace(".", ","),
+                cashier or payload.get("cashier") or "",
+                payload.get("customer") or "",
+                payload.get("type") or "Sotilgan",
+                payload.get("status") or "Yakunlangan",
+                payload.get("payment_label") or "",
+                float(payload.get("total_amount") or payload.get("total") or 0),
+                float(payload.get("total_cost") or payload.get("cost") or 0),
+                float(payload.get("profit") or 0),
                 products_txt,
             ]
         )
+    for idx, _ in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = 16 if idx < 12 else 40
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["L"].width = 48
+    for row in ws.iter_rows(min_row=2, min_col=9, max_col=11):
+        for cell in row:
+            cell.number_format = "#,##0.00"
+            cell.alignment = Alignment(horizontal="right")
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    filename = f"kunlik_sotuv_{sale_date.isoformat()}.xlsx"
+    response = HttpResponse(
+        bio.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
 
@@ -5198,7 +5305,7 @@ def _shift_report_bundle(
             sale_profit = total * float(margin_ratio)
         sales_rows.append(
             {
-                "receipt_no": _receipt_number(s, detail),
+                "receipt_no": _display_receipt_number(detail, s) or _receipt_number(s, detail),
                 "time": time_s,
                 "customer": cust,
                 "products_text": products_text,
@@ -5250,6 +5357,78 @@ def _shift_report_bundle(
     # Kam qoldiq
     low_stock_rows = _build_near_min_stock(products)
 
+    # Kirim qilingan mahsulotlar (smena kunlari)
+    stock_in_rows: list[dict] = []
+    stock_in_sku = 0
+    stock_in_qty = 0.0
+    stock_in_cost = 0.0
+    try:
+        raw_receipts = tezpos_api.get_stock_receipts(
+            token,
+            server,
+            date_from=date_from,
+            date_to=date_to,
+            timeout=14,
+            max_pages=30,
+        ) or []
+        filtered_receipts = []
+        for r in raw_receipts:
+            if not isinstance(r, dict):
+                continue
+            rdt = _parse_dt(
+                r.get("completed_at")
+                or r.get("received_at")
+                or r.get("created_at")
+                or r.get("date")
+            )
+            d = _receipt_day(r)
+            if opened_dt and closed_dt and rdt:
+                if opened_dt <= rdt <= closed_dt:
+                    filtered_receipts.append(r)
+            elif d and date_from <= d.isoformat() <= date_to:
+                filtered_receipts.append(r)
+        need_ids = [
+            str(r.get("id") or "")
+            for r in filtered_receipts
+            if r.get("id") and not _receipt_items(r)
+        ]
+        fetched_rc: dict[str, dict] = {}
+        if need_ids:
+            def _one_rc(rid: str):
+                try:
+                    return rid, tezpos_api.get_stock_receipt(token, server, rid)
+                except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+                    return rid, None
+
+            with ThreadPoolExecutor(max_workers=min(8, max(2, len(need_ids)))) as pool:
+                for fut in as_completed(
+                    [pool.submit(_one_rc, rid) for rid in need_ids[:80]]
+                ):
+                    try:
+                        rid, data = fut.result()
+                    except Exception:
+                        continue
+                    if isinstance(data, dict):
+                        fetched_rc[rid] = data
+        serialized = []
+        for r in filtered_receipts:
+            rid = str(r.get("id") or "")
+            detail = fetched_rc.get(rid) or r
+            serialized.append(
+                _serialize_stock_receipt(detail, products_by_id, products_by_name)
+            )
+        stock_in_rows = _aggregate_stock_in_products(serialized)
+        stock_in_sku = len(stock_in_rows)
+        stock_in_qty = float(sum(float(x.get("qty") or 0) for x in stock_in_rows))
+        stock_in_cost = float(sum(float(x.get("cost") or 0) for x in stock_in_rows))
+        if stock_in_cost <= 0:
+            stock_in_cost = float(
+                sum(float(x.get("total_cost") or 0) for x in serialized)
+            )
+    except Exception:
+        tg_logger.exception("shift stock-in load failed")
+        stock_in_rows = []
+
     opened_disp = shift.get("opened_display") or shift.get("opened_at") or ""
     closed_disp = shift.get("closed_display") or shift.get("closed_at") or ""
     # Namuna: 09.08.2026 · 10:17
@@ -5278,6 +5457,10 @@ def _shift_report_bundle(
         "debtors_total": float(debtors_total),
         "low_stock": low_stock_rows,
         "low_stock_count": len(low_stock_rows),
+        "stock_in_count": stock_in_sku,
+        "stock_in_qty": stock_in_qty,
+        "stock_in_total": stock_in_cost,
+        "stock_in_products": stock_in_rows[:80],
         "opened_at_display": opened_disp,
         "closed_at_display": closed_disp,
         "duration_label": duration_label,
@@ -5291,6 +5474,7 @@ def _shift_report_bundle(
         "debtors_rows": debtors_rows,
         "low_stock_rows": low_stock_rows,
         "sold_product_rows": sold_product_rows,
+        "stock_in_rows": stock_in_rows,
         "excel": tg.build_shift_excel(
             business_name=biz,
             shift=enriched,
@@ -5300,6 +5484,7 @@ def _shift_report_bundle(
             debtors_rows=debtors_rows,
             low_stock_rows=low_stock_rows,
             sold_product_rows=sold_product_rows,
+            stock_in_rows=stock_in_rows,
         ),
     }
 

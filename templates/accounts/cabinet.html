@@ -1020,7 +1020,7 @@
           <table class="sales-mgmt-table" id="sales-mgmt-table">
             <thead>
               <tr>
-                <th>ID</th>
+                <th>Chek</th>
                 <th>Sana</th>
                 <th>Kassir</th>
                 <th>Mijoz</th>
@@ -1394,7 +1394,7 @@
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
   (function () {
-    var P = "tezpos_v9_";
+    var P = "tezpos_v10_";
     function g(k) {
       try {
         var s = sessionStorage.getItem(P + k);
@@ -1448,5 +1448,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=tops-ui-2" defer></script>
+<script src="/static/cabinet.js?v=day-sales-receipt-2" defer></script>
 {% endblock %}
