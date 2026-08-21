@@ -1357,31 +1357,64 @@
     const stockInMode = Boolean(opts.stockIn);
     const initial = (item.name || "?").trim().charAt(0).toUpperCase();
     const delay = rank != null ? Math.min(rank - 1, 10) * 45 : 0;
-    if (topsMode || stockInMode) {
+    if (topsMode) {
       const media = item.image
         ? `<img src="${item.image}" alt="" loading="lazy" width="44" height="44">`
         : `<span class="tops-row-fallback">${initial}</span>`;
-      const qtyLabel = stockInMode ? "Kirim" : "Sotildi";
-      const moneyLabel = stockInMode ? "Tannarx" : "Tushum";
+      const cost = Number(item.cost || 0);
+      const selling = Number(item.selling || 0);
+      const wholesale = Number(item.wholesale || 0);
+      const qtySell = Number(item.qty_selling || 0);
+      const qtyOptom = Number(item.qty_wholesale || 0);
+      const profit = Number(item.profit || 0);
+      return `<article class="tops-row tops-row--rich cab-reveal-item" style="animation-delay:${delay}ms">
+        <div class="tops-row-rank">${rank != null ? rank : "—"}</div>
+        <div class="tops-row-media">${media}</div>
+        <div class="tops-row-main">
+          <div class="tops-row-name">${item.name || "—"}</div>
+          <div class="tops-row-prices">
+            <span><em>Sotib olish</em><b>${cost > 0 ? fmt(cost) : "—"}</b></span>
+            <span><em>Sotuv</em><b>${selling > 0 ? fmt(selling) : "—"}</b></span>
+            <span><em>Optom</em><b>${wholesale > 0 ? fmt(wholesale) : "—"}</b></span>
+          </div>
+          <div class="tops-row-split">
+            <span><em>Sotuvda</em><b>${fmt(qtySell)} dona</b></span>
+            <span><em>Optomda</em><b>${fmt(qtyOptom)} dona</b></span>
+          </div>
+        </div>
+        <div class="tops-row-metrics">
+          <div class="tops-row-metric">
+            <em>Sotildi</em>
+            <strong>${item.qty != null ? fmt(item.qty) : "—"}</strong>
+          </div>
+          <div class="tops-row-metric tops-row-metric--rev">
+            <em>Tushum</em>
+            <strong>${item.revenue != null ? fmt(item.revenue) : "—"}</strong>
+          </div>
+          <div class="tops-row-metric tops-row-metric--profit">
+            <em>Foyda</em>
+            <strong>${profit ? fmt(profit) : "—"}</strong>
+          </div>
+        </div>
+      </article>`;
+    }
+    if (stockInMode) {
+      const media = item.image
+        ? `<img src="${item.image}" alt="" loading="lazy" width="44" height="44">`
+        : `<span class="tops-row-fallback">${initial}</span>`;
       const qtyVal = item.qty != null ? fmt(item.qty) : "—";
-      const moneyVal = stockInMode
-        ? item.cost != null
-          ? fmt(item.cost)
-          : "—"
-        : item.revenue != null
-          ? fmt(item.revenue)
-          : "—";
+      const moneyVal = item.cost != null ? fmt(item.cost) : "—";
       return `<article class="tops-row cab-reveal-item" style="animation-delay:${delay}ms">
         <div class="tops-row-rank">${rank != null ? rank : "—"}</div>
         <div class="tops-row-media">${media}</div>
         <div class="tops-row-name">${item.name || "—"}</div>
         <div class="tops-row-metrics">
           <div class="tops-row-metric">
-            <em>${qtyLabel}</em>
+            <em>Kirim</em>
             <strong>${qtyVal}</strong>
           </div>
           <div class="tops-row-metric tops-row-metric--rev">
-            <em>${moneyLabel}</em>
+            <em>Tannarx</em>
             <strong>${moneyVal}</strong>
           </div>
         </div>
@@ -1772,11 +1805,11 @@
   };
 
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
-    const key = `full_${fromIso}_${toIsoVal}`;
+    const key = `rich_${fromIso}_${toIsoVal}`;
     if (!Object.keys(topsCache).length && data._topsCache) {
-      // Eski API keshi (noto‘g‘ri) — full_ kalitlaridan tashqarisini tashlaymiz
+      // Eski kesh — rich_ kalitlaridan tashqarisini tashlaymiz
       Object.keys(data._topsCache).forEach((k) => {
-        if (String(k).startsWith("full_")) topsCache[k] = data._topsCache[k];
+        if (String(k).startsWith("rich_")) topsCache[k] = data._topsCache[k];
       });
     }
     syncTopsExport();

@@ -1847,20 +1847,28 @@ html.cabinet-ready .cabinet-content {
 .cabinet-sidebar {
   position: fixed;
   top: 0; left: 0; bottom: 0;
-  width: min(232px, 86vw);
+  width: min(248px, 86vw);
   z-index: 50;
   border-right: 1px solid #e2e8f2;
   background: rgba(255,255,255,.97);
   backdrop-filter: blur(12px);
-  padding: .85rem .75rem;
+  padding: .95rem .85rem;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   transition: transform .22s ease;
+}
+.cabinet-sidebar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 .cabinet-side-top {
   display: flex; align-items: center; justify-content: space-between;
-  gap: .5rem; margin-bottom: .65rem; flex-shrink: 0;
+  gap: .5rem; margin-bottom: .75rem; flex-shrink: 0;
 }
 .cabinet-side-close {
   display: none; width: 36px; height: 36px; border: 0; border-radius: 10px;
@@ -1868,21 +1876,19 @@ html.cabinet-ready .cabinet-content {
   place-items: center; padding: 0;
 }
 .cabinet-brand { display: inline-flex; padding: 0 .35rem; margin-bottom: 0; }
-.cabinet-brand img { height: 26px; width: auto; }
+.cabinet-brand img { height: 28px; width: auto; }
 .cabinet-nav {
-  display: grid; gap: .06rem;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
+  display: grid; gap: .12rem;
+  flex: 0 0 auto;
   align-content: start;
 }
 .cabinet-nav a {
-  display: flex; align-items: center; gap: .55rem; text-decoration: none;
-  color: #5b6b85; padding: .42rem .6rem; border-radius: 10px;
-  font-weight: 600; font-size: .8rem; line-height: 1.2;
+  display: flex; align-items: center; gap: .65rem; text-decoration: none;
+  color: #5b6b85; padding: .58rem .75rem; border-radius: 11px;
+  font-weight: 650; font-size: .92rem; line-height: 1.25;
 }
 .cabinet-nav .nav-dot {
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 7px; height: 7px; border-radius: 50%;
   background: #c5d0e0; flex-shrink: 0;
 }
 .cabinet-nav a:hover { background: #eef3fa; color: #002048; }
@@ -1894,8 +1900,8 @@ html.cabinet-ready .cabinet-content {
   background: linear-gradient(100deg, #2c86e0, #12b3a1);
 }
 .cabinet-side-foot {
-  margin-top: auto; display: grid; gap: .3rem;
-  padding: .65rem .25rem 0; border-top: 1px solid #e2e8f2; flex-shrink: 0;
+  margin-top: auto; display: grid; gap: .35rem;
+  padding: .85rem .3rem 0; border-top: 1px solid #e2e8f2; flex-shrink: 0;
 }
 .cabinet-side-foot a, .cabinet-side-foot button {
   color: #5b6b85; background: transparent; border: 0; text-align: left;
@@ -1903,7 +1909,7 @@ html.cabinet-ready .cabinet-content {
 }
 .cabinet-side-foot a:hover, .cabinet-side-foot button:hover { color: #002048; }
 .cabinet-main {
-  margin-left: 232px;
+  margin-left: 248px;
   padding: 1.4rem clamp(.9rem, 2.5vw, 1.75rem) 2.5rem;
   min-height: 100vh;
   min-width: 0;
@@ -2865,6 +2871,28 @@ html.cabinet-ready .cabinet-content {
   border-radius: 12px;
   background: #f8fafc;
 }
+.tops-row--rich {
+  align-items: start;
+  padding: .7rem .8rem;
+}
+.tops-row-main { min-width: 0; display: grid; gap: .35rem; }
+.tops-row-prices,
+.tops-row-split {
+  display: flex; flex-wrap: wrap; gap: .35rem .75rem;
+}
+.tops-row-prices span,
+.tops-row-split span {
+  display: inline-flex; align-items: baseline; gap: .3rem;
+  font-size: .78rem; color: #334155; font-weight: 650;
+}
+.tops-row-prices em,
+.tops-row-split em {
+  font-style: normal; font-size: .62rem; font-weight: 700;
+  letter-spacing: .03em; text-transform: uppercase; color: #94a3b8;
+}
+.tops-row-prices b,
+.tops-row-split b { font-weight: 750; color: #0f172a; }
+.tops-row-metric--profit strong { color: #16a34a; }
 .tops-row-rank {
   font-family: "Space Grotesk", Manrope, sans-serif;
   font-weight: 700;
@@ -2961,21 +2989,32 @@ html.cabinet-ready .cabinet-content {
     gap: .35rem .55rem;
     padding: .7rem .75rem;
   }
+  .tops-row--rich {
+    grid-template-columns: 1.6rem 2.35rem minmax(0, 1fr);
+  }
   .tops-row-rank,
   .tops-row-media {
     grid-row: 1 / span 2;
     align-self: center;
   }
+  .tops-row--rich .tops-row-rank,
+  .tops-row--rich .tops-row-media {
+    grid-row: 1;
+    align-self: start;
+    margin-top: .15rem;
+  }
+  .tops-row-main { grid-column: 3; }
   .tops-row-name {
     white-space: normal;
     font-size: .9rem;
     line-height: 1.25;
   }
   .tops-row-metrics {
-    grid-column: 3;
+    grid-column: 1 / -1;
     justify-content: space-between;
     gap: .55rem;
     width: 100%;
+    padding-top: .15rem;
   }
   .tops-row-metric {
     text-align: left;
@@ -2984,7 +3023,8 @@ html.cabinet-ready .cabinet-content {
   .tops-row-metric strong {
     font-size: .92rem;
   }
-  .tops-row-metric--rev {
+  .tops-row-metric--rev,
+  .tops-row-metric--profit {
     text-align: right;
     min-width: 0;
   }

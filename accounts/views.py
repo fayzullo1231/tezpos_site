@@ -4454,18 +4454,42 @@ def _top_products_from_details(
     products_by_id: dict,
     products_by_name: dict,
     limit: int = 100,
+    price_lists: list[dict] | None = None,
 ) -> list[dict]:
+    price_lists = price_lists or []
+    selling_list_ids = {
+        str(pl.get("id"))
+        for pl in price_lists
+        if pl.get("id") and _is_api_selling_list(pl)
+    }
     product_qty: dict[str, Decimal] = defaultdict(Decimal)
     product_rev: dict[str, Decimal] = defaultdict(Decimal)
+    product_cost: dict[str, Decimal] = defaultdict(Decimal)
+    product_qty_sell: dict[str, Decimal] = defaultdict(Decimal)
+    product_qty_optom: dict[str, Decimal] = defaultdict(Decimal)
+    product_rev_sell: dict[str, Decimal] = defaultdict(Decimal)
+    product_rev_optom: dict[str, Decimal] = defaultdict(Decimal)
     product_meta: dict[str, dict] = {}
+
     for detail in details.values():
         if not isinstance(detail, dict):
             continue
+        sale_pl = (
+            detail.get("price_list_id")
+            or detail.get("price_list")
+            or detail.get("list_id")
+        )
+        if isinstance(sale_pl, dict):
+            sale_pl = sale_pl.get("id")
         for item in _sale_items(detail):
             pid, name, _nested = _item_product_ref(item)
             qty = _item_qty(item)
             unit_price = _item_unit_price(item)
-            line_rev = _dec(item.get("total") or item.get("line_total"), str(qty * unit_price))
+            line_rev = _dec(
+                item.get("total") or item.get("line_total"), str(qty * unit_price)
+            )
+            if unit_price <= 0 and qty > 0 and line_rev > 0:
+                unit_price = (line_rev / qty).quantize(Decimal("0.01"))
             if not pid:
                 name = (name or "").strip()
                 if not name:
@@ -4473,23 +4497,64 @@ def _top_products_from_details(
                 pid = f"name:{name.casefold()}"
             if qty <= 0 and line_rev <= 0:
                 continue
-            product_qty[pid] += qty
-            product_rev[pid] += line_rev
             p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
             if not p and name:
                 p = _find_product(products_by_id, products_by_name, product_name=name)
+
+            unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
+            raw_pl = (
+                item.get("price_list_id")
+                or item.get("price_list")
+                or item.get("list_id")
+                or sale_pl
+            )
+            if isinstance(raw_pl, dict):
+                raw_pl = raw_pl.get("id")
+            list_id = str(raw_pl).strip() if raw_pl not in (None, "") else ""
+            if list_id in ("selling", "retail", SELLING_LIST_ID) or list_id in selling_list_ids:
+                list_id = SELLING_LIST_ID
+            elif not list_id:
+                list_id = _match_price_list_id(unit_price, p, price_lists)
+            is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
+
+            product_qty[pid] += qty
+            product_rev[pid] += line_rev
+            if unit_cost > 0 and qty > 0:
+                product_cost[pid] += unit_cost * qty
+            if is_selling:
+                product_qty_sell[pid] += qty
+                product_rev_sell[pid] += line_rev
+            else:
+                product_qty_optom[pid] += qty
+                product_rev_optom[pid] += line_rev
+
+            wholesale = Decimal("0")
+            selling = Decimal("0")
+            cost_show = unit_cost
+            if p:
+                selling = Decimal(str(p.selling_price or 0))
+                wholesale = Decimal(str(p.wholesale_price or 0))
+                if wholesale <= 0:
+                    list_prices = getattr(p, "list_prices", None) or {}
+                    vals = [
+                        Decimal(str(v))
+                        for lid, v in list_prices.items()
+                        if lid not in selling_list_ids and Decimal(str(v or 0)) > 0
+                    ]
+                    if vals:
+                        wholesale = min(vals)
+                if cost_show <= 0 and (p.cost_price or Decimal("0")) > 0:
+                    cost_show = p.cost_price
             meta = product_meta.get(pid) or {}
             product_meta[pid] = {
                 "name": name or meta.get("name") or (p.name if p else "Mahsulot"),
                 "image": (p.display_image if p else "") or meta.get("image") or "",
                 "stock": float(p.stock_qty) if p else float(meta.get("stock") or 0),
-                "wholesale": float(p.wholesale_price or p.cost_price)
-                if p
-                else float(meta.get("wholesale") or 0),
-                "selling": float(p.selling_price)
-                if p
-                else float(meta.get("selling") or unit_price),
+                "wholesale": float(wholesale or meta.get("wholesale") or 0),
+                "selling": float(selling or meta.get("selling") or unit_price),
+                "cost": float(cost_show or meta.get("cost") or 0),
             }
+
     out = []
     ranked = sorted(
         product_qty.items(),
@@ -4498,20 +4563,34 @@ def _top_products_from_details(
     )[:limit]
     for pid, qty in ranked:
         rev = product_rev.get(pid) or Decimal("0")
+        cost_total = product_cost.get(pid) or Decimal("0")
+        profit = (rev - cost_total) if cost_total > 0 else Decimal("0")
         meta = product_meta.get(pid) or {}
         p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
+        cost_unit = float(meta.get("cost") or 0)
+        if cost_unit <= 0 and p and (p.cost_price or Decimal("0")) > 0:
+            cost_unit = float(p.cost_price)
         out.append(
             {
                 "id": str(pid),
                 "name": (p.name if p else "") or meta.get("name") or "Mahsulot",
                 "image": (p.display_image if p else "") or meta.get("image") or "",
                 "qty": float(qty),
+                "qty_selling": float(product_qty_sell.get(pid) or 0),
+                "qty_wholesale": float(product_qty_optom.get(pid) or 0),
                 "revenue": float(rev),
+                "revenue_selling": float(product_rev_sell.get(pid) or 0),
+                "revenue_wholesale": float(product_rev_optom.get(pid) or 0),
+                "cost": cost_unit,
+                "cost_total": float(cost_total),
+                "profit": float(profit),
                 "stock": float(p.stock_qty) if p else float(meta.get("stock") or 0),
-                "wholesale": float(p.wholesale_price or p.cost_price)
-                if p
+                "wholesale": float(p.wholesale_price or 0)
+                if p and (p.wholesale_price or 0)
                 else float(meta.get("wholesale") or 0),
-                "selling": float(p.selling_price) if p else float(meta.get("selling") or 0),
+                "selling": float(p.selling_price)
+                if p
+                else float(meta.get("selling") or 0),
             }
         )
     return out
@@ -4697,24 +4776,40 @@ def _top_products_from_api_items(
             or (p.name if p else "")
             or (f"Mahsulot {pid[:8]}" if pid else "Mahsulot")
         )
+        cost_unit = float(p.cost_price) if p and (p.cost_price or 0) else 0.0
+        cost_total = float(qty) * cost_unit if cost_unit > 0 else 0.0
+        profit = float(rev) - cost_total if cost_total > 0 else 0.0
+        wholesale = float(p.wholesale_price or 0) if p else float(_dec(row.get("wholesale_price")))
+        selling = (
+            float(p.selling_price)
+            if p
+            else float(_dec(row.get("selling_price") or row.get("unit_price")))
+        )
         out.append(
             {
+                "id": pid,
                 "name": name,
                 "image": (p.display_image if p else "") or str(row.get("image") or ""),
                 "qty": float(qty),
+                "qty_selling": float(qty),
+                "qty_wholesale": 0.0,
                 "revenue": float(rev),
+                "revenue_selling": float(rev),
+                "revenue_wholesale": 0.0,
+                "cost": cost_unit,
+                "cost_total": cost_total,
+                "profit": profit,
                 "stock": float(p.stock_qty) if p else float(_dec(row.get("stock"))),
-                "wholesale": float(p.wholesale_price or p.cost_price)
-                if p
-                else float(_dec(row.get("wholesale_price"))),
-                "selling": float(p.selling_price)
-                if p
-                else float(_dec(row.get("selling_price") or row.get("unit_price"))),
+                "wholesale": wholesale,
+                "selling": selling,
             }
         )
         if len(out) >= limit:
             break
-    out.sort(key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)), reverse=True)
+    out.sort(
+        key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)),
+        reverse=True,
+    )
     return out[:limit]
 
 
@@ -4826,6 +4921,19 @@ def _build_top_products_pack(
     products_by_id = {str(p.id): p for p in products}
     products_by_name = _products_by_name(products)
 
+    price_lists: list[dict] = []
+    try:
+        price_lists = _memo_get(
+            f"{memo_prefix}|price_lists",
+            120.0,
+            lambda: tezpos_api.get_price_lists(token, server) or [],
+        ) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
+        price_lists = []
+    price_lists = [
+        pl for pl in price_lists if isinstance(pl, dict) and pl.get("is_active", True)
+    ]
+
     sales = [s for s in sales if isinstance(s, dict)]
     sales = [
         s
@@ -4856,7 +4964,11 @@ def _build_top_products_pack(
         details_map.update(fetched)
 
     top_products = _top_products_from_details(
-        details_map, products_by_id, products_by_name, limit=limit
+        details_map,
+        products_by_id,
+        products_by_name,
+        limit=limit,
+        price_lists=price_lists,
     )
 
     # Agar cheklar itemsiz qolsa — API ni faqat zaxira sifatida
@@ -4943,7 +5055,16 @@ def cabinet_top_export(request):
             "#",
             "Mahsulot",
             "Sotildi",
+            "Sotuvda (dona)",
+            "Optomda (dona)",
+            "Sotib olish",
+            "Sotuv narxi",
+            "Optom narxi",
             "Tushum",
+            "Tushum (sotuv)",
+            "Tushum (optom)",
+            "Jami tannarx",
+            "Jami foyda",
             "Sana dan",
             "Sana gacha",
             "Cheklar",
@@ -4957,20 +5078,31 @@ def cabinet_top_export(request):
                 i,
                 row.get("name") or "",
                 float(row.get("qty") or 0),
+                float(row.get("qty_selling") or 0),
+                float(row.get("qty_wholesale") or 0),
+                float(row.get("cost") or 0),
+                float(row.get("selling") or 0),
+                float(row.get("wholesale") or 0),
                 float(row.get("revenue") or 0),
+                float(row.get("revenue_selling") or 0),
+                float(row.get("revenue_wholesale") or 0),
+                float(row.get("cost_total") or 0),
+                float(row.get("profit") or 0),
                 start.isoformat(),
                 end.isoformat(),
                 int(pack.get("checks") or 0),
             ]
         )
     ws.column_dimensions["A"].width = 6
-    ws.column_dimensions["B"].width = 42
-    ws.column_dimensions["C"].width = 12
-    ws.column_dimensions["D"].width = 16
-    for col in ("C", "D"):
+    ws.column_dimensions["B"].width = 36
+    for col in ("C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"):
+        ws.column_dimensions[col].width = 14
         for cell in ws[col][1:]:
             cell.number_format = "#,##0.##"
             cell.alignment = Alignment(horizontal="right")
+    ws.column_dimensions["N"].width = 12
+    ws.column_dimensions["O"].width = 12
+    ws.column_dimensions["P"].width = 10
 
     bio = BytesIO()
     wb.save(bio)
