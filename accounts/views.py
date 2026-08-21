@@ -3402,7 +3402,6 @@ def cabinet_view(request):
         "stock_in",
         "shifts",
         "bot",
-        "debtors",
         "suppliers",
         "client_debts",
     }
@@ -3415,7 +3414,6 @@ def cabinet_view(request):
         "tops",
         "stock_in",
         "bot",
-        "debtors",
         "suppliers",
         "client_debts",
         "products",
@@ -4058,7 +4056,6 @@ def cabinet_view(request):
         "tops",
         "shifts",
         "bot",
-        "debtors",
         "suppliers",
         "client_debts",
         "stock_in",

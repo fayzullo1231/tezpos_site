@@ -215,7 +215,6 @@
       <a href="?section=bot" class="{% if section == 'bot' %}is-active{% endif %}"><span class="nav-dot"></span> Bot sozlamalari</a>
       <a href="?section=suppliers" class="{% if section == 'suppliers' %}is-active{% endif %}"><span class="nav-dot"></span> Taminotchilar</a>
       <a href="?section=client_debts" class="{% if section == 'client_debts' %}is-active{% endif %}"><span class="nav-dot"></span> Mijoz qarzlari / SMS</a>
-      <a href="?section=debtors" class="{% if section == 'debtors' %}is-active{% endif %}"><span class="nav-dot"></span> Qarzdorlar ro‘yxati</a>
     </nav>
     <div class="cabinet-side-foot">
       <a href="/">← Saytga qaytish</a>
@@ -329,27 +328,6 @@
       </div>
     </section>
 
-    <section class="cabinet-card" id="overview-suppliers-card">
-      <div class="cabinet-card-head">
-        <div>
-          <h3>Taminotchi qarzlari</h3>
-          <p class="cabinet-hint">Qachon qarz olingan, qachon to‘langan — sana, soat va summa</p>
-        </div>
-        <a class="btn-soft" href="?section=suppliers">Barchasi →</a>
-      </div>
-      <div class="sup-ov-kpis" id="overview-sup-kpis">
-        <div class="debtors-kpi"><span>Taminotchilar</span><strong id="ov-sup-count">—</strong></div>
-        <div class="debtors-kpi"><span>Biz qarz</span><strong class="is-debt" id="ov-sup-we">—</strong></div>
-        <div class="debtors-kpi"><span>Ular qarz</span><strong class="is-profit" id="ov-sup-they">—</strong></div>
-      </div>
-      <div class="sup-timeline" id="overview-sup-timeline">
-        <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
-          <span class="sk"></span><span class="sk"></span><span class="sk"></span>
-        </div>
-      </div>
-      <p class="cabinet-empty" id="overview-sup-empty" hidden>Hali qarz yoki to‘lov yo‘q.</p>
-    </section>
-
     <section class="cabinet-charts cabinet-charts--stack">
       <article class="cabinet-card">
         <div class="cabinet-card-head">
@@ -391,6 +369,27 @@
           </li>
         </ul>
       </article>
+    </section>
+
+    <section class="cabinet-card" id="overview-suppliers-card">
+      <div class="cabinet-card-head">
+        <div>
+          <h3>Taminotchi qarzlari</h3>
+          <p class="cabinet-hint">Qachon qarz olingan, qachon to‘langan — sana, soat va summa</p>
+        </div>
+        <a class="btn-soft" href="?section=suppliers">Barchasi →</a>
+      </div>
+      <div class="sup-ov-kpis" id="overview-sup-kpis">
+        <div class="debtors-kpi"><span>Taminotchilar</span><strong id="ov-sup-count">—</strong></div>
+        <div class="debtors-kpi"><span>Biz qarz</span><strong class="is-debt" id="ov-sup-we">—</strong></div>
+        <div class="debtors-kpi"><span>Ular qarz</span><strong class="is-profit" id="ov-sup-they">—</strong></div>
+      </div>
+      <div class="sup-timeline" id="overview-sup-timeline">
+        <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
+          <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+        </div>
+      </div>
+      <p class="cabinet-empty" id="overview-sup-empty" hidden>Hali qarz yoki to‘lov yo‘q.</p>
     </section>
     {% endif %}
 
@@ -1085,7 +1084,7 @@
       </label>
       <div class="sup-tabs" role="tablist">
         <button type="button" class="sup-tab is-active" data-cd-tab="list">Ro‘yxat</button>
-        <button type="button" class="sup-tab" data-cd-tab="sms">DevSMS shablon</button>
+        <button type="button" class="sup-tab" data-cd-tab="sms">Shablon</button>
       </div>
       <div id="cd-list-wrap">
         <div class="debtors-list" id="cd-list">
@@ -1111,7 +1110,7 @@
               <input type="text" id="cd-sms-title-input" maxlength="120" placeholder="Kulol optom qarzdorlik">
             </label>
             <label class="sup-field">
-              <span>Do‘kon nomi (SMS boshida)</span>
+              <span>Do‘kon nomi</span>
               <input type="text" id="cd-sms-shop" maxlength="180" placeholder="Kulol Optom">
             </label>
             <label class="sup-field">
@@ -1146,13 +1145,24 @@
             <span>Telefon</span>
             <input type="tel" id="cd-form-phone" maxlength="40" placeholder="+998 …" autocomplete="tel">
           </label>
-          <label class="sup-field">
-            <span>Izoh (ixtiyoriy)</span>
-            <input type="text" id="cd-form-note" maxlength="180" placeholder="Kokcha market">
-          </label>
           <label class="sup-field" id="cd-form-amount-wrap">
             <span>Boshlang‘ich qarz (ixtiyoriy)</span>
             <input type="text" id="cd-form-amount" inputmode="decimal" placeholder="Masalan: 1456000">
+          </label>
+          <label class="sup-field">
+            <span>Izoh (ixtiyoriy)</span>
+            <select id="cd-form-note" class="cabinet-select">
+              <option value="">— Izoh yo‘q —</option>
+              <option value="Kokcha market">Kokcha market</option>
+              <option value="Oziq ovqat">Oziq ovqat</option>
+              <option value="Optom">Optom</option>
+              <option value="Chakana">Chakana</option>
+              <option value="__custom__">Boshqa…</option>
+            </select>
+          </label>
+          <label class="sup-field" id="cd-form-note-custom-wrap" hidden>
+            <span>Izoh matni</span>
+            <input type="text" id="cd-form-note-custom" maxlength="180" placeholder="Kokcha market">
           </label>
           <p class="cabinet-hint" id="cd-form-error" hidden></p>
           <div class="sup-modal-actions">
@@ -1192,35 +1202,6 @@
         </div>
       </div>
     </div>
-    {% endif %}
-
-    {% if section == 'debtors' %}
-    <section class="cabinet-card debtors-panel" id="debtors-panel">
-      <div class="cabinet-card-head">
-        <div>
-          <h3>Qarzdorlar ro‘yxati</h3>
-          <p class="cabinet-hint">TezPOS dasturidagi mijoz qarzlari. Qisman yoki to‘liq to‘lov qilishingiz mumkin.</p>
-        </div>
-        <div class="debtors-toolbar">
-          <button type="button" class="btn-soft" id="debtors-refresh">Yangilash</button>
-        </div>
-      </div>
-      <div class="debtors-kpis" id="debtors-kpis">
-        <div class="debtors-kpi"><span>Qarzdorlar</span><strong id="debtors-count">—</strong></div>
-        <div class="debtors-kpi"><span>Jami qarz</span><strong class="is-debt" id="debtors-total">—</strong></div>
-      </div>
-      <label class="products-search debtors-search">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 104.47 10l4.26 4.27 1.42-1.42-4.27-4.26A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z"/></svg>
-        <input type="search" id="debtors-search" placeholder="Qidiruv: mijoz ismi yoki telefon…" autocomplete="off">
-      </label>
-      <div class="debtors-list" id="debtors-list">
-        <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
-          <span class="sk"></span><span class="sk"></span><span class="sk"></span>
-        </div>
-      </div>
-      <p class="cabinet-empty" id="debtors-empty" hidden>Qarzdorlar yo‘q.</p>
-      <p class="cabinet-hint" id="debtors-error" hidden></p>
-    </section>
     {% endif %}
 
     {% if section == 'stock_value' %}
@@ -1770,5 +1751,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=client-debts-1" defer></script>
+<script src="/static/cabinet.js?v=client-debts-2" defer></script>
 {% endblock %}

@@ -1900,7 +1900,7 @@ html.cabinet-ready .cabinet-content {
   background: linear-gradient(100deg, #2c86e0, #12b3a1);
 }
 .cabinet-side-foot {
-  margin-top: auto; display: grid; gap: .35rem;
+  margin-top: .9rem; display: grid; gap: .35rem;
   padding: .85rem .3rem 0; border-top: 1px solid #e2e8f2; flex-shrink: 0;
 }
 .cabinet-side-foot a, .cabinet-side-foot button {
@@ -3410,7 +3410,7 @@ body.cabinet-body {
   .cabinet-main { margin-left: 0; padding: 1rem .9rem 2rem; }
   .cabinet-nav { display: grid; }
   .cabinet-side-foot {
-    margin-top: auto; display: grid; gap: .45rem;
+    margin-top: .9rem; display: grid; gap: .45rem;
     border-top: 1px solid #e2e8f2; padding-top: .9rem; width: auto;
   }
 

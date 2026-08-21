@@ -6688,6 +6688,10 @@
     document.getElementById("cd-form-name").value = "";
     document.getElementById("cd-form-phone").value = "";
     document.getElementById("cd-form-note").value = "";
+    const customWrap = document.getElementById("cd-form-note-custom-wrap");
+    const customInp = document.getElementById("cd-form-note-custom");
+    if (customWrap) customWrap.hidden = true;
+    if (customInp) customInp.value = "";
     document.getElementById("cd-form-amount").value = "";
     const wrap = document.getElementById("cd-form-amount-wrap");
     if (wrap) wrap.hidden = false;
@@ -6773,15 +6777,29 @@
     paintList();
   });
 
+  document.getElementById("cd-form-note")?.addEventListener("change", () => {
+    const sel = document.getElementById("cd-form-note");
+    const wrap = document.getElementById("cd-form-note-custom-wrap");
+    if (wrap) wrap.hidden = sel?.value !== "__custom__";
+    if (sel?.value === "__custom__") {
+      document.getElementById("cd-form-note-custom")?.focus();
+    }
+  });
+
   form?.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const err = document.getElementById("cd-form-error");
+    const noteSel = document.getElementById("cd-form-note")?.value || "";
+    const note =
+      noteSel === "__custom__"
+        ? document.getElementById("cd-form-note-custom")?.value || ""
+        : noteSel;
     try {
       await postJson(data.clientDebtorSaveUrl, {
         id: document.getElementById("cd-form-id").value || undefined,
         name: document.getElementById("cd-form-name").value,
         phone: document.getElementById("cd-form-phone").value,
-        note: document.getElementById("cd-form-note").value,
+        note,
         amount: document.getElementById("cd-form-amount").value,
       });
       closeModal();
