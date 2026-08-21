@@ -287,14 +287,18 @@ def cabinet_client_debt_adjust(request):
     sms_res = None
     if send_sms and debtor.phone:
         tpl = _get_or_create_template(shop, tenant)
-        # Qo‘shishda joriy qarz, ayirishda ham qoldiq
-        msg_amount = bal if kind == ClientDebtorLedger.KIND_ADD else bal
-        text = _render_sms(
-            tpl,
-            amount=msg_amount if msg_amount > 0 else amount,
+        # DevSMS/Eskiz faqat tasdiqlangan TezPOS shablonini o‘tkazadi:
+        #   {shop}
+        #   Qarz: X so'm
+        #   Qoldiq: Y so'm
+        #   Chek: —
+        signed = amount if kind == ClientDebtorLedger.KIND_ADD else -amount
+        text = devsms.build_debt_message(
+            shop=(tpl.shop_label or "").strip() or (tenant.business_name if tenant else "") or "TezPOS",
+            branch="",
+            debt_amount=signed,
             balance=bal,
-            name=debtor.name,
-            note=note or debtor.note,
+            check_link="",
         )
         sms_res = devsms.send_dev_sms(phone=debtor.phone, message=text)
         if sms_res.get("ok"):

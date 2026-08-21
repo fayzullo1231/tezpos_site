@@ -189,7 +189,8 @@ if not _devsms_env:
     except OSError:
         _devsms_env = ""
 DEVSMS_TOKEN = _devsms_env
-DEVSMS_FROM = os.environ.get("DEVSMS_FROM", "4546").strip() or "4546"
+# Bo‘sh = DevSMS default sender (TezPOS kabi). Noto‘g‘ri 4546 → Eskiz REJECTED bo‘lishi mumkin.
+DEVSMS_FROM = os.environ.get("DEVSMS_FROM", "").strip()
 
 # Smena Telegram sync (cron/systemd) — brauzersiz
 TELEGRAM_CRON_SECRET = os.environ.get("TELEGRAM_CRON_SECRET", "").strip()

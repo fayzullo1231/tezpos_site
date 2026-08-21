@@ -129,8 +129,11 @@ def send_dev_sms(
     if not text:
         return {"ok": False, "error": "SMS matni bo‘sh."}
 
-    from_id = (sender or getattr(settings, "DEVSMS_FROM", "") or "4546").strip() or "4546"
-    body = {"phone": to, "message": text, "from": from_id}
+    # TezPOS: `from` faqat berilganda yuboriladi (noto‘g‘ri sender → Eskiz REJECTED)
+    body: dict = {"phone": to, "message": text}
+    from_id = (sender if sender is not None else getattr(settings, "DEVSMS_FROM", "") or "").strip()
+    if from_id:
+        body["from"] = from_id
 
     req = urllib.request.Request(
         DEVSMS_URL,
