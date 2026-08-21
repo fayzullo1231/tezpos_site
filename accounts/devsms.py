@@ -50,6 +50,18 @@ def _fmt_som(value) -> str:
     return f"{sign}{abs_n:,.0f}".replace(",", " ")
 
 
+def _normalize_sms_text(text: str) -> str:
+    """Eskiz GSM-7 uchun: curly apostrof → ASCII, CR/LF tozalash."""
+    t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    for ch in ("\u2018", "\u2019", "\u02bc", "\u0060", "\u00b4"):
+        t = t.replace(ch, "'")
+    # ortiqcha bo‘sh qatorlarni qisqartirish
+    lines = [ln.rstrip() for ln in t.split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
 def build_debt_message(
     *,
     shop: str,
@@ -59,10 +71,10 @@ def build_debt_message(
     check_link: str = "",
 ) -> str:
     """
-    Tasdiqlangan Eskiz shablon:
+    Tasdiqlangan Eskiz/DevSMS shablon (ASCII apostrof — 1 SMS qism):
       Kulol Optom-Oziq ovqat:
-      Qarzdorligingiz : 1 456 000 so‘m.
-      Iltimos, qarzdorlikni to‘lashni unutmang.
+      Qarzdorligingiz : 1 456 000 so'm.
+      Iltimos, qarzdorlikni to'lashni unutmang.
     """
     shop = (shop or "").strip() or "TezPOS"
     branch = (branch or "").strip()
@@ -79,12 +91,12 @@ def build_debt_message(
     except (InvalidOperation, TypeError, ValueError):
         delta = Decimal("0")
     show = abs(bal) if bal != 0 else abs(delta)
-    # Apostrof: so‘m / to‘lashni — Eskiz shablonidagi belgi (U+2018)
-    return (
+    text = (
         f"{head}:\n"
-        f"Qarzdorligingiz : {_fmt_som(show)} so‘m.\n"
-        f"Iltimos, qarzdorlikni to‘lashni unutmang."
+        f"Qarzdorligingiz : {_fmt_som(show)} so'm.\n"
+        f"Iltimos, qarzdorlikni to'lashni unutmang."
     )
+    return _normalize_sms_text(text)
 
 
 def sample_debt_template(shop: str) -> str:
@@ -252,8 +264,8 @@ def send_dev_sms(
     sms_type: str | None = None,
 ) -> dict:
     """
-    TezPOS sendDevSms — to'g'ridan-to'g'ri DevSMS API.
-    Qaytaradi: {ok, error?, phone?, sms_id?, status?, template_submit?}
+    DevSMS hujjat + TezPOS: { phone, message, from }.
+    Qaytaradi: {ok, error?, phone?, sms_id?, status?}
     """
     auth = resolve_token(token)
     if not auth:
@@ -263,62 +275,55 @@ def send_dev_sms(
     if not to:
         return {"ok": False, "error": "Mijoz telefon raqami yo‘q yoki noto‘g‘ri."}
 
-    text = (message or "").strip()
+    text = _normalize_sms_text(message or "")
     if not text:
         return {"ok": False, "error": "SMS matni bo‘sh."}
 
-    preferred = (sms_type or getattr(settings, "DEVSMS_TYPE", "") or "simple").strip().lower()
-    # simple — tezroq (moderatsiyasiz kanal); eskiz — brend/4546, shablon kerak
-    type_order: list[str] = []
-    for t in (preferred, "simple", "eskiz"):
-        if t and t not in type_order:
-            type_order.append(t)
+    # Hujjat: from default 4546 (TezPOS ham shunday yuboradi)
+    from_id = (
+        sender
+        if sender is not None
+        else (getattr(settings, "DEVSMS_FROM", None) or "4546")
+    )
+    from_id = str(from_id or "4546").strip() or "4546"
 
-    from_id = (sender if sender is not None else getattr(settings, "DEVSMS_FROM", "") or "").strip()
-    last_err = ""
+    body: dict = {"phone": to, "message": text, "from": from_id}
+    # type faqat aniq berilsa (odatda kerak emas — TezPOS yubormaydi)
+    t = (sms_type if sms_type is not None else getattr(settings, "DEVSMS_TYPE", "") or "").strip()
+    if t and t not in ("auto", "default", "eskiz"):
+        body["type"] = t
+    elif t == "eskiz":
+        body["type"] = "eskiz"
 
-    for t in type_order:
-        body: dict = {"phone": to, "message": text, "type": t}
-        if from_id and t != "simple":
-            body["from"] = from_id
-        res = _api_post(DEVSMS_URL, auth, body)
-        data = res.get("data") or {}
-        if res.get("http") == 200 and data.get("success"):
-            payload = data.get("data") if isinstance(data.get("data"), dict) else {}
-            return {
-                "ok": True,
-                "phone": to,
-                "sms_id": payload.get("sms_id"),
-                "status": payload.get("status") or "sent",
-                "cost": payload.get("total_cost"),
-                "balance": payload.get("balance"),
-                "type": t,
-            }
-        last_err = str(data.get("error") or data.get("message") or f"DevSMS xato ({res.get('http')})")
-        if not _is_moderation_error(last_err):
-            # Boshqa xato — keyingi typega o‘tmasdan qaytarish shart emas; simple/eskiz farqi uchun davom
-            if "balance" in last_err.lower() or "баланс" in last_err.lower() or "token" in last_err.lower():
-                return {"ok": False, "error": last_err}
+    res = _api_post(DEVSMS_URL, auth, body)
+    data = res.get("data") or {}
+    if res.get("http") == 200 and data.get("success"):
+        payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+        return {
+            "ok": True,
+            "phone": to,
+            "sms_id": payload.get("sms_id"),
+            "request_id": payload.get("request_id"),
+            "status": payload.get("status") or "sent",
+            "cost": payload.get("total_cost"),
+            "balance": payload.get("balance"),
+            "parts": payload.get("parts_count"),
+            "type": payload.get("type") or "eskiz",
+            "preview": text,
+        }
 
-    # Moderatsiya: shablonni yuborib, foydalanuvchiga tushunarli javob
-    tpl_res = None
+    last_err = str(data.get("error") or data.get("message") or f"DevSMS xato ({res.get('http')})")
     if _is_moderation_error(last_err):
         tpl_res = submit_template(text, token=auth)
-        hint = (
-            "SMS matni Eskiz moderatsiyasidan o‘tmagan. "
-            "Namuna shablon moderatsiyaga yuborildi — tasdiqlangach qayta urinib ko‘ring."
-            if tpl_res.get("ok")
-            else (
-                "SMS matni Eskiz moderatsiyasidan o‘tmagan. "
-                + str(tpl_res.get("error") or "")
-            )
-        )
         return {
             "ok": False,
-            "error": hint,
+            "error": (
+                "SMS matni Eskizda tasdiqlanmagan. "
+                "my.eskiz.uz → СМС → Мои тексты ga shu matnni qo‘shing "
+                "(raqam o‘rniga istalgan summa bo‘lishi mumkin), tasdiqlangach qayta yuboring."
+            ),
             "provider_error": last_err,
             "template_submit": tpl_res,
             "template": text,
         }
-
-    return {"ok": False, "error": last_err or "SMS yuborilmadi"}
+    return {"ok": False, "error": last_err, "template": text}

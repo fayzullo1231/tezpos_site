@@ -300,6 +300,6 @@ class DebtSmsTemplate(models.Model):
 
     DEFAULT_BODY = (
         "{shop}:\n"
-        "Qarzdorligingiz : {amount} so‘m.\n"
-        "Iltimos, qarzdorlikni to‘lashni unutmang."
+        "Qarzdorligingiz : {amount} so'm.\n"
+        "Iltimos, qarzdorlikni to'lashni unutmang."
     )
