@@ -5874,7 +5874,7 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                             bundle["excel"],
                             caption=(
                                 f"📎 Kunlik hisobot — {tenant.business_name}\n"
-                                f"Sotuv · Mahsulotlar · Qarzdorlar · Kam qoldiq"
+                                f"Sotuv · Kirim · Mahsulotlar · Qarzdorlar · Kam qoldiq"
                             ),
                         )
                         if _tg_any_ok(doc_res):
