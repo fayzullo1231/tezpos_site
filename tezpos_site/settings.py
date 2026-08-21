@@ -179,7 +179,16 @@ if "127.0.0.1" in _api or "localhost" in _api.lower() or "0.0.0.0" in _api:
 TEZPOS_API_URL = _api
 
 # DevSMS — qarz/to'lov SMS (TezPOS bilan bir xil)
-DEVSMS_TOKEN = os.environ.get("DEVSMS_TOKEN", "").strip()
+# Avvalo env, bo‘sh bo‘lsa repo ildizidagi devsms-token.txt
+_devsms_env = os.environ.get("DEVSMS_TOKEN", "").strip()
+if not _devsms_env:
+    try:
+        _tok_path = BASE_DIR / "devsms-token.txt"
+        if _tok_path.is_file():
+            _devsms_env = _tok_path.read_text(encoding="utf-8").lstrip("\ufeff").strip()
+    except OSError:
+        _devsms_env = ""
+DEVSMS_TOKEN = _devsms_env
 DEVSMS_FROM = os.environ.get("DEVSMS_FROM", "4546").strip() or "4546"
 
 # Smena Telegram sync (cron/systemd) — brauzersiz
