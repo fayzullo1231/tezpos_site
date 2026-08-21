@@ -1343,24 +1343,35 @@
 
   const productTileHtml = (item, color, rank, opts = {}) => {
     const topsMode = Boolean(opts.tops);
+    const stockInMode = Boolean(opts.stockIn);
     const initial = (item.name || "?").trim().charAt(0).toUpperCase();
     const delay = rank != null ? Math.min(rank - 1, 10) * 45 : 0;
-    if (topsMode) {
+    if (topsMode || stockInMode) {
       const media = item.image
         ? `<img src="${item.image}" alt="" loading="lazy" width="44" height="44">`
         : `<span class="tops-row-fallback">${initial}</span>`;
+      const qtyLabel = stockInMode ? "Kirim" : "Sotildi";
+      const moneyLabel = stockInMode ? "Tannarx" : "Tushum";
+      const qtyVal = item.qty != null ? fmt(item.qty) : "—";
+      const moneyVal = stockInMode
+        ? item.cost != null
+          ? fmt(item.cost)
+          : "—"
+        : item.revenue != null
+          ? fmt(item.revenue)
+          : "—";
       return `<article class="tops-row cab-reveal-item" style="animation-delay:${delay}ms">
         <div class="tops-row-rank">${rank != null ? rank : "—"}</div>
         <div class="tops-row-media">${media}</div>
         <div class="tops-row-name">${item.name || "—"}</div>
         <div class="tops-row-metrics">
           <div class="tops-row-metric">
-            <em>Sotildi</em>
-            <strong>${item.qty != null ? fmt(item.qty) : "—"}</strong>
+            <em>${qtyLabel}</em>
+            <strong>${qtyVal}${item.qty != null ? " ta" : ""}</strong>
           </div>
           <div class="tops-row-metric tops-row-metric--rev">
-            <em>Tushum</em>
-            <strong>${item.revenue != null ? fmt(item.revenue) : "—"}</strong>
+            <em>${moneyLabel}</em>
+            <strong>${moneyVal}</strong>
           </div>
         </div>
       </article>`;
@@ -1587,7 +1598,11 @@
     const label = formatRangeLabel(topsFrom, topsTo);
     if (topsDateLabel) topsDateLabel.textContent = label;
     if (topsPeriodHint) {
-      topsPeriodHint.textContent = `${label} — eng yaxshi sotilgan mahsulotlar`;
+      if (topsFrom && topsTo && topsFrom === topsTo) {
+        topsPeriodHint.textContent = `${label} — shu kunda eng yaxshi sotilgan mahsulotlar (masalan: 150 ta)`;
+      } else {
+        topsPeriodHint.textContent = `${label} — eng yaxshi sotilgan mahsulotlar`;
+      }
     }
   };
 
@@ -1869,6 +1884,290 @@
     });
     loadTopProducts(topsFrom, topsTo, { force: true });
   }
+
+  /* —— Kirim qilingan mahsulotlar —— */
+  (() => {
+    const grid = document.getElementById("stock-in-products-grid");
+    const receiptsBody = document.getElementById("stock-in-receipts-body");
+    if (!grid && !receiptsBody) return;
+
+    const datePicker = document.getElementById("stock-in-date-picker");
+    const dateTrigger = document.getElementById("stock-in-date-trigger");
+    const dateLabel = document.getElementById("stock-in-date-label");
+    const calendar = document.getElementById("stock-in-calendar");
+    const calBanner = document.getElementById("stock-in-calendar-banner");
+    const calGrid = document.getElementById("stock-in-calendar-grid");
+    const calMonth = document.getElementById("stock-in-cal-month");
+    const calYear = document.getElementById("stock-in-cal-year");
+    const periodHint = document.getElementById("stock-in-period-hint");
+    const kpiDocs = document.getElementById("stock-in-kpi-docs");
+    const kpiSku = document.getElementById("stock-in-kpi-sku");
+    const kpiQty = document.getElementById("stock-in-kpi-qty");
+    const kpiCost = document.getElementById("stock-in-kpi-cost");
+
+    let dayIso = data.saleDate || toIso(todayDate);
+    let draftDay = parseIso(dayIso) || todayDate;
+    let viewYear = draftDay.getFullYear();
+    let viewMonth = draftDay.getMonth();
+    let req = 0;
+    const cache = {};
+
+    const fmtMoney = (n) =>
+      Math.round(Number(n || 0)).toLocaleString("uz-UZ");
+
+    const syncLabel = () => {
+      const label = fmtDayUz(parseIso(dayIso) || todayDate);
+      if (dateLabel) dateLabel.textContent = label;
+      if (periodHint) {
+        periodHint.textContent = `${label} — TezPOS dasturidan kirim qilingan mahsulotlar`;
+      }
+      if (calBanner) calBanner.textContent = label;
+    };
+
+    const syncCalSelects = () => {
+      if (!calMonth || !calYear) return;
+      if (!calMonth.options.length) {
+        MONTHS_UZ.forEach((name, i) => {
+          const opt = document.createElement("option");
+          opt.value = String(i);
+          opt.textContent = name;
+          calMonth.appendChild(opt);
+        });
+      }
+      if (!calYear.options.length) {
+        const y0 = todayDate.getFullYear();
+        for (let y = y0 - 5; y <= y0 + 1; y += 1) {
+          const opt = document.createElement("option");
+          opt.value = String(y);
+          opt.textContent = String(y);
+          calYear.appendChild(opt);
+        }
+      }
+      calMonth.value = String(viewMonth);
+      calYear.value = String(viewYear);
+    };
+
+    const paintCalendar = () => {
+      if (!calGrid) return;
+      syncCalSelects();
+      syncLabel();
+      const first = new Date(viewYear, viewMonth, 1);
+      const startPad = first.getDay();
+      const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+      const cells = [];
+      for (let i = 0; i < startPad; i += 1) cells.push(`<span class="sales-cal-pad"></span>`);
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const d = new Date(viewYear, viewMonth, day);
+        const iso = toIso(d);
+        const classes = ["sales-cal-day"];
+        if (sameDay(d, draftDay)) classes.push("is-start", "is-end", "is-single");
+        if (sameDay(d, todayDate)) classes.push("is-today");
+        cells.push(
+          `<button type="button" class="${classes.join(" ")}" data-date="${iso}" aria-label="${iso}">${day}</button>`
+        );
+      }
+      calGrid.innerHTML = cells.join("");
+    };
+
+    const positionCalendar = () => {
+      if (!calendar || !dateTrigger || calendar.hidden) return;
+      const rect = dateTrigger.getBoundingClientRect();
+      const width = Math.min(320, window.innerWidth - 16);
+      let left = rect.right - width;
+      if (left < 8) left = 8;
+      if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
+      let top = rect.bottom + 8;
+      const estHeight = 420;
+      if (top + estHeight > window.innerHeight - 8 && rect.top > estHeight) {
+        top = rect.top - estHeight - 8;
+      }
+      calendar.style.position = "fixed";
+      calendar.style.left = `${Math.round(left)}px`;
+      calendar.style.top = `${Math.round(top)}px`;
+      calendar.style.right = "auto";
+      calendar.style.width = `${width}px`;
+      calendar.style.zIndex = "4000";
+    };
+
+    const openCalendar = () => {
+      if (!calendar || !dateTrigger) return;
+      draftDay = parseIso(dayIso) || todayDate;
+      viewYear = draftDay.getFullYear();
+      viewMonth = draftDay.getMonth();
+      calendar.hidden = false;
+      dateTrigger.setAttribute("aria-expanded", "true");
+      datePicker?.classList.add("is-open");
+      paintCalendar();
+      positionCalendar();
+    };
+
+    const closeCalendar = () => {
+      if (!calendar || !dateTrigger) return;
+      calendar.hidden = true;
+      dateTrigger.setAttribute("aria-expanded", "false");
+      datePicker?.classList.remove("is-open");
+    };
+
+    const paintKpis = (payload) => {
+      if (kpiDocs) kpiDocs.textContent = fmt(payload.receipts_count || 0);
+      if (kpiSku) kpiSku.textContent = fmt(payload.sku_count || 0);
+      if (kpiQty) kpiQty.textContent = fmt(payload.total_qty || 0);
+      if (kpiCost) kpiCost.textContent = fmtMoney(payload.total_cost || 0);
+    };
+
+    const paintProducts = (rows) => {
+      if (!grid) return;
+      grid.className = "tops-list";
+      if (!rows.length) {
+        grid.innerHTML = `<p class="cabinet-hint">Bu kunda kirim qilingan mahsulot yo‘q.</p>`;
+        return;
+      }
+      grid.innerHTML = rows
+        .map((row, i) =>
+          productTileHtml(row, palette[i % palette.length], i + 1, { stockIn: true })
+        )
+        .join("");
+    };
+
+    const paintReceipts = (rows) => {
+      if (!receiptsBody) return;
+      if (!rows.length) {
+        receiptsBody.innerHTML =
+          `<tr><td colspan="6" class="cabinet-empty">Bu kunda kirim hujjati yo‘q.</td></tr>`;
+        return;
+      }
+      receiptsBody.innerHTML = rows
+        .map((r) => {
+          const names = (r.items || [])
+            .slice(0, 4)
+            .map((it) => `${it.name} (${fmt(it.qty)})`)
+            .join(", ");
+          const more =
+            (r.items || []).length > 4 ? ` +${(r.items || []).length - 4}` : "";
+          return `<tr>
+            <td>${r.time || r.created_display || "—"}</td>
+            <td>${r.supplier || "—"}</td>
+            <td>${r.warehouse || "—"}</td>
+            <td>${fmt(r.total_qty)}</td>
+            <td>${fmtMoney(r.total_cost)}</td>
+            <td>${names || "—"}${more}</td>
+          </tr>`;
+        })
+        .join("");
+    };
+
+    const loadStockIn = async (iso, { force = false } = {}) => {
+      if (!force && cache[iso]) {
+        const pack = cache[iso];
+        paintKpis(pack);
+        paintProducts(pack.products || []);
+        paintReceipts(pack.receipts || []);
+        return;
+      }
+      const url = data.stockInUrl;
+      if (!url) return;
+      const reqId = ++req;
+      if (grid) {
+        grid.className = "tops-list";
+        grid.innerHTML = typeof skelHtml === "function" ? skelHtml("lines", 6) : "…";
+      }
+      if (receiptsBody) {
+        receiptsBody.innerHTML =
+          `<tr><td colspan="6" class="cabinet-empty">Yuklanmoqda…</td></tr>`;
+      }
+      try {
+        const res = await fetch(`${url}?date=${encodeURIComponent(iso)}`, {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+        const payload = await res.json();
+        if (reqId !== req) return;
+        if (!payload || payload.error || payload.ok === false) {
+          throw new Error(payload?.error || "fail");
+        }
+        cache[iso] = payload;
+        paintKpis(payload);
+        paintProducts(Array.isArray(payload.products) ? payload.products : []);
+        paintReceipts(Array.isArray(payload.receipts) ? payload.receipts : []);
+      } catch (_err) {
+        if (reqId !== req) return;
+        if (grid) {
+          grid.innerHTML = `<p class="cabinet-hint">Kirim ma’lumotlari yuklanmadi. Qayta urinib ko‘ring.</p>`;
+        }
+        if (receiptsBody) {
+          receiptsBody.innerHTML =
+            `<tr><td colspan="6" class="cabinet-empty">Yuklanmadi</td></tr>`;
+        }
+      }
+    };
+
+    dateTrigger?.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (calendar?.hidden) openCalendar();
+      else closeCalendar();
+    });
+    document.getElementById("stock-in-cal-prev")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      viewMonth -= 1;
+      if (viewMonth < 0) {
+        viewMonth = 11;
+        viewYear -= 1;
+      }
+      paintCalendar();
+    });
+    document.getElementById("stock-in-cal-next")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      viewMonth += 1;
+      if (viewMonth > 11) {
+        viewMonth = 0;
+        viewYear += 1;
+      }
+      paintCalendar();
+    });
+    calMonth?.addEventListener("change", () => {
+      viewMonth = Number(calMonth.value);
+      paintCalendar();
+    });
+    calYear?.addEventListener("change", () => {
+      viewYear = Number(calYear.value);
+      paintCalendar();
+    });
+    calGrid?.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-date]");
+      if (!btn) return;
+      draftDay = parseIso(btn.getAttribute("data-date")) || draftDay;
+      paintCalendar();
+    });
+    document.getElementById("stock-in-cal-cancel")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeCalendar();
+    });
+    document.getElementById("stock-in-cal-apply")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      dayIso = toIso(draftDay);
+      syncLabel();
+      closeCalendar();
+      loadStockIn(dayIso, { force: true });
+    });
+    document.addEventListener(
+      "mousedown",
+      (e) => {
+        if (!datePicker || !calendar || calendar.hidden) return;
+        if (datePicker.contains(e.target) || calendar.contains(e.target)) return;
+        closeCalendar();
+      },
+      true
+    );
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && calendar && !calendar.hidden) closeCalendar();
+    });
+    window.addEventListener("resize", () => {
+      if (calendar && !calendar.hidden) positionCalendar();
+    });
+
+    syncLabel();
+    loadStockIn(dayIso, { force: true });
+  })();
 
   const customersBody = document.getElementById("tops-customers-body");
   const customersSelect = document.getElementById("tops-customers-select");
@@ -4123,6 +4422,10 @@
     if (kpis[2]) kpis[2].textContent = fmtMoney(payload.gross);
     if (kpis[3]) kpis[3].textContent = fmtMoney(payload.profit);
     if (kpis[4]) kpis[4].textContent = String(payload.count || 0);
+    const exportBtn = document.querySelector(".btn-export");
+    if (exportBtn && data.daySalesExportUrl && payload.sale_date) {
+      exportBtn.href = data.daySalesExportUrl + "?sale_date=" + encodeURIComponent(payload.sale_date);
+    }
     if (!rows.length) {
       tbody.innerHTML =
         '<tr><td colspan="9" class="cabinet-empty">Bu kunda chek yo‘q.</td></tr>';
@@ -4132,14 +4435,16 @@
       .map((s) => {
         const id = String(s.id || "");
         const short = id.length > 8 ? id.slice(0, 8) + "…" : id;
+        const total = s.total_amount != null ? s.total_amount : s.total;
+        const cost = s.total_cost != null ? s.total_cost : s.cost;
         return `<tr class="is-clickable" data-sale-id="${id}" data-search="${id} ${(s.customer || "").toLowerCase()}">
           <td>#${short}</td>
-          <td>${s.time || "—"}</td>
-          <td>—</td>
+          <td>${s.time || s.created_display || "—"}</td>
+          <td>${s.cashier || "—"}</td>
           <td>${s.customer || "—"}</td>
-          <td>${fmtMoney(s.total)}</td>
+          <td>${fmtMoney(total)}</td>
           <td>Yopilgan</td>
-          <td>${fmtMoney(s.cost)}</td>
+          <td>${fmtMoney(cost)}</td>
           <td class="is-profit">${fmtMoney(s.profit)}</td>
           <td>${s.payment_label || s.payment || "—"}</td>
         </tr>`;
@@ -4257,6 +4562,7 @@
         </div>`
       )
       .join("");
+    const totalAmount = sale.total_amount != null ? sale.total_amount : sale.total;
 
     body.innerHTML = `
       <dl class="receipt-meta">
@@ -4265,31 +4571,60 @@
         <div class="receipt-row"><dt>Mijoz</dt><dd>${sale.customer || "—"}</dd></div>
         <div class="receipt-row"><dt>Turi</dt><dd>${sale.type || "Sotilgan"}</dd></div>
         <div class="receipt-row"><dt>Status</dt><dd><span class="badge-ok">${sale.status || "Yakunlangan"}</span></dd></div>
-        <div class="receipt-row"><dt>Yaratilgan sana</dt><dd>${sale.created_display || ""}</dd></div>
+        <div class="receipt-row"><dt>Yaratilgan sana</dt><dd>${sale.created_display || sale.time || ""}</dd></div>
       </dl>
       <h4 class="receipt-section-title">Tovarlar</h4>
       <div class="receipt-items">${itemsHtml || '<p class="muted">Tovar yo‘q</p>'}</div>
       <h4 class="receipt-section-title">Umumiy</h4>
       <dl class="receipt-summary">
-        <div class="receipt-row"><dt>Jami :</dt><dd>${fmtMoney(sale.total_amount)}</dd></div>
+        <div class="receipt-row"><dt>Jami :</dt><dd>${fmtMoney(totalAmount)}</dd></div>
         <div class="receipt-row"><dt>Chegirma :</dt><dd>${fmtMoney(sale.discount || 0)}</dd></div>
-        <div class="receipt-row"><dt>To‘lovga :</dt><dd>${fmtMoney(sale.total_amount)}</dd></div>
-        <div class="receipt-row"><dt>Umumiy tannarxi :</dt><dd>${fmtMoney(sale.total_cost)} SUM</dd></div>
+        <div class="receipt-row"><dt>To‘lovga :</dt><dd>${fmtMoney(totalAmount)}</dd></div>
+        <div class="receipt-row"><dt>Umumiy tannarxi :</dt><dd>${fmtMoney(sale.total_cost != null ? sale.total_cost : sale.cost)} SUM</dd></div>
         <div class="receipt-row"><dt>Foyda :</dt><dd class="is-profit">${fmtMoney(sale.profit)}</dd></div>
       </dl>
       <h4 class="receipt-section-title">To‘lovlar</h4>
       <dl class="receipt-pays">
-        <div class="receipt-row"><dt>${sale.payment_label || "Naqt"} :</dt><dd>${fmtMoney(sale.total_amount)}</dd></div>
+        <div class="receipt-row"><dt>${sale.payment_label || "Naqt"} :</dt><dd>${fmtMoney(totalAmount)}</dd></div>
       </dl>
     `;
     drawer.hidden = false;
     document.body.style.overflow = "hidden";
   };
 
-  salesTable?.querySelectorAll("tbody tr[data-sale-id]").forEach((row) => {
-    row.addEventListener("click", () => {
-      openReceipt(salesMap[String(row.dataset.saleId)]);
-    });
+  const loadReceipt = async (saleId) => {
+    let sale = salesMap[String(saleId)];
+    const needsFetch =
+      data.saleDetailUrl &&
+      (!sale || !Array.isArray(sale.items) || !sale.items.length || sale.needs_detail);
+    if (needsFetch) {
+      if (drawer && body) {
+        body.innerHTML = '<p class="muted">Chek yuklanmoqda…</p>';
+        drawer.hidden = false;
+        document.body.style.overflow = "hidden";
+      }
+      try {
+        const r = await fetch(
+          data.saleDetailUrl + "?id=" + encodeURIComponent(String(saleId)),
+          { credentials: "same-origin", headers: { Accept: "application/json" } }
+        );
+        const json = await r.json();
+        if (json && json.ok && json.sale) {
+          sale = json.sale;
+          salesMap[String(saleId)] = sale;
+        }
+      } catch (_) {
+        /* joriy qisqa ma'lumot bilan ochiladi */
+      }
+    }
+    if (!sale) return;
+    openReceipt(sale);
+  };
+
+  salesTable?.addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-sale-id]");
+    if (!row) return;
+    loadReceipt(row.dataset.saleId);
   });
   document.querySelectorAll("[data-close-receipt]").forEach((el) => {
     el.addEventListener("click", closeReceipt);

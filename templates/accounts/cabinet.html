@@ -203,6 +203,7 @@
       <a href="?section=signals" class="{% if section == 'signals' %}is-active{% endif %}"><span class="nav-dot"></span> Signallar</a>
       <a href="?section=reports" class="{% if section == 'reports' %}is-active{% endif %}"><span class="nav-dot"></span> Hisobotlar</a>
       <a href="?section=tops" class="{% if section == 'tops' %}is-active{% endif %}"><span class="nav-dot"></span> Top reyting</a>
+      <a href="?section=stock_in" class="{% if section == 'stock_in' %}is-active{% endif %}"><span class="nav-dot"></span> Kirim qilingan mahsulotlar</a>
       <a href="?section=labels" class="{% if section == 'labels' %}is-active{% endif %}"><span class="nav-dot"></span> Yorliqlar</a>
       <a href="?section=sales" class="{% if section == 'sales' %}is-active{% endif %}"><span class="nav-dot"></span> Kunlik sotuvlar</a>
       <a href="?section=shifts" class="{% if section == 'shifts' %}is-active{% endif %}"><span class="nav-dot"></span> Smenalar</a>
@@ -273,12 +274,12 @@
         <h2 class="is-profit" id="kpi-profit" data-fmt-money="{{ profit }}">0</h2>
         <small>Marja <span id="kpi-margin">{{ margin|floatformat:1 }}</span>%</small>
       </article>
-      <article>
+  <article>
         <p>Faol signallar</p>
         <h2 id="kpi-signals">{{ active_signals_count }}</h2>
         <small><a href="?section=signals">Ko‘rish →</a></small>
-      </article>
-      <article>
+  </article>
+  <article>
         <p>Bugungi sotuv</p>
         <h2 id="kpi-today-count">{{ today_count }}</h2>
         <small><span id="kpi-today-gross" data-fmt-money="{{ today_gross }}">0</span> so'm</small>
@@ -383,7 +384,7 @@
         <h3>To‘liq jadval</h3>
       </div>
       <div class="cabinet-table-wrap">
-        <table>
+    <table>
           <thead>
             <tr><th>Tovar</th><th>ABC</th><th>XYZ</th><th>Guruh</th><th>Daromad</th><th>Ulush %</th><th>Qoldiq</th></tr>
           </thead>
@@ -397,12 +398,12 @@
               <td>{{ row.revenue }}</td>
               <td>{{ row.share|floatformat:1 }}%</td>
               <td>{{ row.product.stock_qty }}</td>
-            </tr>
-            {% empty %}
+        </tr>
+      {% empty %}
             <tr><td colspan="7" class="cabinet-hint">…</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      {% endfor %}
+      </tbody>
+    </table>
       </div>
     </section>
     {% endif %}
@@ -520,6 +521,85 @@
             <tbody id="tops-customers-body"></tbody>
           </table>
         </div>
+    </section>
+    {% endif %}
+
+    {% if section == 'stock_in' %}
+    <section class="cabinet-card tops-products-panel">
+      <div class="cabinet-card-head">
+        <div>
+          <h3>Kirim qilingan mahsulotlar</h3>
+          <p class="cabinet-hint" id="stock-in-period-hint">Tanlangan kundagi ombor kirimlari (TezPOS dasturi)</p>
+        </div>
+        <div class="tops-toolbar">
+          <div class="sales-date-picker" id="stock-in-date-picker">
+            <button type="button" class="sales-date-trigger" id="stock-in-date-trigger" aria-expanded="false" aria-haspopup="dialog">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M3 9h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+              <span id="stock-in-date-label">Kalendar</span>
+            </button>
+            <div class="sales-calendar" id="stock-in-calendar" hidden role="dialog" aria-label="Sana tanlash">
+              <div class="sales-calendar-banner" id="stock-in-calendar-banner">Sana tanlang</div>
+              <div class="sales-calendar-nav">
+                <button type="button" class="sales-cal-nav-btn" id="stock-in-cal-prev" aria-label="Oldingi oy">‹</button>
+                <div class="sales-cal-selects">
+                  <select id="stock-in-cal-month" aria-label="Oy"></select>
+                  <select id="stock-in-cal-year" aria-label="Yil"></select>
+                </div>
+                <button type="button" class="sales-cal-nav-btn" id="stock-in-cal-next" aria-label="Keyingi oy">›</button>
+              </div>
+              <div class="sales-calendar-weekdays" aria-hidden="true">
+                <span>Ya</span><span>Du</span><span>Se</span><span>Ch</span><span>Pa</span><span>Ju</span><span>Sh</span>
+              </div>
+              <div class="sales-calendar-grid" id="stock-in-calendar-grid"></div>
+              <p class="sales-calendar-hint">Kirim statistikasi uchun bitta kun tanlang, so‘ng Qo‘llash.</p>
+              <div class="sales-calendar-actions">
+                <button type="button" class="sales-cal-btn sales-cal-btn--ghost" id="stock-in-cal-cancel">Bekor qilish</button>
+                <button type="button" class="sales-cal-btn sales-cal-btn--primary" id="stock-in-cal-apply">Qo‘llash</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sales-kpis" id="stock-in-kpis">
+        <div class="sales-kpi"><span>Kirim hujjatlari</span><strong id="stock-in-kpi-docs">0</strong></div>
+        <div class="sales-kpi"><span>Mahsulot turlari</span><strong id="stock-in-kpi-sku">0</strong></div>
+        <div class="sales-kpi"><span>Jami miqdor</span><strong id="stock-in-kpi-qty">0</strong></div>
+        <div class="sales-kpi"><span>Jami tannarx</span><strong id="stock-in-kpi-cost">0</strong></div>
+      </div>
+
+      <div class="tops-list" id="stock-in-products-grid">
+        <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
+          <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+          <span class="sk"></span><span class="sk"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="cabinet-card">
+      <div class="cabinet-card-head">
+        <h3>Kirim hujjatlari</h3>
+      </div>
+      <div class="cabinet-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Vaqt</th>
+              <th>Yetkazib beruvchi</th>
+              <th>Ombor</th>
+              <th>Miqdor</th>
+              <th>Tannarx</th>
+              <th>Tovarlar</th>
+            </tr>
+          </thead>
+          <tbody id="stock-in-receipts-body">
+            <tr><td colspan="6" class="cabinet-empty">Kalendardan sana tanlang…</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
     {% endif %}
 
@@ -889,7 +969,7 @@
             </label>
           </div>
           <div class="sales-toolbar-right">
-            <a class="btn-export" href="?section=sales&sale_date={{ sale_date_iso }}&export=excel">
+            <a class="btn-export" href="{% url 'accounts:cabinet_day_sales_export' %}?sale_date={{ sale_date_iso }}">
               <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 3v10.2l3.2-3.2 1.4 1.4L12 17l-4.6-4.6 1.4-1.4L11 13.2V3h1zM5 19h14v2H5v-2z"/></svg>
               Excel yuklash
             </a>
@@ -1042,7 +1122,7 @@
             </tbody>
           </table>
         </div>
-      </article>
+  </article>
     </section>
 
     {% endif %}
@@ -1264,11 +1344,14 @@
     apiStatusUrl: "{% url 'accounts:cabinet_api_status' %}",
     warmUrl: "{% url 'accounts:cabinet_warm' %}",
     daySalesUrl: "{% url 'accounts:cabinet_day_sales' %}",
+    saleDetailUrl: "{% url 'accounts:cabinet_sale_detail' %}",
+    daySalesExportUrl: "{% url 'accounts:cabinet_day_sales_export' %}",
     shiftsUrl: "{% url 'accounts:cabinet_shifts' %}",
     reportsUrl: "{% url 'accounts:cabinet_reports' %}",
     abcUrl: "{% url 'accounts:cabinet_abc' %}",
     rangeStatsUrl: "{% url 'accounts:cabinet_range_stats' %}",
     topStatsUrl: "{% url 'accounts:cabinet_top_stats' %}",
+    stockInUrl: "{% url 'accounts:cabinet_stock_in' %}",
     productsImportUrl: "{% url 'accounts:cabinet_products_import' %}",
     productsExportUrl: "{% url 'accounts:cabinet_products_export' %}",
     shareItems: {{ share_items_json|safe }},
@@ -1294,7 +1377,7 @@
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
   (function () {
-    var P = "tezpos_v6_";
+    var P = "tezpos_v9_";
     function g(k) {
       try {
         var s = sessionStorage.getItem(P + k);
@@ -1348,5 +1431,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=excel-barcodes-2" defer></script>
+<script src="/static/cabinet.js?v=stock-in-tops-1" defer></script>
 {% endblock %}

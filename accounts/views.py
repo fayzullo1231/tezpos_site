@@ -610,6 +610,7 @@ def cabinet_day_sales(request):
     day_gross = Decimal("0")
     day_cost = Decimal("0")
     day_profit = Decimal("0")
+    cashier = _cashier_name(request)
     for s in day_sales_raw:
         total = _dec(s.get("total"))
         day_gross += total
@@ -618,20 +619,34 @@ def cabinet_day_sales(request):
         day_profit += profit
         dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
         method = s.get("payment_type") or s.get("payment_method") or "cash"
-        payload.append(
-            {
+        if _sale_items(s):
+            row = _serialize_sale_payload(
+                s, cashier, products_by_id, products_by_name
+            )
+        else:
+            row = {
                 "id": str(s.get("id") or ""),
                 "time": timezone.localtime(dt).strftime("%H:%M") if dt else "",
+                "created_display": timezone.localtime(dt).strftime("%d.%m.%Y, %H:%M") if dt else "",
                 "customer": s.get("customer_name") or "",
+                "cashier": cashier,
                 "total": float(total),
+                "total_amount": float(total),
                 "cost": float(cost),
+                "total_cost": float(cost),
                 "profit": float(profit),
                 "payment": method,
+                "payment_method": method,
                 "payment_label": PAYMENT_LABELS.get(
                     str(method).strip().lower(), str(method or "—")
                 ),
+                "status": "Yakunlangan",
+                "type": "Sotilgan",
+                "discount": float(_dec(s.get("discount_amount"))),
+                "items": [],
+                "needs_detail": True,
             }
-        )
+        payload.append(row)
     return JsonResponse(
         {
             "ok": True,
@@ -643,6 +658,130 @@ def cabinet_day_sales(request):
             "sales": payload,
         }
     )
+
+
+@login_required
+@require_GET
+def cabinet_sale_detail(request):
+    """Bitta chek — tovarlar va summalar (drawer uchun AJAX)."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    sale_id = (request.GET.get("id") or "").strip()
+    if not sale_id:
+        return JsonResponse({"ok": False, "error": "id kerak"}, status=400)
+
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    try:
+        detail = _memo_get(
+            f"{memo_prefix}|sale|{sale_id}",
+            45.0,
+            lambda: tezpos_api.get_sale(token, server, sale_id),
+        )
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        return JsonResponse({"ok": False, "error": str(exc)}, status=502)
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=504)
+
+    if not isinstance(detail, dict):
+        return JsonResponse({"ok": False, "error": "Chek topilmadi"}, status=404)
+
+    products_raw = []
+    try:
+        products_raw = _memo_get(
+            f"{memo_prefix}|catalog_snap",
+            120.0,
+            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=14) or [],
+        ) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
+        products_raw = []
+    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    products_by_id = {str(p.id): p for p in products}
+    products_by_name = _products_by_name(products)
+    sale = _serialize_sale_payload(
+        detail,
+        _cashier_name(request),
+        products_by_id,
+        products_by_name,
+    )
+    return JsonResponse({"ok": True, "sale": sale})
+
+
+@login_required
+@require_GET
+def cabinet_day_sales_export(request):
+    """Kunlik sotuvlar — Excel/CSV (FAST_SHELL dan tashqari)."""
+    if not session_has_tezpos(request):
+        return redirect("login")
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    sale_date = _parse_sale_date(request.GET.get("sale_date"))
+
+    try:
+        day_sales_raw = tezpos_api.get_sales_for_day(token, server, sale_date.isoformat())
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return redirect("login")
+        return HttpResponse(str(exc), status=502, content_type="text/plain; charset=utf-8")
+    except (TimeoutError, OSError) as exc:
+        return HttpResponse(str(exc), status=504, content_type="text/plain; charset=utf-8")
+
+    day_sales_raw = [s for s in (day_sales_raw or []) if isinstance(s, dict)]
+    day_sales_raw.sort(
+        key=lambda s: _parse_dt(s.get("completed_at") or s.get("created_at"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    products_raw = []
+    try:
+        products_raw = _memo_get(
+            f"{memo_prefix}|catalog_snap",
+            120.0,
+            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=14) or [],
+        ) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
+        products_raw = []
+    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    products_by_id = {str(p.id): p for p in products}
+    products_by_name = _products_by_name(products)
+    cashier = _cashier_name(request)
+
+    need_fetch = [
+        str(s.get("id"))
+        for s in day_sales_raw
+        if s.get("id") and not _sale_items(s)
+    ]
+    details = _fetch_sale_details(
+        token,
+        server,
+        need_fetch,
+        limit=len(need_fetch) or 1,
+        per_sale_timeout=4.0,
+        overall_timeout=90.0,
+    )
+
+    day_sales_payload = []
+    for s in day_sales_raw:
+        sid = str(s.get("id") or "")
+        detail = details.get(sid) or s
+        if not _sale_items(detail):
+            detail = {**s, "items": []}
+        day_sales_payload.append(
+            _serialize_sale_payload(
+                detail,
+                cashier,
+                products_by_id,
+                products_by_name,
+            )
+        )
+    return _export_daily_sales_excel(day_sales_payload, sale_date, cashier)
 
 
 def _collect_shifts_payload(token: str, server: str, *, days: int = 90) -> tuple[list[dict], str]:
@@ -675,7 +814,7 @@ def _collect_shifts_payload(token: str, server: str, *, days: int = 90) -> tuple
     except (tezpos_api.TezPosApiError, TimeoutError, OSError):
         raw_shifts_api = []
 
-    margin_ratio = Decimal("0.25")
+    margin_ratio = Decimal("0")
     shifts_payload: list[dict] = []
     shifts_source = "none"
     seen_ids: set[str] = set()
@@ -2144,11 +2283,117 @@ def _enrich_shift_with_sales(
             gross = sum((_dec(s.get("total")) for s in matched), Decimal("0"))
             shift["gross"] = float(gross)
             shift["checks"] = len(matched)
-            if not shift.get("profit") or len(matched) >= prev_checks:
-                profit = (gross * margin_ratio).quantize(Decimal("0.01")) if margin_ratio > 0 else Decimal("0")
-                shift["profit"] = float(profit)
-                shift["margin"] = float((profit / gross * 100) if gross > 0 else 0)
+            if not shift.get("profit"):
+                shift["profit"] = 0.0
+                shift["margin"] = 0.0
     return shift
+
+
+def _match_shift_sales(
+    sales: list[dict],
+    *,
+    opened_dt: datetime | None,
+    closed_dt: datetime | None,
+    sale_ids: list[str] | None = None,
+    is_open: bool = False,
+) -> list[dict]:
+    """Smena ochilish–yopilish oralig‘idagi cheklar (00:00 chegarasidan mustaqil)."""
+    ids = [str(x) for x in (sale_ids or []) if x]
+    if is_open and opened_dt and closed_dt:
+        matched = []
+        for s in sales:
+            dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
+            if dt and opened_dt <= dt <= closed_dt:
+                matched.append(s)
+        return matched
+    if ids:
+        idset = set(ids)
+        matched = [s for s in sales if str(s.get("id")) in idset]
+        if opened_dt and closed_dt and len(matched) < len(ids):
+            seen = {str(s.get("id")) for s in matched}
+            for s in sales:
+                sid = str(s.get("id") or "")
+                if sid in seen:
+                    continue
+                dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
+                if dt and opened_dt <= dt <= closed_dt:
+                    matched.append(s)
+                    seen.add(sid)
+        return matched
+    if opened_dt and closed_dt:
+        matched = []
+        for s in sales:
+            dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
+            if dt and opened_dt <= dt <= closed_dt:
+                matched.append(s)
+        return matched
+    return list(sales)
+
+
+def _sale_details_merged(matched: list[dict], fetched: dict[str, dict]) -> list[dict]:
+    """Inline items + alohida fetch — bitta ro‘yxat."""
+    out: list[dict] = []
+    for s in matched:
+        sid = str(s.get("id") or "")
+        detail = fetched.get(sid) if sid else None
+        if detail and _sale_items(detail):
+            out.append(detail)
+        elif _sale_items(s):
+            out.append(s)
+        elif detail:
+            out.append(detail)
+        elif sid:
+            out.append(s)
+    return out
+
+
+def _shift_price_list_stats(
+    matched: list[dict],
+    fetched: dict[str, dict],
+    products_by_id: dict,
+    products_by_name: dict,
+    price_lists: list[dict],
+    gross: float,
+    checks: int,
+) -> tuple[list[dict], float, float]:
+    """Sotuv/Optom statistikasi — to‘liq cheklar bo‘yicha, kerak bo‘lsa scale."""
+    details_for_stats = _sale_details_merged(matched, fetched)
+    lists = _aggregate_price_list_stats(
+        details_for_stats, products_by_id, products_by_name, price_lists
+    )
+    jami = next((r for r in lists if r.get("is_total")), None)
+    sample_checks = int(jami.get("checks") or 0) if jami else len(details_for_stats)
+    sample_rev = float(jami.get("revenue") or 0) if jami else 0.0
+    need_scale = (
+        gross > 0
+        and sample_rev > 0
+        and checks > 0
+        and (
+            sample_checks < checks * 0.85
+            or abs(sample_rev - gross) / gross > 0.05
+        )
+    )
+    if need_scale:
+        lists = _scale_price_list_stats(lists, gross, checks)
+        jami = next((r for r in lists if r.get("is_total")), None)
+
+    if jami and float(jami.get("revenue") or 0) > 0:
+        rev = float(jami["revenue"])
+        ratio = float(jami.get("profit") or 0) / rev if rev else 0.0
+        profit = gross * ratio if ratio else float(jami.get("profit") or 0)
+        margin = ratio * 100.0
+    else:
+        profit_dec = Decimal("0")
+        for s in matched:
+            sid = str(s.get("id") or "")
+            detail = fetched.get(sid) or s
+            _, pft = _estimate_sale_profit(
+                detail, products_by_id, _dec(s.get("total")), products_by_name
+            )
+            profit_dec += pft
+        profit = float(profit_dec)
+        margin = (profit / gross * 100.0) if gross > 0 else 0.0
+    return lists, profit, margin
 
 
 def _build_price_list_stats_by_range(
@@ -3047,6 +3292,7 @@ def cabinet_view(request):
         "signals",
         "labels",
         "tops",
+        "stock_in",
         "shifts",
         "bot",
         "debtors",
@@ -3058,6 +3304,7 @@ def cabinet_view(request):
     FAST_SHELL = {
         "overview",
         "tops",
+        "stock_in",
         "bot",
         "debtors",
         "products",
@@ -4101,23 +4348,23 @@ def _top_products_from_details(
     product_rev: dict[str, Decimal] = defaultdict(Decimal)
     product_meta: dict[str, dict] = {}
     for detail in details.values():
-        for item in detail.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            pid = str(item.get("product_id") or "")
-            qty = _dec(item.get("quantity"))
-            unit_price = _dec(item.get("unit_price") or item.get("price"))
-            name = (item.get("product_name") or item.get("name") or "").strip()
+        if not isinstance(detail, dict):
+            continue
+        for item in _sale_items(detail):
+            pid, name, _nested = _item_product_ref(item)
+            qty = _item_qty(item)
+            unit_price = _item_unit_price(item)
+            line_rev = _dec(item.get("total") or item.get("line_total"), str(qty * unit_price))
             if not pid:
+                name = (name or "").strip()
                 if not name:
                     continue
                 pid = f"name:{name.casefold()}"
-            line_rev = qty * unit_price
             if qty <= 0 and line_rev <= 0:
                 continue
             product_qty[pid] += qty
             product_rev[pid] += line_rev
-            p = products_by_id.get(pid) if not pid.startswith("name:") else None
+            p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
             if not p and name:
                 p = _find_product(products_by_id, products_by_name, product_name=name)
             meta = product_meta.get(pid) or {}
@@ -4135,9 +4382,10 @@ def _top_products_from_details(
     out = []
     for pid, rev in sorted(product_rev.items(), key=lambda x: x[1], reverse=True)[:limit]:
         meta = product_meta.get(pid) or {}
-        p = products_by_id.get(pid)
+        p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
         out.append(
             {
+                "id": str(pid),
                 "name": (p.name if p else "") or meta.get("name") or "Mahsulot",
                 "image": (p.display_image if p else "") or meta.get("image") or "",
                 "qty": float(product_qty[pid]),
@@ -4150,6 +4398,154 @@ def _top_products_from_details(
             }
         )
     return out
+
+
+def _top_products_qty_sum(rows: list[dict]) -> float:
+    return sum(float(r.get("qty") or 0) for r in (rows or []) if isinstance(r, dict))
+
+
+def _receipt_items(detail: dict | None) -> list[dict]:
+    if not isinstance(detail, dict):
+        return []
+    for key in ("items", "lines", "products", "details", "receipt_items"):
+        rows = detail.get(key)
+        if isinstance(rows, list) and rows:
+            return [x for x in rows if isinstance(x, dict)]
+    return []
+
+
+def _receipt_day(raw: dict) -> date | None:
+    dt = _parse_dt(
+        raw.get("completed_at")
+        or raw.get("received_at")
+        or raw.get("created_at")
+        or raw.get("date")
+        or raw.get("posted_at")
+    )
+    if not dt:
+        return None
+    return timezone.localtime(dt).date()
+
+
+def _serialize_stock_receipt(
+    raw: dict,
+    products_by_id: dict,
+    products_by_name: dict | None = None,
+) -> dict:
+    items_out = []
+    total_qty = Decimal("0")
+    total_cost = Decimal("0")
+    for item in _receipt_items(raw):
+        qty = _dec(item.get("quantity") or item.get("qty") or item.get("count"))
+        unit_cost = _dec(
+            item.get("cost_price")
+            or item.get("unit_cost")
+            or item.get("purchase_price")
+            or item.get("price")
+        )
+        line_cost = _dec(
+            item.get("total") or item.get("line_total") or item.get("total_cost"),
+            str(qty * unit_cost),
+        )
+        pid = str(item.get("product_id") or item.get("product") or "").strip()
+        if isinstance(item.get("product"), dict):
+            nested = item["product"]
+            pid = str(nested.get("id") or pid).strip()
+            name = (nested.get("name") or item.get("product_name") or "").strip()
+        else:
+            name = (item.get("product_name") or item.get("name") or "").strip()
+        p = _find_product(
+            products_by_id,
+            products_by_name,
+            product_id=pid,
+            product_name=name,
+        )
+        if not name and p:
+            name = p.name
+        if unit_cost <= 0 and p:
+            unit_cost = _dec(getattr(p, "cost_price", 0))
+            line_cost = qty * unit_cost
+        total_qty += qty
+        total_cost += line_cost
+        items_out.append(
+            {
+                "id": pid,
+                "name": name or "Mahsulot",
+                "qty": float(qty),
+                "unit_cost": float(unit_cost),
+                "line_cost": float(line_cost),
+                "image": (p.display_image if p else "") or "",
+            }
+        )
+    if not items_out:
+        # Ba'zi API lar faqat jami beradi
+        total_cost = _dec(
+            raw.get("total_cost")
+            or raw.get("total")
+            or raw.get("amount")
+            or raw.get("cost_total")
+        )
+        total_qty = _dec(raw.get("total_qty") or raw.get("items_count") or raw.get("quantity"))
+
+    dt = _parse_dt(
+        raw.get("completed_at")
+        or raw.get("received_at")
+        or raw.get("created_at")
+        or raw.get("date")
+    )
+    created_display = timezone.localtime(dt).strftime("%d.%m.%Y, %H:%M") if dt else ""
+    supplier = (
+        raw.get("supplier_name")
+        or raw.get("supplier")
+        or ""
+    )
+    if isinstance(supplier, dict):
+        supplier = supplier.get("name") or ""
+    return {
+        "id": str(raw.get("id") or raw.get("uuid") or ""),
+        "created_at": dt.isoformat() if dt else "",
+        "created_display": created_display,
+        "time": timezone.localtime(dt).strftime("%H:%M") if dt else "",
+        "supplier": str(supplier or "").strip() or "—",
+        "warehouse": str(raw.get("warehouse") or raw.get("warehouse_name") or "").strip() or "—",
+        "items_count": len(items_out) if items_out else int(total_qty or 0),
+        "total_qty": float(total_qty),
+        "total_cost": float(total_cost),
+        "items": items_out,
+    }
+
+
+def _aggregate_stock_in_products(receipts: list[dict]) -> list[dict]:
+    """Kunlik kirim — mahsulot bo‘yicha yig‘indi."""
+    buckets: dict[str, dict] = {}
+    for rec in receipts:
+        for it in rec.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            key = str(it.get("id") or "").strip() or (it.get("name") or "").casefold()
+            if not key:
+                continue
+            b = buckets.setdefault(
+                key,
+                {
+                    "id": str(it.get("id") or ""),
+                    "name": it.get("name") or "Mahsulot",
+                    "image": it.get("image") or "",
+                    "qty": 0.0,
+                    "cost": 0.0,
+                },
+            )
+            b["qty"] += float(it.get("qty") or 0)
+            b["cost"] += float(it.get("line_cost") or 0)
+            if not b.get("image") and it.get("image"):
+                b["image"] = it["image"]
+            if b.get("name") in ("", "Mahsulot") and it.get("name"):
+                b["name"] = it["name"]
+    return sorted(
+        buckets.values(),
+        key=lambda r: (float(r.get("cost") or 0), float(r.get("qty") or 0)),
+        reverse=True,
+    )
 
 
 def _top_products_from_api_items(
@@ -4234,13 +4630,13 @@ def cabinet_top_stats(request):
         limit = 100
 
     if span <= 1:
-        detail_cap, max_pages, product_pages = 100, 80, 6
+        detail_cap, max_pages, product_pages = 300, 80, 8
     elif span <= 7:
-        detail_cap, max_pages, product_pages = 80, 50, 6
+        detail_cap, max_pages, product_pages = 200, 60, 6
     elif span <= 31:
-        detail_cap, max_pages, product_pages = 60, 40, 5
+        detail_cap, max_pages, product_pages = 120, 50, 5
     else:
-        detail_cap, max_pages, product_pages = 40, 30, 4
+        detail_cap, max_pages, product_pages = 80, 40, 4
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
 
@@ -4248,7 +4644,7 @@ def cabinet_top_stats(request):
         with ThreadPoolExecutor(max_workers=3) as pool:
             fut_api = pool.submit(
                 lambda: _memo_get(
-                    f"{memo_prefix}|topapi|{start}|{end}|{limit}",
+                    f"{memo_prefix}|topapi2|{start}|{end}|{limit}",
                     40.0,
                     lambda: tezpos_api.get_top_products(
                         token,
@@ -4262,7 +4658,7 @@ def cabinet_top_stats(request):
             )
             fut_s = pool.submit(
                 lambda: _memo_get(
-                    f"{memo_prefix}|topsales|{start}|{end}|{max_pages}",
+                    f"{memo_prefix}|topsales2|{start}|{end}|{max_pages}",
                     45.0,
                     lambda: tezpos_api.get_sales(
                         token,
@@ -4276,11 +4672,11 @@ def cabinet_top_stats(request):
             )
             fut_p = pool.submit(
                 lambda: _memo_get(
-                    f"{memo_prefix}|products|{product_pages}",
-                    90.0,
-                    lambda: tezpos_api.get_products(
-                        token, server, max_pages=product_pages
-                    ),
+                    f"{memo_prefix}|catalog_snap",
+                    120.0,
+                    lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=14)
+                    or tezpos_api.get_products(token, server, max_pages=product_pages)
+                    or [],
                 )
             )
             top_payload = fut_api.result() or {"items": []}
@@ -4309,19 +4705,45 @@ def cabinet_top_stats(request):
         or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    details = _fetch_sale_details(
-        token,
-        server,
-        [str(s.get("id")) for s in sales if s.get("id")],
-        limit=min(detail_cap, max(len(sales), 1)),
-    )
-    top_products = _top_products_from_details(
-        details, products_by_id, products_by_name, limit=limit
-    )
-    if not top_products:
-        top_products = _top_products_from_api_items(
-            top_payload.get("items") or [], products_by_id, limit=limit
+
+    details_map: dict[str, dict] = {}
+    need_fetch: list[str] = []
+    for s in sales:
+        sid = str(s.get("id") or "")
+        if not sid:
+            continue
+        if _sale_items(s):
+            details_map[sid] = s
+        else:
+            need_fetch.append(sid)
+
+    if need_fetch:
+        fetched = _fetch_sale_details(
+            token,
+            server,
+            need_fetch,
+            limit=min(detail_cap, max(len(need_fetch), 1)),
+            per_sale_timeout=2.5,
+            overall_timeout=35.0 if span <= 1 else 22.0,
         )
+        details_map.update(fetched)
+
+    from_details = _top_products_from_details(
+        details_map, products_by_id, products_by_name, limit=limit
+    )
+    from_api = _top_products_from_api_items(
+        top_payload.get("items") or [], products_by_id, limit=limit
+    )
+    # To‘liqroq manbani tanlash (namuna qisqa bo‘lsa API ustun)
+    if _top_products_qty_sum(from_api) > _top_products_qty_sum(from_details) * 1.02:
+        top_products = from_api
+        source = "api"
+    elif from_details:
+        top_products = from_details
+        source = "sales"
+    else:
+        top_products = from_api
+        source = "api" if from_api else "none"
 
     return JsonResponse(
         {
@@ -4329,6 +4751,136 @@ def cabinet_top_stats(request):
             "to": end.isoformat(),
             "topProducts": top_products,
             "count": len(top_products),
+            "checks": len(sales),
+            "source": source,
+            "details_used": len(details_map),
+        }
+    )
+
+
+@login_required
+@require_GET
+def cabinet_stock_in(request):
+    """Kirim qilingan mahsulotlar — kalendar kuni bo‘yicha (AJAX)."""
+    if not session_has_tezpos(request):
+        return JsonResponse({"error": "auth"}, status=401)
+
+    token = request.session[SESSION_TOKEN]
+    server = request.session[SESSION_SERVER]
+    day = _parse_sale_date(request.GET.get("date") or request.GET.get("sale_date"))
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_r = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|stockin|{day.isoformat()}",
+                    60.0,
+                    lambda: tezpos_api.get_stock_receipts(
+                        token,
+                        server,
+                        date_from=day.isoformat(),
+                        date_to=day.isoformat(),
+                        timeout=18,
+                        max_pages=30,
+                    ),
+                )
+            )
+            fut_p = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|catalog_snap",
+                    120.0,
+                    lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=14)
+                    or [],
+                )
+            )
+            raw_receipts = fut_r.result() or []
+            products_raw = fut_p.result() or []
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)
+    except (TimeoutError, OSError) as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)
+
+    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    products_by_id = {str(p.id): p for p in products}
+    products_by_name = _products_by_name(products)
+
+    raw_receipts = [r for r in raw_receipts if isinstance(r, dict)]
+    # Sana filtri API da ishlamasa — lokal filtrlash
+    filtered = []
+    for r in raw_receipts:
+        d = _receipt_day(r)
+        if d is None or d == day:
+            filtered.append(r)
+    if not filtered and raw_receipts:
+        # date_from/to qo‘llab-quvvatlanmasa — kengroq so‘rov + filtrlash
+        try:
+            wider = tezpos_api.get_stock_receipts(
+                token,
+                server,
+                date_from=(day - timedelta(days=7)).isoformat(),
+                date_to=(day + timedelta(days=1)).isoformat(),
+                timeout=16,
+                max_pages=40,
+            )
+        except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+            wider = []
+        for r in wider or []:
+            if isinstance(r, dict) and _receipt_day(r) == day:
+                filtered.append(r)
+
+    # Items yo‘q bo‘lsa — detail fetch
+    need_ids = [
+        str(r.get("id") or "")
+        for r in filtered
+        if r.get("id") and not _receipt_items(r)
+    ]
+    details: dict[str, dict] = {}
+    if need_ids:
+        def _one(rid: str):
+            try:
+                return rid, tezpos_api.get_stock_receipt(token, server, rid)
+            except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+                return rid, None
+
+        with ThreadPoolExecutor(max_workers=min(8, max(2, len(need_ids)))) as pool:
+            for fut in as_completed([pool.submit(_one, rid) for rid in need_ids[:80]]):
+                try:
+                    rid, data = fut.result()
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    details[rid] = data
+
+    receipts_payload = []
+    for r in filtered:
+        rid = str(r.get("id") or "")
+        detail = details.get(rid) or r
+        if not _receipt_items(detail) and _receipt_items(r):
+            detail = r
+        receipts_payload.append(
+            _serialize_stock_receipt(detail, products_by_id, products_by_name)
+        )
+
+    receipts_payload.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    products_agg = _aggregate_stock_in_products(receipts_payload)
+    total_cost = sum(float(x.get("total_cost") or 0) for x in receipts_payload)
+    total_qty = sum(float(x.get("total_qty") or 0) for x in receipts_payload)
+    sku_count = len(products_agg)
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "date": day.isoformat(),
+            "receipts_count": len(receipts_payload),
+            "sku_count": sku_count,
+            "total_qty": total_qty,
+            "total_cost": total_cost,
+            "receipts": receipts_payload,
+            "products": products_agg,
         }
     )
 
@@ -4408,63 +4960,40 @@ def cabinet_shift_detail(request):
         return JsonResponse({"ok": False, "error": str(exc)}, status=200)
 
     sales = [s for s in sales if isinstance(s, dict)]
-    # Ochiq smena: vaqt oralig‘i (sale_ids eski/qisqa bo‘lishi mumkin)
-    if is_open and opened_dt:
-        matched = []
-        for s in sales:
-            dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
-            if dt and opened_dt <= dt <= closed_dt:
-                matched.append(s)
-    elif sale_ids:
-        idset = set(sale_ids)
-        matched = [s for s in sales if str(s.get("id")) in idset]
-        # Agar ID kesilgan bo‘lsa — ochilish vaqtidan yopilishgacha qo‘shimcha
-        if opened_dt and len(matched) < len(sale_ids):
-            seen = {str(s.get("id")) for s in matched}
-            for s in sales:
-                sid = str(s.get("id") or "")
-                if sid in seen:
-                    continue
-                dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
-                if dt and opened_dt <= dt <= closed_dt:
-                    matched.append(s)
-                    seen.add(sid)
-    elif opened_dt:
-        matched = []
-        for s in sales:
-            dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
-            if dt and opened_dt <= dt <= closed_dt:
-                matched.append(s)
-    else:
-        matched = sales
+    matched = _match_shift_sales(
+        sales,
+        opened_dt=opened_dt,
+        closed_dt=closed_dt,
+        sale_ids=sale_ids,
+        is_open=is_open and bool(opened_dt),
+    )
 
     gross = float(sum((_dec(s.get("total")) for s in matched), Decimal("0")))
     checks = len(matched)
-    # Bir kunlik / ochiq smena — Optom uchun yetarli namuna, lekin 90s emas
-    detail_cap = 35 if is_open or (opened_dt and date_from == date_to) else 28
+    need_fetch = [
+        str(s.get("id"))
+        for s in matched
+        if s.get("id") and not _sale_items(s)
+    ]
+    detail_cap = min(len(need_fetch) or 1, 35 if is_open or (opened_dt and date_from == date_to) else 28)
     details = _fetch_sale_details(
         token,
         server,
-        [str(s.get("id")) for s in matched if s.get("id")],
+        need_fetch,
         limit=detail_cap,
         per_sale_timeout=2.2,
         overall_timeout=10.0,
     )
-    lists = _aggregate_price_list_stats(
-        list(details.values()), products_by_id, products_by_name, price_lists
+    lists, profit, margin = _shift_price_list_stats(
+        matched,
+        details,
+        products_by_id,
+        products_by_name,
+        price_lists,
+        gross,
+        checks,
     )
-    # Namunani to‘liq smena tushumiga tenglashtirish (Sotuv+Optom = Savdo)
-    lists = _scale_price_list_stats(lists, gross, checks)
     jami = next((r for r in lists if r.get("is_total")), None)
-    if jami and jami.get("revenue", 0) > 0 and float(jami.get("revenue") or 0) > 0:
-        # Scale qilingan Jami dan marja
-        rev = float(jami["revenue"])
-        ratio = float(jami.get("profit") or 0) / rev if rev else 0.0
-        profit = gross * ratio if ratio else float(jami.get("profit") or 0)
-        margin = ratio * 100.0
-    else:
-        profit = gross * float(margin_ratio)
-        margin = (profit / gross * 100.0) if gross > 0 else 0.0
 
     return JsonResponse(
         {
@@ -4495,7 +5024,11 @@ def _shift_report_bundle(
 
     today = timezone.localdate()
     try:
-        products_raw = tezpos_api.get_products(token, server, max_pages=20, timeout=8) or []
+        products_raw = _memo_get(
+            f"{server}|{(token or '')[-12:]}|catalog_snap",
+            120.0,
+            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=12) or [],
+        ) or []
     except (tezpos_api.TezPosApiError, TimeoutError, OSError):
         tg_logger.exception("shift bundle products failed")
         products_raw = []
@@ -4522,55 +5055,51 @@ def _shift_report_bundle(
         date_from = (today - timedelta(days=1)).isoformat()
         date_to = today.isoformat()
 
+    sale_pages = 60 if is_open else 50
     sales = tezpos_api.get_sales(
         token,
         server,
         date_from=date_from,
         date_to=date_to,
-        timeout=16,
-        max_pages=40,
+        timeout=18,
+        max_pages=sale_pages,
     )
     sales = [s for s in sales if isinstance(s, dict)]
-    sale_ids = set(str(x) for x in (shift.get("sale_ids") or []) if x)
-    matched = []
-    if opened_dt:
-        for s in sales:
-            dt = _parse_dt(s.get("completed_at") or s.get("created_at"))
-            if not dt:
-                continue
-            if opened_dt <= dt <= closed_dt:
-                matched.append(s)
-            elif sale_ids and str(s.get("id")) in sale_ids:
-                matched.append(s)
-    elif sale_ids:
-        matched = [s for s in sales if str(s.get("id")) in sale_ids]
-    else:
-        matched = sales
+    shift_sale_ids = [str(x) for x in (shift.get("sale_ids") or []) if x]
+    matched = _match_shift_sales(
+        sales,
+        opened_dt=opened_dt,
+        closed_dt=closed_dt,
+        sale_ids=shift_sale_ids,
+        is_open=is_open and bool(opened_dt),
+    )
 
     gross = float(sum((_dec(s.get("total")) for s in matched), Decimal("0")))
     checks = len(matched)
-    # Fon job: barcha chek detallari (web worker emas)
+    need_fetch = [
+        str(s.get("id"))
+        for s in matched
+        if s.get("id") and not _sale_items(s)
+    ]
+    fetch_limit = min(len(need_fetch) or 1, 200)
     details = _fetch_sale_details(
         token,
         server,
-        [str(s.get("id")) for s in matched if s.get("id")],
-        limit=150,
+        need_fetch,
+        limit=fetch_limit,
         per_sale_timeout=2.5,
-        overall_timeout=40.0,
+        overall_timeout=55.0,
     )
-    lists = _aggregate_price_list_stats(
-        list(details.values()), products_by_id, products_by_name, price_lists
+    lists, profit, margin = _shift_price_list_stats(
+        matched,
+        details,
+        products_by_id,
+        products_by_name,
+        price_lists,
+        gross,
+        checks,
     )
-    lists = _scale_price_list_stats(lists, gross, checks)
     jami = next((r for r in lists if r.get("is_total")), None)
-    if jami and float(jami.get("revenue") or 0) > 0:
-        rev = float(jami["revenue"])
-        ratio = float(jami.get("profit") or 0) / rev if rev else 0.0
-        profit = gross * ratio if ratio else float(jami.get("profit") or 0)
-        margin = ratio * 100.0
-    else:
-        profit = gross * float(margin_ratio)
-        margin = (profit / gross * 100.0) if gross > 0 else 0.0
 
     selling_rev = 0.0
     wholesale_rev = 0.0
@@ -5040,18 +5569,16 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
 
     t_api = time.time()
     try:
-        raw_shifts = tezpos_api.get_shifts(token, server, timeout=10, max_pages=2) or []
+        shifts, shifts_source = _collect_shifts_payload(token, server, days=30)
     except (tezpos_api.TezPosApiError, TimeoutError, OSError):
         tg_logger.exception("get_shifts failed tenant=%s", tenant.business_name)
         raise
     api_s += time.time() - t_api
 
-    shifts = []
-    for raw in raw_shifts:
-        if isinstance(raw, dict):
-            shifts.append(_normalize_api_shift(raw, today))
-
-    if not shifts:
+    # Faqat API smenalari — session-* (sotuvdan taxmin) spam qilmasin
+    if shifts_source == "api":
+        shifts = [sh for sh in shifts if str(sh.get("id") or "").strip() and not str(sh.get("id")).startswith("session-")]
+    elif not shifts:
         t_api = time.time()
         try:
             sales = tezpos_api.get_sales(
@@ -5059,8 +5586,8 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                 server,
                 date_from=(today - timedelta(days=2)).isoformat(),
                 date_to=today.isoformat(),
-                timeout=12,
-                max_pages=2,
+                timeout=14,
+                max_pages=20,
             )
         except (tezpos_api.TezPosApiError, TimeoutError, OSError):
             tg_logger.exception("sales fallback failed tenant=%s", tenant.business_name)
@@ -5070,7 +5597,7 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
             [s for s in sales if isinstance(s, dict)],
             today=today,
             gap_hours=4.0,
-            margin_ratio=Decimal("0.25"),
+            margin_ratio=Decimal("0"),
         )
 
     notified = dict(tenant.telegram_notified_events or {})

@@ -1225,6 +1225,152 @@ def get_daily_stats(token: str, server_name: str) -> dict:
     ) or {}
 
 
+def _rows_from_list_payload(data) -> list:
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        for key in ("results", "items", "data", "receipts", "documents"):
+            rows = data.get(key)
+            if isinstance(rows, list):
+                return [x for x in rows if isinstance(x, dict)]
+    return []
+
+
+STOCK_RECEIPT_LIST_PATHS = (
+    "/api/catalog/stock-receipts/",
+    "/api/inventory/stock-receipts/",
+    "/api/warehouse/stock-receipts/",
+    "/api/catalog/receipts/",
+)
+
+
+def get_stock_receipts(
+    token: str,
+    server_name: str,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    timeout: float = 18,
+    max_pages: int = 40,
+) -> list:
+    """TezPOS dasturidagi ombor kirimlari (GET /api/catalog/stock-receipts/)."""
+    max_pages = max(1, int(max_pages))
+    collected: list = []
+    seen: set[str] = set()
+
+    def _absorb(rows: list) -> int:
+        n = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("id") or row.get("uuid") or "").strip()
+            if rid:
+                if rid in seen:
+                    continue
+                seen.add(rid)
+            collected.append(row)
+            n += 1
+        return n
+
+    last_err: TezPosApiError | None = None
+    for path in STOCK_RECEIPT_LIST_PATHS:
+        collected.clear()
+        seen.clear()
+        try:
+            data = api_request(
+                "GET",
+                path,
+                token=token,
+                server_name=server_name,
+                query={
+                    "all": "true",
+                    "include_items": "true",
+                    "with_items": "true",
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+                timeout=timeout,
+            )
+        except TezPosApiError as exc:
+            last_err = exc
+            if exc.status in (401, 403):
+                raise
+            if exc.status in (404, 405):
+                continue
+            continue
+        rows = _rows_from_list_payload(data)
+        _absorb(rows)
+        if isinstance(data, list) or (
+            isinstance(data, dict) and not data.get("next") and len(rows) != 20
+        ):
+            return collected
+        page = 2
+        while page <= max_pages:
+            try:
+                data = api_request(
+                    "GET",
+                    path,
+                    token=token,
+                    server_name=server_name,
+                    query={
+                        "page": str(page),
+                        "page_size": "100",
+                        "include_items": "true",
+                        "with_items": "true",
+                        "date_from": date_from,
+                        "date_to": date_to,
+                    },
+                    timeout=min(timeout, 12),
+                )
+            except TezPosApiError as exc:
+                if exc.status in (401, 403):
+                    raise
+                break
+            chunk = _rows_from_list_payload(data)
+            if not chunk:
+                break
+            added = _absorb(chunk)
+            if added <= 0:
+                break
+            has_next = bool(data.get("next")) if isinstance(data, dict) else False
+            if not has_next and len(chunk) < 100:
+                break
+            page += 1
+        return collected
+    if last_err and last_err.status in (401, 403):
+        raise last_err
+    return collected
+
+
+def get_stock_receipt(token: str, server_name: str, receipt_id: str) -> dict:
+    """Bitta kirim hujjati (tovarlar bilan)."""
+    last_exc: TezPosApiError | None = None
+    for path in (
+        f"/api/catalog/stock-receipts/{receipt_id}/",
+        f"/api/inventory/stock-receipts/{receipt_id}/",
+        f"/api/warehouse/stock-receipts/{receipt_id}/",
+    ):
+        try:
+            data = api_request(
+                "GET",
+                path,
+                token=token,
+                server_name=server_name,
+                timeout=10,
+            )
+            return data if isinstance(data, dict) else {}
+        except TezPosApiError as exc:
+            last_exc = exc
+            if exc.status in (401, 403):
+                raise
+            if exc.status in (404, 405):
+                continue
+            continue
+    if last_exc:
+        raise last_exc
+    return {}
+
+
 def get_top_products(
     token: str,
     server_name: str,
