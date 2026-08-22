@@ -12,7 +12,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from . import devsms
-from .auth_views import SESSION_SERVER
+from .auth_views import SESSION_DISPLAY, SESSION_SERVER
 from .models import ClientDebtor, ClientDebtorLedger, DebtSmsTemplate, TenantProfile
 
 
@@ -71,6 +71,40 @@ def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> D
     )
 
 
+def _split_shop_branch(label: str) -> tuple[str, str]:
+    """Do'kon nomi: 'admin - Kulol Optom' yoki bitta qator."""
+    text = (label or "").strip()
+    if " - " in text:
+        shop, branch = text.split(" - ", 1)
+        return shop.strip() or "TezPOS", branch.strip()
+    return text or "TezPOS", ""
+
+
+def _resolve_sms_shop_branch(
+    tpl: DebtSmsTemplate,
+    *,
+    note: str = "",
+    request=None,
+) -> tuple[str, str]:
+    """TezPOS: 'admin - Kulol Optom'. Shablon to'g'ri bo'lmasa sessiyadan olinadi."""
+    label = (tpl.shop_label or "").strip()
+    if label and " - " in label:
+        shop, branch = _split_shop_branch(label)
+    elif request is not None:
+        display = (request.session.get(SESSION_DISPLAY) or "").strip()
+        uname = request.user.username or ""
+        shop = uname.split(":", 1)[-1] if ":" in uname else (uname or "admin")
+        branch = display or label
+    elif label:
+        shop, branch = label, ""
+    else:
+        shop, branch = "TezPOS", ""
+    note = (note or "").strip()
+    if note and not branch and note.lower() not in shop.lower():
+        branch = note
+    return shop, branch
+
+
 def _render_sms(
     tpl: DebtSmsTemplate,
     *,
@@ -78,15 +112,16 @@ def _render_sms(
     balance=None,
     name: str = "",
     note: str = "",
+    check_link: str = "",
+    request=None,
 ) -> str:
-    shop = (tpl.shop_label or "").strip() or "TezPOS"
-    note = (note or "").strip()
-    if note and f"-{note}" not in shop:
-        shop = f"{shop}-{note}"
-    return devsms.build_debt_message(
+    shop, branch = _resolve_sms_shop_branch(tpl, note=note, request=request)
+    return devsms.build_client_debt_message(
         shop=shop,
-        debt_amount=amount,
+        branch=branch,
+        transaction_amount=amount,
         balance=balance if balance is not None else amount,
+        check_link=check_link or devsms.DEFAULT_CLIENT_CHECK,
     )
 
 
@@ -126,7 +161,13 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
 
 
 def _serialize_template(row: DebtSmsTemplate) -> dict:
-    preview = _render_sms(row, amount=1456000, name="Mijoz", note="Oziq ovqat")
+    preview = _render_sms(row, amount=865000, balance=2140500, name="Mijoz")
+    preview_credit = devsms.build_client_debt_message(
+        shop="Kulol Optom",
+        branch="Oziq ovqat",
+        transaction_amount=0,
+        balance=-2140500,
+    )
     return {
         "id": row.pk,
         "title": row.title,
@@ -135,7 +176,8 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
         "is_approved": bool(row.is_approved),
         "updated_display": _fmt_dt(row.updated_at),
         "preview": preview,
-        "placeholders": ["{shop}", "{amount}", "{balance}", "{name}", "{note}"],
+        "preview_credit": preview_credit,
+        "placeholders": ["{shop}", "{amount}", "{balance}", "{check_link}"],
     }
 
 
@@ -283,13 +325,13 @@ def cabinet_client_debt_adjust(request):
     sms_res = None
     if send_sms and debtor.phone:
         tpl = _get_or_create_template(shop, tenant)
-        # Tasdiqlangan matn: "{shop}:\nQarzdorligingiz : {amount} so‘m.\n…"
         text = _render_sms(
             tpl,
-            amount=bal if bal > 0 else amount,
+            amount=amount,
             balance=bal,
             name=debtor.name,
             note=note or debtor.note,
+            request=request,
         )
         sms_res = devsms.send_dev_sms(phone=debtor.phone, message=text)
         if sms_res.get("ok"):
@@ -327,22 +369,24 @@ def cabinet_sms_template_save(request):
 
     tpl = _get_or_create_template(shop, tenant)
     shop_label = str(body.get("shop_label") or "").strip()[:180]
-    if not shop_label:
-        return JsonResponse({"error": "Do‘kon nomi kerak"}, status=400)
-
-    tpl.shop_label = shop_label
+    if shop_label:
+        tpl.shop_label = shop_label
     tpl.body = DebtSmsTemplate.DEFAULT_BODY
     tpl.is_approved = True
     tpl.save(update_fields=["shop_label", "body", "is_approved", "updated_at"])
 
     # Eskiz/DevSMS moderatsiyaga namuna matnni yuborish
-    sample = devsms.sample_debt_template(shop_label)
+    sample = devsms.sample_debt_template(shop_label or tpl.shop_label)
+    credit_sample = devsms.sample_client_credit_template(shop_label or tpl.shop_label)
     tpl_res = devsms.submit_template(sample)
+    credit_tpl_res = devsms.submit_template(credit_sample)
     return JsonResponse(
         {
             "ok": True,
             "template": _serialize_template(tpl),
             "moderation": tpl_res,
+            "moderation_credit": credit_tpl_res,
             "sample_sms": sample,
+            "sample_sms_credit": credit_sample,
         }
     )

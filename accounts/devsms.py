@@ -44,10 +44,16 @@ def _fmt_som(value) -> str:
         n = Decimal(str(value or 0))
     except (InvalidOperation, TypeError, ValueError):
         n = Decimal("0")
-    # TezPOS: manfiy summalar uchun minus saqlanadi
     sign = "-" if n < 0 else ""
     abs_n = abs(n)
     return f"{sign}{abs_n:,.0f}".replace(",", " ")
+
+
+def _to_decimal(value) -> Decimal:
+    try:
+        return Decimal(str(value if value is not None else 0))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
 
 
 def _normalize_sms_text(text: str) -> str:
@@ -62,6 +68,53 @@ def _normalize_sms_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+DEFAULT_CLIENT_CHECK = "https://tez-pos.uz/"
+
+
+def build_client_debt_message(
+    *,
+    shop: str,
+    branch: str = "",
+    transaction_amount,
+    balance,
+    check_link: str = "",
+) -> str:
+    """
+    Mijoz qarzlari (kabinet) — DevSMS shabloni:
+      Mijoz qarzdor: Qarz = shu amaldagi summa, Qoldiq = jami qarz.
+      Biz qarzdor (qoldiq < 0): Qarz = 0, Qoldiq = +summa.
+    """
+    shop = (shop or "").strip() or "Kulol Optom"
+    branch = (branch or "").strip()
+    if branch and branch.lower() not in shop.lower():
+        head = f"{shop} - {branch}"
+    else:
+        head = shop
+
+    bal = _to_decimal(balance)
+    tx = abs(_to_decimal(transaction_amount))
+    link = (check_link or "").strip() or DEFAULT_CLIENT_CHECK
+
+    if bal < 0:
+        qarz_line = "Qarz: 0 so'm"
+        qoldiq_line = f"Qoldiq: +{_fmt_som(abs(bal))} so'm"
+    else:
+        qarz_line = f"Qarz: {_fmt_som(tx)} so'm"
+        qoldiq_line = f"Qoldiq: {_fmt_som(bal)} so'm"
+
+    text = (
+        f"{head}\n"
+        f"\n"
+        f"{qarz_line}\n"
+        f"\n"
+        f"{qoldiq_line}\n"
+        f"\n"
+        f"Chek:\n"
+        f"{link}"
+    )
+    return _normalize_sms_text(text)
+
+
 def build_debt_message(
     *,
     shop: str,
@@ -71,41 +124,57 @@ def build_debt_message(
     check_link: str = "",
 ) -> str:
     """
-    Tasdiqlangan Eskiz/DevSMS shablon (ASCII apostrof — 1 SMS qism):
-      Kulol Optom-Oziq ovqat:
-      Qarzdorligingiz : 1 456 000 so'm.
-      Iltimos, qarzdorlikni to'lashni unutmang.
+    TezPOS MpBuildDebtMessage — DevSMS/Eskizda tasdiqlangan format:
+      admin - Kulol Optom
+      Qarz: 9 000 so'm
+      Qoldiq: 374 200 so'm
+      Chek: https://tez-pos.uz/check/...
     """
     shop = (shop or "").strip() or "TezPOS"
     branch = (branch or "").strip()
-    if branch and f"-{branch}" not in shop:
-        head = f"{shop}-{branch}"
+    if branch and branch.lower() not in shop.lower():
+        head = f"{shop} - {branch}"
     else:
         head = shop
-    try:
-        bal = Decimal(str(balance if balance is not None else 0))
-    except (InvalidOperation, TypeError, ValueError):
-        bal = Decimal("0")
-    try:
-        delta = Decimal(str(debt_amount if debt_amount is not None else 0))
-    except (InvalidOperation, TypeError, ValueError):
-        delta = Decimal("0")
-    show = abs(bal) if bal != 0 else abs(delta)
+    debt = _fmt_som(debt_amount)
+    bal = _fmt_som(balance if balance is not None else debt_amount)
+    link = (check_link or "").strip() or "—"
     text = (
-        f"{head}:\n"
-        f"Qarzdorligingiz : {_fmt_som(show)} so'm.\n"
-        f"Iltimos, qarzdorlikni to'lashni unutmang."
+        f"{head}\n"
+        f"Qarz: {debt} so'm\n"
+        f"Qoldiq: {bal} so'm\n"
+        f"Chek: {link}"
     )
     return _normalize_sms_text(text)
 
 
 def sample_debt_template(shop: str) -> str:
-    """Moderatsiyaga yuboriladigan namuna."""
-    label = (shop or "").strip() or "Kulol Optom-Oziq ovqat"
-    return build_debt_message(
-        shop=label,
-        debt_amount=1456000,
-        balance=1456000,
+    """Moderatsiya: mijoz qarzdor (oddiy)."""
+    label = (shop or "").strip() or "Kulol Optom - Oziq ovqat"
+    if " - " in label:
+        shop_part, branch_part = label.split(" - ", 1)
+    else:
+        shop_part, branch_part = label, "Oziq ovqat"
+    return build_client_debt_message(
+        shop=shop_part.strip() or "Kulol Optom",
+        branch=branch_part.strip(),
+        transaction_amount=865000,
+        balance=2140500,
+    )
+
+
+def sample_client_credit_template(shop: str) -> str:
+    """Moderatsiya: biz mijozga qarzdormiz (qoldiq manfiy)."""
+    label = (shop or "").strip() or "Kulol Optom - Oziq ovqat"
+    if " - " in label:
+        shop_part, branch_part = label.split(" - ", 1)
+    else:
+        shop_part, branch_part = label, "Oziq ovqat"
+    return build_client_debt_message(
+        shop=shop_part.strip() or "Kulol Optom",
+        branch=branch_part.strip(),
+        transaction_amount=0,
+        balance=-2140500,
     )
 
 

@@ -282,9 +282,14 @@ class DebtSmsTemplate(models.Model):
     )
     body = models.TextField(
         default=(
-            "{shop}:\n"
-            "Qarzdorligingiz : {amount} so'm.\n"
-            "Iltimos, qarzdorlikni to'lashni unutmang."
+            "{shop} - {branch}\n"
+            "\n"
+            "Qarz: {amount} so'm\n"
+            "\n"
+            "Qoldiq: {balance} so'm\n"
+            "\n"
+            "Chek:\n"
+            "{check_link}"
         )
     )
     is_approved = models.BooleanField(default=True)
@@ -299,7 +304,12 @@ class DebtSmsTemplate(models.Model):
         return f"{self.shop_key}: {self.title}"
 
     DEFAULT_BODY = (
-        "{shop}:\n"
-        "Qarzdorligingiz : {amount} so'm.\n"
-        "Iltimos, qarzdorlikni to'lashni unutmang."
+        "{shop} - {branch}\n"
+        "\n"
+        "Qarz: {amount} so'm\n"
+        "\n"
+        "Qoldiq: {balance} so'm\n"
+        "\n"
+        "Chek:\n"
+        "{check_link}"
     )

@@ -6657,6 +6657,14 @@
     if (!tpl) return;
     const shop = document.getElementById("cd-sms-shop");
     if (shop) shop.value = tpl.shop_label || "";
+    const sampleEl = document.getElementById("cd-sms-sample");
+    if (sampleEl && tpl.preview) {
+      const credit = tpl.preview_credit
+        ? `\n\n--- Biz qarzdor (avans) ---\n\n${tpl.preview_credit}`
+        : "";
+      sampleEl.textContent = `${tpl.preview}${credit}`;
+      sampleEl.hidden = false;
+    }
   };
 
   const loadSms = async () => {
@@ -6853,7 +6861,10 @@
       if (json.template) paintSms(json.template);
       if (sampleEl) {
         const sample = json.sample_sms || "";
-        sampleEl.textContent = sample;
+        const credit = json.sample_sms_credit || "";
+        sampleEl.textContent = credit
+          ? `${sample}\n\n--- Biz qarzdor (avans) ---\n\n${credit}`
+          : sample;
         sampleEl.hidden = !sample;
       }
       const mod = json.moderation || {};

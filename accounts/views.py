@@ -6397,12 +6397,15 @@ def _build_debt_payment_sms(
     balance,
     check_url: str,
 ) -> str:
-    """Qarz to‘lovi — tasdiqlangan qarzdorlik shabloni."""
-    shop = (store or cashier or "TezPOS").strip() or "TezPOS"
+    """Qarz to‘lovi — TezPOS MpBuildDebtMessage."""
+    shop = (cashier or store or "TezPOS").strip() or "TezPOS"
+    branch = (store or "").strip() if store and store != shop else ""
     return devsms.build_debt_message(
         shop=shop,
-        debt_amount=balance,
+        branch=branch,
+        debt_amount=-abs(Decimal(str(paid or 0))),
         balance=balance,
+        check_link=check_url,
     )
 
 
@@ -6553,8 +6556,6 @@ def cabinet_debtor_pay(request):
     sms_error = ""
     # TezPOS DevSMS — to'g'ridan-to'g'ri (backend SMS ishonchsiz bo'lishi mumkin)
     from . import devsms
-    from .client_debts import _get_or_create_template, _render_sms, _shop
-    from .models import TenantProfile as _TenantProfile
 
     store = str(
         result.get("store_name")
@@ -6563,34 +6564,13 @@ def cabinet_debtor_pay(request):
         or "TezPOS"
     )
     cashier = str(result.get("cashier") or result.get("cashier_name") or "admin")
-    try:
-        shop_key = _shop(request)
-        tenant = _TenantProfile.objects.filter(user=request.user).first()
-        tpl = _get_or_create_template(shop_key, tenant)
-        sms_text = _render_sms(
-            tpl,
-            amount=balance,
-            balance=balance,
-            name=str(customer.get("name") or ""),
-            note="",
-        )
-        if abs(paid) > 0:
-            # To‘lovda ham shablon + qoldiq
-            sms_text = _render_sms(
-                tpl,
-                amount=balance,
-                balance=balance,
-                name=str(customer.get("name") or ""),
-                note="",
-            )
-    except Exception:
-        sms_text = devsms.build_debt_message(
-            shop=cashier,
-            branch=store,
-            debt_amount=-abs(paid),
-            balance=balance,
-            check_link=sms_check_url,
-        )
+    sms_text = devsms.build_debt_message(
+        shop=cashier,
+        branch=store if store and store != cashier else "",
+        debt_amount=-abs(paid),
+        balance=balance,
+        check_link=sms_check_url,
+    )
     sms_res = devsms.send_dev_sms(phone=phone, message=sms_text)
     sms_sent = bool(sms_res.get("ok"))
     if not sms_sent:
