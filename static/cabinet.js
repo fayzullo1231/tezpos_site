@@ -6867,17 +6867,17 @@
           : sample;
         sampleEl.hidden = !sample;
       }
-      const mod = json.moderation || {};
       if (msg) {
         msg.hidden = false;
+        msg.textContent = json.saved
+          ? "Do‘kon nomi saqlandi."
+          : "Saqlandi.";
+        const mod = json.moderation || {};
         if (mod.ok) {
-          msg.textContent =
-            "Saqlandi. Shablon moderatsiyaga yuborildi — DevSMS/Eskiz tasdiqlagach SMS ishlaydi.";
-        } else {
-          msg.textContent =
-            "Saqlandi. " +
-            (mod.error ||
-              "Shablonni my.eskiz.uz → СМС → Мои тексты da qo‘lda tasdiqlang (namuna pastda).");
+          msg.textContent += " Shablon moderatsiyaga yuborildi.";
+        } else if (sampleEl?.textContent) {
+          msg.textContent +=
+            " DevSMS da namunani qo‘lda tasdiqlang (pastdagi matn).";
         }
       }
     } catch (e) {

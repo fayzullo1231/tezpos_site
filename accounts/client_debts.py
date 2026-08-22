@@ -72,12 +72,22 @@ def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> D
 
 
 def _split_shop_branch(label: str) -> tuple[str, str]:
-    """Do'kon nomi: 'admin - Kulol Optom' yoki bitta qator."""
+    """'Kulol Optom - Oziq ovqat' yoki 'Kulol Optom-Oziq ovqat'."""
     text = (label or "").strip()
+    if not text:
+        return "Kulol Optom", "Oziq ovqat"
     if " - " in text:
         shop, branch = text.split(" - ", 1)
-        return shop.strip() or "TezPOS", branch.strip()
-    return text or "TezPOS", ""
+        return shop.strip() or "Kulol Optom", branch.strip()
+    if "-" in text[1:]:
+        shop, branch = text.split("-", 1)
+        return shop.strip() or "Kulol Optom", branch.strip()
+    return text, ""
+
+
+def _canonical_shop_label(label: str) -> str:
+    shop, branch = _split_shop_branch(label)
+    return f"{shop} - {branch}" if branch else shop
 
 
 def _resolve_sms_shop_branch(
@@ -86,19 +96,14 @@ def _resolve_sms_shop_branch(
     note: str = "",
     request=None,
 ) -> tuple[str, str]:
-    """TezPOS: 'admin - Kulol Optom'. Shablon to'g'ri bo'lmasa sessiyadan olinadi."""
+    """Saqlangan do'kon nomi birinchi; bo'sh bo'lsa sessiyadan."""
     label = (tpl.shop_label or "").strip()
-    if label and " - " in label:
-        shop, branch = _split_shop_branch(label)
-    elif request is not None:
+    if not label and request is not None:
         display = (request.session.get(SESSION_DISPLAY) or "").strip()
         uname = request.user.username or ""
         shop = uname.split(":", 1)[-1] if ":" in uname else (uname or "admin")
-        branch = display or label
-    elif label:
-        shop, branch = label, ""
-    else:
-        shop, branch = "TezPOS", ""
+        label = f"{shop} - {display}" if display else shop
+    shop, branch = _split_shop_branch(label)
     note = (note or "").strip()
     if note and not branch and note.lower() not in shop.lower():
         branch = note
@@ -162,11 +167,11 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
 
 def _serialize_template(row: DebtSmsTemplate) -> dict:
     preview = _render_sms(row, amount=865000, balance=2140500, name="Mijoz")
-    preview_credit = devsms.build_client_debt_message(
-        shop="Kulol Optom",
-        branch="Oziq ovqat",
-        transaction_amount=0,
+    preview_credit = _render_sms(
+        row,
+        amount=0,
         balance=-2140500,
+        name="Mijoz",
     )
     return {
         "id": row.pk,
@@ -370,19 +375,21 @@ def cabinet_sms_template_save(request):
     tpl = _get_or_create_template(shop, tenant)
     shop_label = str(body.get("shop_label") or "").strip()[:180]
     if shop_label:
-        tpl.shop_label = shop_label
+        tpl.shop_label = _canonical_shop_label(shop_label)
     tpl.body = DebtSmsTemplate.DEFAULT_BODY
     tpl.is_approved = True
     tpl.save(update_fields=["shop_label", "body", "is_approved", "updated_at"])
 
-    # Eskiz/DevSMS moderatsiyaga namuna matnni yuborish
-    sample = devsms.sample_debt_template(shop_label or tpl.shop_label)
-    credit_sample = devsms.sample_client_credit_template(shop_label or tpl.shop_label)
-    tpl_res = devsms.submit_template(sample)
-    credit_tpl_res = devsms.submit_template(credit_sample)
+    label = tpl.shop_label or shop_label
+    sample = devsms.sample_debt_template(label)
+    credit_sample = devsms.sample_client_credit_template(label)
+    # Moderatsiya API sekin — saqlashni bloklamaslik
+    tpl_res = devsms.submit_template(sample, quick=True)
+    credit_tpl_res = devsms.submit_template(credit_sample, quick=True)
     return JsonResponse(
         {
             "ok": True,
+            "saved": True,
             "template": _serialize_template(tpl),
             "moderation": tpl_res,
             "moderation_credit": credit_tpl_res,

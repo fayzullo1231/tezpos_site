@@ -213,7 +213,7 @@ def resolve_token(explicit: str | None = None) -> str:
     return ""
 
 
-def _api_post(url: str, auth: str, payload: dict, *, form: bool = False) -> dict:
+def _api_post(url: str, auth: str, payload: dict, *, form: bool = False, timeout: int = 30) -> dict:
     if form:
         data = urllib.parse.urlencode(
             {k: v for k, v in payload.items() if v is not None}
@@ -234,7 +234,7 @@ def _api_post(url: str, auth: str, payload: dict, *, form: bool = False) -> dict
         }
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             data_out = json.loads(raw) if raw else {}
             return {"http": resp.status, "data": data_out if isinstance(data_out, dict) else {"raw": raw}}
@@ -267,10 +267,10 @@ def _is_moderation_error(err: str) -> bool:
     return any(k in low for k in keys)
 
 
-def submit_template(message: str, *, token: str | None = None) -> dict:
+def submit_template(message: str, *, token: str | None = None, quick: bool = False) -> dict:
     """
     SMS matnini DevSMS/Eskiz moderatsiyasiga yuboradi.
-    Bir nechta endpoint/format urinadi (DevSMS UI: Шаблоны → Отправить шаблон).
+    quick=True — bitta urinish (saqlash paytida timeout bo'lmasin).
     """
     auth = resolve_token(token)
     if not auth:
@@ -286,11 +286,15 @@ def submit_template(message: str, *, token: str | None = None) -> dict:
         {"sms_text": text},
         {"content": text},
     )
+    urls = DEVSMS_TEMPLATE_URLS[:1] if quick else DEVSMS_TEMPLATE_URLS
+    payload_list = payloads[:1] if quick else payloads
+    forms = (False,) if quick else (False, True)
+    timeout = 8 if quick else 30
     attempts = []
-    for url in DEVSMS_TEMPLATE_URLS:
-        for payload in payloads:
-            for as_form in (False, True):
-                res = _api_post(url, auth, payload, form=as_form)
+    for url in urls:
+        for payload in payload_list:
+            for as_form in forms:
+                res = _api_post(url, auth, payload, form=as_form, timeout=timeout)
                 attempts.append({"url": url, "form": as_form, "http": res.get("http"), "data": res.get("data")})
                 data = res.get("data") or {}
                 if res.get("http") in (200, 201) and (
