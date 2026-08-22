@@ -1,5 +1,7 @@
 (() => {
   const data = window.TEZPOS_CHARTS || {};
+  const fmtSom = (n) =>
+    Math.round(Number(n || 0)).toLocaleString("de-DE", { maximumFractionDigits: 0 });
   const fmt = (n) => Number(n || 0).toLocaleString("uz-UZ");
   const palette = [
     "#2c86e0", "#12b3a1", "#3fd07a", "#f59e0b", "#6366f1",
@@ -1373,9 +1375,9 @@
         <div class="tops-row-main">
           <div class="tops-row-name">${item.name || "—"}</div>
           <div class="tops-row-prices">
-            <span><em>Sotib olish</em><b>${cost > 0 ? fmt(cost) : "—"}</b></span>
-            <span><em>Sotuv</em><b>${selling > 0 ? fmt(selling) : "—"}</b></span>
-            <span><em>Optom</em><b>${wholesale > 0 ? fmt(wholesale) : "—"}</b></span>
+            <span><em>Sotib olish</em><b>${cost > 0 ? fmtSom(cost) : "—"}</b></span>
+            <span><em>Sotuv</em><b>${selling > 0 ? fmtSom(selling) : "—"}</b></span>
+            <span><em>Optom</em><b>${wholesale > 0 ? fmtSom(wholesale) : "—"}</b></span>
           </div>
           <div class="tops-row-split">
             <span><em>Sotuvda</em><b>${fmt(qtySell)} dona</b></span>
@@ -1389,11 +1391,11 @@
           </div>
           <div class="tops-row-metric tops-row-metric--rev">
             <em>Tushum</em>
-            <strong>${item.revenue != null ? fmt(item.revenue) : "—"}</strong>
+            <strong>${item.revenue != null ? fmtSom(item.revenue) : "—"}</strong>
           </div>
           <div class="tops-row-metric tops-row-metric--profit">
             <em>Foyda</em>
-            <strong>${profit ? fmt(profit) : "—"}</strong>
+            <strong>${Number.isFinite(Number(item.profit)) ? fmtSom(item.profit) : "—"}</strong>
           </div>
         </div>
       </article>`;

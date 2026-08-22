@@ -4466,6 +4466,7 @@ def _top_products_from_details(
     product_qty: dict[str, Decimal] = defaultdict(Decimal)
     product_rev: dict[str, Decimal] = defaultdict(Decimal)
     product_cost: dict[str, Decimal] = defaultdict(Decimal)
+    product_costed_rev: dict[str, Decimal] = defaultdict(Decimal)
     product_qty_sell: dict[str, Decimal] = defaultdict(Decimal)
     product_qty_optom: dict[str, Decimal] = defaultdict(Decimal)
     product_rev_sell: dict[str, Decimal] = defaultdict(Decimal)
@@ -4522,6 +4523,7 @@ def _top_products_from_details(
             product_rev[pid] += line_rev
             if unit_cost > 0 and qty > 0:
                 product_cost[pid] += unit_cost * qty
+                product_costed_rev[pid] += line_rev
             if is_selling:
                 product_qty_sell[pid] += qty
                 product_rev_sell[pid] += line_rev
@@ -4565,7 +4567,8 @@ def _top_products_from_details(
     for pid, qty in ranked:
         rev = product_rev.get(pid) or Decimal("0")
         cost_total = product_cost.get(pid) or Decimal("0")
-        profit = (rev - cost_total) if cost_total > 0 else Decimal("0")
+        costed_rev = product_costed_rev.get(pid) or Decimal("0")
+        profit = (costed_rev - cost_total) if cost_total > 0 else Decimal("0")
         meta = product_meta.get(pid) or {}
         p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
         cost_unit = float(meta.get("cost") or 0)
