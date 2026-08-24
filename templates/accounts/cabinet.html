@@ -267,12 +267,12 @@
     {% if section == 'overview' %}
     <div class="cabinet-api-banner" id="cabinet-api-banner" hidden role="alert"></div>
     <section class="cabinet-kpi" id="overview-kpi">
-      <article>
+  <article>
         <p id="kpi-period-label">Tanlangan davr</p>
         <h2 id="kpi-checks">{{ range_checks|default:total_sales }}</h2>
         <small>Cheklar · <span id="kpi-gross" data-fmt-money="{{ gross }}">0</span> so'm</small>
-      </article>
-      <article>
+  </article>
+  <article>
         <p>Sof foyda <span id="kpi-price-list-name" class="kpi-pl-tag"></span></p>
         <h2 class="is-profit" id="kpi-profit" data-fmt-money="{{ profit }}">0</h2>
         <small>Marja <span id="kpi-margin">{{ margin|floatformat:1 }}</span>%</small>
@@ -534,6 +534,7 @@
               <option value="30">Top 30</option>
               <option value="50">Top 50</option>
               <option value="100">Top 100</option>
+              <option value="all">Barchasi</option>
             </select>
           </label>
           <a class="btn-export" id="tops-export-btn" href="{% url 'accounts:cabinet_top_export' %}">
@@ -558,6 +559,7 @@
               <option value="30">Top 30</option>
               <option value="50">Top 50</option>
               <option value="100">Top 100</option>
+              <option value="all">Barchasi</option>
             </select>
           </label>
         </div>
@@ -820,7 +822,7 @@
           <thead>
                 <tr><th></th><th>Nomi</th><th>Shtrixkod</th><th>Sotuv</th><th>Ulgurji</th></tr>
           </thead>
-          <tbody>
+      <tbody>
             <tr><td colspan="5" class="cabinet-hint">Mahsulotlar yuklanmoqda…</td></tr>
           </tbody>
         </table>
@@ -1311,11 +1313,11 @@
                     {% else %}{{ sale.payment_method }}{% endif %}
                   </span>
                 </td>
-              </tr>
-              {% empty %}
+        </tr>
+      {% empty %}
               <tr><td colspan="9" class="cabinet-empty">Bu kunda sotuv yo‘q. Sanani o‘zgartirib ko‘ring.</td></tr>
-              {% endfor %}
-            </tbody>
+      {% endfor %}
+      </tbody>
             {% if recent_sales %}
             <tfoot>
               <tr>
@@ -1328,9 +1330,9 @@
               </tr>
             </tfoot>
             {% endif %}
-          </table>
+    </table>
         </div>
-      </article>
+  </article>
     </section>
 
     <div class="receipt-drawer" id="receipt-drawer" hidden>
@@ -1720,5 +1722,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=cd-sms-3" defer></script>
+<script src="/static/cabinet.js?v=tops-all-1" defer></script>
 {% endblock %}

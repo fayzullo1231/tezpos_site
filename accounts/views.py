@@ -4817,6 +4817,23 @@ def _top_products_from_api_items(
     return out[:limit]
 
 
+_TOP_LIMIT_ALL = 50_000
+
+
+def _parse_top_limit(raw, default: int = 100) -> int:
+    """'all' / 0 — barcha mahsulotlar."""
+    val = str(raw or "").strip().lower()
+    if val in ("all", "barchasi", "*"):
+        return _TOP_LIMIT_ALL
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return default
+    if n <= 0:
+        return _TOP_LIMIT_ALL
+    return max(1, min(_TOP_LIMIT_ALL, n))
+
+
 @login_required
 @require_GET
 def cabinet_top_stats(request):
@@ -4840,10 +4857,7 @@ def cabinet_top_stats(request):
         start, end = today, today
 
     span = (end - start).days + 1
-    try:
-        limit = max(1, min(500, int(request.GET.get("limit") or 100)))
-    except (TypeError, ValueError):
-        limit = 100
+    limit = _parse_top_limit(request.GET.get("limit"))
 
     pack = _build_top_products_pack(
         token, server, start=start, end=end, limit=limit
@@ -5031,7 +5045,7 @@ def cabinet_top_export(request):
         start, end = today, today
 
     try:
-        limit = max(1, min(500, int(request.GET.get("limit") or 100)))
+        limit = _parse_top_limit(request.GET.get("limit"))
     except (TypeError, ValueError):
         limit = 100
 

@@ -1637,12 +1637,23 @@
   let topsCalHome = null;
   const topsExportBtn = document.getElementById("tops-export-btn");
 
+  const topsLimitParam = () => {
+    const v = String(productsSelect?.value || "10").trim();
+    return v === "all" ? "all" : v;
+  };
+  const topsLimitN = () => {
+    const v = topsLimitParam();
+    if (v === "all") return 0;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : 10;
+  };
+
   const syncTopsExport = () => {
     if (!topsExportBtn || !data.topExportUrl) return;
     const qs = new URLSearchParams({
       from: topsFrom,
       to: topsTo,
-      limit: String(productsSelect?.value || 100),
+      limit: topsLimitParam(),
     });
     topsExportBtn.href = `${data.topExportUrl}?${qs}`;
   };
@@ -1665,7 +1676,8 @@
 
   const renderProducts = (limit) => {
     const sorted = sortTopRows(data.topProducts || [], topsSortSelect?.value || "qty_desc");
-    const rows = sorted.slice(0, limit);
+    const n = Number(limit);
+    const rows = Number.isFinite(n) && n > 0 ? sorted.slice(0, n) : sorted;
     if (!productsGrid) return;
     productsGrid.className = "tops-list";
     productsGrid.innerHTML = rows.length
@@ -1807,21 +1819,21 @@
   };
 
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
-    const key = `rich_${fromIso}_${toIsoVal}`;
+    const key = `all_${fromIso}_${toIsoVal}`;
     if (!Object.keys(topsCache).length && data._topsCache) {
       // Eski kesh — rich_ kalitlaridan tashqarisini tashlaymiz
       Object.keys(data._topsCache).forEach((k) => {
-        if (String(k).startsWith("rich_")) topsCache[k] = data._topsCache[k];
+        if (String(k).startsWith("all_")) topsCache[k] = data._topsCache[k];
       });
     }
     syncTopsExport();
     if (!force && topsCache[key]) {
       data.topProducts = topsCache[key];
-      renderProducts(Number(productsSelect?.value || 10));
+      renderProducts(topsLimitN());
       return;
     }
     if (!force && !topsCache[key] && (data.topProducts || []).length) {
-      renderProducts(Number(productsSelect?.value || 10));
+      renderProducts(topsLimitN());
     }
     const url = data.topStatsUrl;
     if (!url || !productsGrid) return;
@@ -1835,7 +1847,7 @@
       const qs = new URLSearchParams({
         from: fromIso,
         to: toIsoVal,
-        limit: "100",
+        limit: "all",
       });
       const res = await fetch(`${url}?${qs}`, {
         headers: { Accept: "application/json" },
@@ -1850,7 +1862,7 @@
       data._topsCache = topsCache;
       if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
       syncTopsExport();
-      renderProducts(Number(productsSelect?.value || 10));
+      renderProducts(topsLimitN());
     } catch (_err) {
       if (reqId !== topsReq) return;
       if (!hasCache) {
@@ -1976,10 +1988,10 @@
     }
     productsSelect?.addEventListener("change", () => {
       syncTopsExport();
-      renderProducts(Number(productsSelect.value));
+      renderProducts(topsLimitN());
     });
     topsSortSelect?.addEventListener("change", () => {
-      renderProducts(Number(productsSelect?.value || 10));
+      renderProducts(topsLimitN());
     });
     syncTopsHint();
     loadTopProducts(topsFrom, topsTo, { force: true });
@@ -2306,7 +2318,9 @@
   const customersSelect = document.getElementById("tops-customers-select");
   const renderCustomers = (limit) => {
     if (!customersBody) return;
-    const rows = (data.topCustomers || []).slice(0, limit);
+    const n = Number(limit);
+    const all = data.topCustomers || [];
+    const rows = Number.isFinite(n) && n > 0 ? all.slice(0, n) : all;
     customersBody.innerHTML = rows.length
       ? rows
           .map(
