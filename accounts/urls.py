@@ -1,6 +1,9 @@
 from django.urls import path
 
 from .client_debts import (
+    api_client_debt_adjust,
+    api_client_debtor_save,
+    api_client_debts,
     cabinet_client_debt_adjust,
     cabinet_client_debtor_delete,
     cabinet_client_debtor_save,
@@ -82,6 +85,9 @@ urlpatterns = [
     path("cabinet/client-debts/adjust/", cabinet_client_debt_adjust, name="cabinet_client_debt_adjust"),
     path("cabinet/sms-template/", cabinet_sms_template, name="cabinet_sms_template"),
     path("cabinet/sms-template/save/", cabinet_sms_template_save, name="cabinet_sms_template_save"),
+    path("api/client-debts/", api_client_debts, name="api_client_debts"),
+    path("api/client-debts/save/", api_client_debtor_save, name="api_client_debtor_save"),
+    path("api/client-debts/adjust/", api_client_debt_adjust, name="api_client_debt_adjust"),
     path("cabinet/suppliers/", cabinet_suppliers, name="cabinet_suppliers"),
     path("cabinet/suppliers/summary/", cabinet_suppliers_summary, name="cabinet_suppliers_summary"),
     path("cabinet/suppliers/history/", cabinet_suppliers_history, name="cabinet_suppliers_history"),

@@ -23,10 +23,13 @@ from accounts.tezpos_api import TezPosApiError, api_request, normalize_api_base
 
 
 def _logo_url(request) -> str:
-    try:
-        return request.build_absolute_uri(static("logo.png"))
-    except Exception:
-        return static("logo.png")
+    # Elektron SMS chek tepasi: avvalo chek-logo, keyin logo.png
+    for name in ("chek-logo.png", "logo.png", "img/logo.png"):
+        try:
+            return request.build_absolute_uri(static(name))
+        except Exception:
+            continue
+    return static("logo.png")
 
 
 def _payload_dict(exc: TezPosApiError) -> dict | None:

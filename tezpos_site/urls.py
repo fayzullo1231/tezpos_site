@@ -19,6 +19,12 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import include, path
 from accounts.auth_views import tezpos_login, tezpos_logout
+from accounts.client_debts import (
+    api_client_debt_adjust,
+    api_client_debtor_save,
+    api_client_debts,
+    public_client_debt_check,
+)
 from sales.public_check import PublicReceiptCheckView
 from sales.seo_views import google_site_verification, robots_txt, sitemap_xml
 from sales.views import sales_page_view
@@ -36,6 +42,11 @@ urlpatterns = [
     ),
     path("", sales_page_view, name="landing"),
     path(
+        "check/debt/<str:shop>/<int:pk>/",
+        public_client_debt_check,
+        name="public-client-debt-check",
+    ),
+    path(
         "check/<str:server_name>/<str:ref>/",
         PublicReceiptCheckView.as_view(),
         name="public-receipt-check",
@@ -46,6 +57,9 @@ urlpatterns = [
         name="public-receipt-check-noslash",
     ),
     path("accounts/", include("accounts.urls")),
+    path("api/client-debts/", api_client_debts, name="api_client_debts"),
+    path("api/client-debts/save/", api_client_debtor_save, name="api_client_debtor_save"),
+    path("api/client-debts/adjust/", api_client_debt_adjust, name="api_client_debt_adjust"),
     path("sales/", include("sales.urls")),
     path("billing/", include("billing.urls")),
     path("dashboard/", include("dashboard.urls")),

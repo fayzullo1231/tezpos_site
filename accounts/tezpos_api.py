@@ -1456,6 +1456,33 @@ def pay_customer_debt(
     )
 
 
+def adjust_customer_debt(
+    token: str,
+    server_name: str,
+    customer_id: str,
+    amount,
+    *,
+    kind: str = "add",
+    payment_type: str = "cash",
+    note: str = "",
+) -> dict:
+    """Qarz qo'shish (add) yoki ayirish (sub)."""
+    body: dict = {
+        "kind": (kind or "add").strip().lower(),
+        "amount": str(amount),
+        "payment_type": payment_type or "cash",
+        "note": note or "",
+    }
+    return api_request(
+        "POST",
+        f"/api/sales/customers/{customer_id}/adjust-debt/",
+        token=token,
+        server_name=server_name,
+        body=body,
+        timeout=45,
+    )
+
+
 def send_sales_sms(
     token: str,
     server_name: str,
