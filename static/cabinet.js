@@ -6581,13 +6581,16 @@
       .map((e) => {
         const tone = e.tone || "red";
         const sms = e.sms_sent ? " · SMS" : "";
+        const amt =
+          e.amount_display ||
+          fmt(e.signed_amount != null ? e.signed_amount : e.amount);
         return `<article class="sup-tl-item is-${esc(tone)}">
           <span class="sup-tl-dot"></span>
           <div>
             <h5>${esc(e.kind_label)}${sms}</h5>
             <p>${esc(e.created_display)}${e.note ? ` · ${esc(e.note)}` : ""}</p>
           </div>
-          <div class="sup-tl-amt">${fmt(e.amount)} so‘m</div>
+          <div class="sup-tl-amt">${esc(amt)} so‘m</div>
         </article>`;
       })
       .join("");
@@ -6600,7 +6603,7 @@
           <h4>${esc(row.name)}</h4>
           <p>${esc(row.phone || "Telefon yo‘q")}</p>
         </div>
-        <div class="sup-bal ${bal > 0 ? "is-we-owe" : "is-clear"}">${fmt(bal)} so‘m</div>
+        <div class="sup-bal ${bal > 0 ? "is-we-owe" : "is-clear"}">${fmt(Math.abs(bal))} so‘m</div>
       </div>
       <div class="sup-card-actions">
         <button type="button" class="btn-soft cd-open" data-id="${row.id}">Ochish</button>
@@ -6709,7 +6712,7 @@
     document.getElementById("cd-detail-meta").textContent = row.phone || "Telefon yo‘q";
     const bal = document.getElementById("cd-detail-balance");
     bal.className = `sup-detail-balance ${Number(row.balance) > 0 ? "is-we-owe" : "is-clear"}`;
-    bal.textContent = `Qarz: ${fmt(row.balance)} so‘m`;
+    bal.textContent = `Qarz: ${fmt(Math.abs(Number(row.balance) || 0))} so‘m`;
     document.getElementById("cd-detail-ledger").innerHTML = (row.ledger || []).length
       ? timelineHtml(row.ledger)
       : `<p class="cabinet-hint">Hali yozuv yo‘q.</p>`;
@@ -6810,10 +6813,15 @@
     if (!activeId) return;
     const msg = document.getElementById("cd-adj-msg");
     try {
+      const kind = document.getElementById("cd-adj-kind")?.value || "add";
+      const rawAmt = String(document.getElementById("cd-adj-amount")?.value || "")
+        .replace(/\s/g, "")
+        .replace(",", ".");
+      const amount = Math.abs(parseFloat(rawAmt) || 0);
       const json = await postJson(data.clientDebtAdjustUrl, {
         debtor_id: activeId,
-        kind: document.getElementById("cd-adj-kind")?.value || "add",
-        amount: document.getElementById("cd-adj-amount")?.value,
+        kind,
+        amount,
         note: document.getElementById("cd-adj-note")?.value,
         send_sms: Boolean(document.getElementById("cd-adj-sms")?.checked),
       });
@@ -6838,6 +6846,22 @@
       }
     }
   });
+
+  const fmtAdjAmount = () => {
+    const kindEl = document.getElementById("cd-adj-kind");
+    const amtEl = document.getElementById("cd-adj-amount");
+    if (!amtEl) return;
+    const isSub = (kindEl?.value || "add") === "sub";
+    const dig = String(amtEl.value || "").replace(/\D/g, "");
+    if (!dig) {
+      amtEl.value = isSub ? "-" : "";
+      return;
+    }
+    const sp = dig.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    amtEl.value = isSub ? `-${sp}` : sp;
+  };
+  document.getElementById("cd-adj-kind")?.addEventListener("change", fmtAdjAmount);
+  document.getElementById("cd-adj-amount")?.addEventListener("input", fmtAdjAmount);
 
   document.getElementById("cd-delete-btn")?.addEventListener("click", async () => {
     if (!activeId || !confirm("Mijozni o‘chirishni tasdiqlaysizmi?")) return;

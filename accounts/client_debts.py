@@ -42,11 +42,13 @@ def _dec(value, default="0") -> Decimal:
 
 
 def _fmt_money(n) -> str:
+    """Manfiy → '-5 000', musbat qarz → '5 000' (minussiz)."""
     try:
         v = float(n or 0)
     except (TypeError, ValueError):
         v = 0.0
-    return f"{v:,.0f}".replace(",", " ")
+    sign = "-" if v < 0 else ""
+    return f"{sign}{abs(v):,.0f}".replace(",", " ")
 
 
 def _fmt_dt(dt) -> str:
@@ -125,12 +127,25 @@ def _render_sms(
     note: str = "",
     check_link: str = "",
     request=None,
+    kind: str = "add",
 ) -> str:
     shop, branch = _resolve_sms_shop_branch(tpl, note=note, request=request)
+    # To'lov (sub) → minusli summa; qarz qo'shish → musbat
+    tx = amount
+    try:
+        from decimal import Decimal
+
+        raw = Decimal(str(amount or 0))
+        if str(kind).lower() == ClientDebtorLedger.KIND_SUB:
+            tx = -abs(raw)
+        else:
+            tx = abs(raw)
+    except Exception:
+        pass
     return devsms.build_client_debt_message(
         shop=shop,
         branch=branch,
-        transaction_amount=amount,
+        transaction_amount=tx,
         balance=balance if balance is not None else amount,
         check_link=check_link or devsms.DEFAULT_CLIENT_CHECK,
     )
@@ -138,13 +153,14 @@ def _render_sms(
 
 def _serialize_ledger(row: ClientDebtorLedger) -> dict:
     labels = dict(ClientDebtorLedger.KIND_CHOICES)
+    signed = float(row.signed_amount)
     return {
         "id": row.pk,
         "kind": row.kind,
         "kind_label": labels.get(row.kind, row.kind),
         "amount": float(row.amount),
-        "amount_display": _fmt_money(row.amount),
-        "signed_amount": float(row.signed_amount),
+        "amount_display": _fmt_money(signed),
+        "signed_amount": signed,
         "note": row.note or "",
         "created_by": row.created_by or "",
         "created_at": row.created_at.isoformat() if row.created_at else "",
@@ -167,7 +183,8 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
         "phone": row.phone or "",
         "note": row.note or "",
         "balance": float(bal or 0),
-        "balance_display": _fmt_money(bal or 0),
+        # Qarz qoldig'i doim minusiz (musbat qarz)
+        "balance_display": _fmt_money(abs(float(bal or 0))),
         "ledger": ledger,
         "created_at": row.created_at.isoformat() if row.created_at else "",
     }
@@ -373,6 +390,7 @@ def cabinet_client_debt_adjust(request):
         bal = debtor.balance()
 
     sms_res = None
+    check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
     if send_sms and debtor.phone:
         tpl = _get_or_create_template(shop, tenant)
         text = _render_sms(
@@ -381,7 +399,9 @@ def cabinet_client_debt_adjust(request):
             balance=bal,
             name=debtor.name,
             note=note or debtor.note,
+            check_link=check_url,
             request=request,
+            kind=kind,
         )
         sms_res = devsms.send_dev_sms(phone=debtor.phone, message=text)
         if sms_res.get("ok"):
@@ -394,6 +414,7 @@ def cabinet_client_debt_adjust(request):
             "entry": _serialize_ledger(entry),
             "debtor": _serialize_debtor(debtor, with_ledger=True, limit=120),
             "sms": sms_res,
+            "check_url": check_url,
         }
     )
 
@@ -639,6 +660,7 @@ def api_client_debt_adjust(request):
             note=note or debtor.note,
             check_link=check_link,
             request=request,
+            kind=kind,
         )
         sms_res = devsms.send_dev_sms(phone=debtor.phone, message=text)
         if sms_res.get("ok"):
@@ -710,6 +732,6 @@ def public_client_debt_check(request, shop, pk):
             "total": "",
             "paid": "",
             "debt_amount": _fmt_money(entry.amount if add else -entry.amount),
-            "debt_balance": _fmt_money(bal),
+            "debt_balance": _fmt_money(abs(float(bal or 0))),
         },
     )

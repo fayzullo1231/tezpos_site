@@ -47,21 +47,14 @@ def _payload_dict(exc: TezPosApiError) -> dict | None:
         return None
 
 
-def _fmt_money_label(raw: str) -> str:
-    """'-9 000 so'm' → '9 000 so'm'."""
-    s = (raw or "").strip()
-    if s.startswith("-"):
-        s = s[1:].lstrip()
-    return s
-
-
 def _normalize_check_ctx(data: dict) -> dict:
-    """To'lov cheklarida 'Qarz: -X' o'rniga musbat 'To'lov' summasi."""
+    """
+    Qarz qo'shish: musbat summa (5 000).
+    Qarz ayirish / to'lov: minus bilan (-5 000).
+    Qoldiq (qarz): minusiz.
+    """
     kind = data.get("kind") or "not_found"
-    debt_amount = str(data.get("debt_amount") or "")
     is_payment = kind == "payment"
-    if is_payment:
-        debt_amount = _fmt_money_label(debt_amount)
     return {
         "title": data.get("title") or "Chek",
         "store_name": data.get("store_name") or "TezPOS",
@@ -72,7 +65,7 @@ def _normalize_check_ctx(data: dict) -> dict:
         "total": data.get("total") or "",
         "paid": data.get("paid") or "",
         "show_debt": bool(data.get("show_debt")),
-        "debt_amount": debt_amount,
+        "debt_amount": str(data.get("debt_amount") or ""),
         "debt_balance": data.get("debt_balance") or "",
         "empty_title": data.get("empty_title") or "Chek topilmadi",
         "empty_detail": data.get("empty_detail") or "",
@@ -101,24 +94,8 @@ def _fetch_backend_check_html(slug: str, ref: str) -> bytes | None:
 
 
 def _rewrite_payment_labels_in_html(html: bytes) -> bytes:
-    """
-    To'lov cheklarida backend 'Qarz' + manfiy summa yuborsa —
-    'To'lov' + musbat summaga almashtiramiz (SMS matnidagi xato bilan bir xil).
-    """
-    try:
-        text = html.decode("utf-8")
-    except Exception:
-        return html
-
-    # >Qarz</span>...<strong>-9 000 so'm</strong>  →  To'lov + musbat
-    text = re.sub(
-        r"(>)(Qarz)(</span>\s*<strong[^>]*>)\s*-+\s*",
-        r"\1To'lov\3",
-        text,
-        count=5,
-        flags=re.IGNORECASE,
-    )
-    return text.encode("utf-8")
+    """To'lov cheklarida minusli qarz summasini saqlaymiz (o'zgartirmaymiz)."""
+    return html
 
 
 def _fix_sana_timezone_in_html(html: bytes) -> bytes:

@@ -92,15 +92,18 @@ def build_client_debt_message(
         head = shop
 
     bal = _to_decimal(balance)
-    tx = abs(_to_decimal(transaction_amount))
+    tx = _to_decimal(transaction_amount)
     link = (check_link or "").strip() or DEFAULT_CLIENT_CHECK
 
     if bal < 0:
         qarz_line = "Qarz: 0 so'm"
         qoldiq_line = f"Qoldiq: +{_fmt_som(abs(bal))} so'm"
     else:
+        # To'lov (ayirish): tx manfiy → "Qarz: -15 000 so'm"
+        # Qarz qo'shish: musbat → "Qarz: 15 000 so'm"
+        # Qoldiq doim minusiz
         qarz_line = f"Qarz: {_fmt_som(tx)} so'm"
-        qoldiq_line = f"Qoldiq: {_fmt_som(bal)} so'm"
+        qoldiq_line = f"Qoldiq: {_fmt_som(abs(bal))} so'm"
 
     text = (
         f"{head}\n"
@@ -124,28 +127,25 @@ def build_debt_message(
     check_link: str = "",
 ) -> str:
     """
-    TezPOS MpBuildDebtMessage — DevSMS/Eskizda tasdiqlangan format:
-      admin - Kulol Optom
-      Qarz: 9 000 so'm
-      Qoldiq: 374 200 so'm
-      Chek: https://tez-pos.uz/check/...
+    TezPOS MpBuildDebtMessage — bir xil format (sayt + dastur):
+      Kulol Optom - Oziq ovqat
+
+      Qarz: -15 000 so'm
+
+      Qoldiq: 5 000 so'm
+
+      Chek:
+      https://tez-pos.uz/check/...
     """
     shop = (shop or "").strip() or "TezPOS"
     branch = (branch or "").strip()
-    if branch and branch.lower() not in shop.lower():
-        head = f"{shop} - {branch}"
-    else:
-        head = shop
-    debt = _fmt_som(debt_amount)
-    bal = _fmt_som(balance if balance is not None else debt_amount)
-    link = (check_link or "").strip() or "—"
-    text = (
-        f"{head}\n"
-        f"Qarz: {debt} so'm\n"
-        f"Qoldiq: {bal} so'm\n"
-        f"Chek: {link}"
+    return build_client_debt_message(
+        shop=shop,
+        branch=branch,
+        transaction_amount=debt_amount,
+        balance=balance if balance is not None else debt_amount,
+        check_link=check_link or DEFAULT_CLIENT_CHECK,
     )
-    return _normalize_sms_text(text)
 
 
 def sample_debt_template(shop: str) -> str:
