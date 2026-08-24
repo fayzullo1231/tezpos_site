@@ -6396,13 +6396,13 @@ def _build_debt_payment_sms(
     paid,
     balance,
     check_url: str,
+    shop_label: str = "",
 ) -> str:
-    """Qarz to‘lovi — TezPOS MpBuildDebtMessage."""
-    shop = (cashier or store or "TezPOS").strip() or "TezPOS"
-    branch = (store or "").strip() if store and store != shop else ""
+    """Qarz to‘lovi — saytdagi Do'kon nomi bilan."""
+    label = (shop_label or "").strip() or (store or "").strip() or "TezPOS"
     return devsms.build_debt_message(
-        shop=shop,
-        branch=branch,
+        shop=label,
+        branch="",
         debt_amount=-abs(Decimal(str(paid or 0))),
         balance=balance,
         check_link=check_url,
@@ -6563,10 +6563,22 @@ def cabinet_debtor_pay(request):
         or server
         or "TezPOS"
     )
-    cashier = str(result.get("cashier") or result.get("cashier_name") or "admin")
+    shop_label = ""
+    try:
+        from .models import DebtSmsTemplate
+        from .client_debts import _canonical_shop_label
+
+        shop_key = str(server or "").strip().lower()
+        tpl = DebtSmsTemplate.objects.filter(shop_key=shop_key).first()
+        if tpl and (tpl.shop_label or "").strip():
+            shop_label = _canonical_shop_label(tpl.shop_label)
+    except Exception:
+        shop_label = ""
+    if not shop_label:
+        shop_label = store
     sms_text = devsms.build_debt_message(
-        shop=cashier,
-        branch=store if store and store != cashier else "",
+        shop=shop_label,
+        branch="",
         debt_amount=-abs(paid),
         balance=balance,
         check_link=sms_check_url,

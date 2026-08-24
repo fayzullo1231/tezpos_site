@@ -104,18 +104,16 @@ def _resolve_sms_shop_branch(
     note: str = "",
     request=None,
 ) -> tuple[str, str]:
-    """Saqlangan do'kon nomi birinchi; bo'sh bo'lsa sessiyadan."""
+    """Saqlangan «Do'kon nomi» birinchi; admin username ishlatilmaydi."""
     label = (tpl.shop_label or "").strip()
     if not label and request is not None:
         display = (request.session.get(SESSION_DISPLAY) or "").strip()
-        uname = request.user.username or ""
-        shop = uname.split(":", 1)[-1] if ":" in uname else (uname or "admin")
-        label = f"{shop} - {display}" if display else shop
-    shop, branch = _split_shop_branch(label)
-    note = (note or "").strip()
-    if note and not branch and note.lower() not in shop.lower():
-        branch = note
-    return shop, branch
+        label = display
+    if not label:
+        label = "TezPOS"
+    # To'liq yorliqni bir qator qilib qoldiramiz (branch qo'shilmasin)
+    label = _canonical_shop_label(label)
+    return label, ""
 
 
 def _render_sms(
@@ -213,12 +211,17 @@ def _list_payload(shop: str) -> dict:
             total += Decimal(str(item["balance"]))
         out.append(item)
     out.sort(key=lambda x: x["balance"], reverse=True)
+    tpl = DebtSmsTemplate.objects.filter(shop_key=shop).first()
+    shop_label = ""
+    if tpl and (tpl.shop_label or "").strip():
+        shop_label = _canonical_shop_label(tpl.shop_label)
     return {
         "ok": True,
         "debtors": out,
         "count": len(out),
         "total_debt": float(total),
         "total_display": _fmt_money(total),
+        "shop_label": shop_label,
     }
 
 
