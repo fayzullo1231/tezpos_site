@@ -147,13 +147,8 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
-# Production: hashed + compressed (brauzer uzoq kesh)
-# SoftManifest — admin JS manifestda bo‘lmasa 500 bermaydi
-_static_backend = (
-    "tezpos_site.storage.SoftManifestStaticFilesStorage"
-    if not DEBUG
-    else "whitenoise.storage.CompressedStaticFilesStorage"
-)
+# Production: compressed (manifest yo‘q — admin 500 ning asosiy sababi shu edi)
+_static_backend = "whitenoise.storage.CompressedStaticFilesStorage"
 STORAGES = {
     "default": {
         "BACKEND": "django.core.files.storage.FileSystemStorage",

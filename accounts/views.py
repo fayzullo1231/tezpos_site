@@ -23,6 +23,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
+from django.conf import settings
 
 import os
 import re
@@ -173,51 +174,62 @@ def download_installer(request):
 def installer_upload(request):
     """
     Django admin 500 bo‘lsa ham .exe yuklash mumkin (faqat staff/superuser).
+    Har qanday xato — brauzerda oddiy matn (traceback).
     """
-    if not (request.user.is_staff or request.user.is_superuser):
-        return HttpResponse("Faqat admin (staff) uchun.", status=403)
-
+    import traceback as _tb
     from django.middleware.csrf import get_token
 
-    msg = ""
-    err = ""
-    if request.method == "POST":
-        title = (request.POST.get("title") or "TezPOS Setup").strip()[:120] or "TezPOS Setup"
-        version = (request.POST.get("version") or "").strip()[:40]
-        upload = request.FILES.get("file")
-        if not upload:
-            err = "Fayl tanlanmagan."
-        else:
+    try:
+        if not (request.user.is_staff or request.user.is_superuser):
+            return HttpResponse(
+                "Faqat admin (staff) uchun.\n"
+                f"Hozirgi user: {request.user.username!r}\n"
+                f"is_staff={request.user.is_staff} is_superuser={request.user.is_superuser}\n"
+                "Avval https://tez-pos.uz/admin/ ga admin bilan kiring.",
+                status=403,
+                content_type="text/plain; charset=utf-8",
+            )
+
+        msg = ""
+        err = ""
+        if request.method == "POST":
+            title = (request.POST.get("title") or "TezPOS Setup").strip()[:120] or "TezPOS Setup"
+            version = (request.POST.get("version") or "").strip()[:40]
+            upload = request.FILES.get("file")
+            if not upload:
+                err = "Fayl tanlanmagan."
+            else:
+                try:
+                    os.makedirs(str(settings.MEDIA_ROOT / "installers"), exist_ok=True)
+                    row = DesktopInstaller(title=title, version=version, is_active=True)
+                    row.file.save(upload.name, upload, save=True)
+                    msg = f"Saqlandi: {row.file.name} (id={row.pk}). Install tugmasi shu faylni beradi."
+                except Exception as exc:  # noqa: BLE001
+                    err = f"{type(exc).__name__}: {exc}\n{_tb.format_exc()}"
+
+        active = DesktopInstaller.get_active()
+        active_name = ""
+        if active and active.file:
             try:
-                row = DesktopInstaller(title=title, version=version, is_active=True)
-                row.file.save(upload.name, upload, save=True)
-                msg = f"Saqlandi: {row.file.name} (id={row.pk}). Install tugmasi shu faylni beradi."
-            except Exception as exc:  # noqa: BLE001
-                err = f"{type(exc).__name__}: {exc}"
+                active_name = active.file.name
+            except Exception:
+                active_name = "(o‘qib bo‘lmadi)"
 
-    active = DesktopInstaller.get_active()
-    active_name = ""
-    if active and active.file:
-        try:
-            active_name = active.file.name
-        except Exception:
-            active_name = "(o‘qib bo‘lmadi)"
-
-    csrf = get_token(request)
-    ok_html = f"<p class='ok'>{msg}</p>" if msg else ""
-    err_html = f"<p class='err'>{err}</p>" if err else ""
-    html = f"""<!DOCTYPE html>
+        csrf = get_token(request)
+        ok_html = f"<pre class='ok'>{msg}</pre>" if msg else ""
+        err_html = f"<pre class='err'>{err}</pre>" if err else ""
+        html = f"""<!DOCTYPE html>
 <html lang="uz"><head><meta charset="utf-8"><title>Installer yuklash</title>
 <style>
-body{{font-family:system-ui,sans-serif;max-width:520px;margin:2rem auto;padding:0 1rem}}
+body{{font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;padding:0 1rem}}
 label{{display:block;margin:.75rem 0 .25rem}}
 input,button{{font:inherit;padding:.45rem .6rem}}
-.ok{{color:#157347;background:#d1e7dd;padding:.75rem;border-radius:8px}}
-.err{{color:#842029;background:#f8d7da;padding:.75rem;border-radius:8px}}
+.ok{{color:#157347;background:#d1e7dd;padding:.75rem;border-radius:8px;white-space:pre-wrap}}
+.err{{color:#842029;background:#f8d7da;padding:.75rem;border-radius:8px;white-space:pre-wrap}}
 .meta{{color:#555;font-size:.92rem;margin-top:1.2rem}}
 </style></head><body>
 <h1>TezPOS Installer (.exe)</h1>
-<p class="meta">Faol fayl: <b>{active_name or "yo‘q"}</b></p>
+<p class="meta">User: <b>{request.user.username}</b> · Faol fayl: <b>{active_name or "yo‘q"}</b></p>
 {ok_html}{err_html}
 <form method="post" enctype="multipart/form-data">
   <input type="hidden" name="csrfmiddlewaretoken" value="{csrf}">
@@ -231,7 +243,19 @@ input,button{{font:inherit;padding:.45rem .6rem}}
 </form>
 <p class="meta"><a href="/admin/">← Admin</a> · <a href="/accounts/download/">Install linkini sinash</a></p>
 </body></html>"""
-    return HttpResponse(html)
+        return HttpResponse(html)
+    except Exception as exc:  # noqa: BLE001
+        body = f"installer_upload xato:\n\n{type(exc).__name__}: {exc}\n\n{_tb.format_exc()}"
+        return HttpResponse(body, status=500, content_type="text/plain; charset=utf-8")
+
+
+@require_GET
+def installer_ping(request):
+    """Deploy tekshiruvi — login shart emas."""
+    return HttpResponse(
+        "installer-ping ok\n",
+        content_type="text/plain; charset=utf-8",
+    )
 
 
 def _dec(value, default="0") -> Decimal:
