@@ -30,15 +30,23 @@ def _shop(request) -> str:
 
 
 def _dec(value, default="0") -> Decimal:
+    """'+100 000' → -100000 (biz mijozga qarzdormiz); aks holda oddiy Decimal."""
+    raw = str(value if value is not None else default).strip().replace(" ", "").replace(",", ".")
+    if not raw:
+        raw = str(default)
+    credit = raw.startswith("+")
+    if credit:
+        raw = raw[1:] or "0"
     try:
-        return Decimal(str(value).replace(" ", "").replace(",", ".")).quantize(
-            Decimal("0.01")
-        )
+        n = Decimal(raw).quantize(Decimal("0.01"))
     except (InvalidOperation, TypeError, ValueError):
         try:
-            return Decimal(str(default)).quantize(Decimal("0.01"))
+            n = Decimal(str(default)).quantize(Decimal("0.01"))
         except (InvalidOperation, TypeError, ValueError):
-            return Decimal("0.00")
+            n = Decimal("0.00")
+    if credit and n > 0:
+        return -abs(n)
+    return n
 
 
 def _fmt_money(n) -> str:
@@ -181,8 +189,12 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
         "phone": row.phone or "",
         "note": row.note or "",
         "balance": float(bal or 0),
-        # Qarz qoldig'i doim minusiz (musbat qarz)
-        "balance_display": _fmt_money(abs(float(bal or 0))),
+        # Mijoz qarzi: minusiz. Biz qarzdor (bal < 0): +bilan
+        "balance_display": (
+            f"+{_fmt_money(abs(float(bal or 0)))}"
+            if float(bal or 0) < 0
+            else _fmt_money(abs(float(bal or 0)))
+        ),
         "ledger": ledger,
         "created_at": row.created_at.isoformat() if row.created_at else "",
     }
@@ -246,9 +258,10 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
     preview = _render_sms(row, amount=865000, balance=2140500, name="Mijoz")
     preview_credit = _render_sms(
         row,
-        amount=0,
-        balance=-2140500,
+        amount=500000,
+        balance=-100000,
         name="Mijoz",
+        kind=ClientDebtorLedger.KIND_SUB,
     )
     return {
         "id": row.pk,
@@ -735,6 +748,10 @@ def public_client_debt_check(request, shop, pk):
             "total": "",
             "paid": "",
             "debt_amount": _fmt_money(entry.amount if add else -entry.amount),
-            "debt_balance": _fmt_money(abs(float(bal or 0))),
+            "debt_balance": (
+                f"+{_fmt_money(abs(float(bal or 0)))}"
+                if float(bal or 0) < 0
+                else _fmt_money(abs(float(bal or 0)))
+            ),
         },
     )

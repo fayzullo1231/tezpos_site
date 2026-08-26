@@ -1354,14 +1354,28 @@
     seedRangeFromDaySales();
   });
 
+  const safeImgUrl = (src) => {
+    const u = String(src || "").trim();
+    if (!u) return "";
+    if (u.startsWith("/accounts/backend-media/")) return u;
+    const m = u.match(/^(?:https?:)?\/\/[^/]+\/media\/(.+)$/i) || u.match(/^\/media\/(.+)$/i);
+    if (m) return `/accounts/backend-media/${m[1]}`;
+    if (u.includes("/media/")) {
+      const p = u.split("/media/")[1];
+      return p ? `/accounts/backend-media/${p}` : "";
+    }
+    return u;
+  };
+
   const productTileHtml = (item, color, rank, opts = {}) => {
     const topsMode = Boolean(opts.tops);
     const stockInMode = Boolean(opts.stockIn);
     const initial = (item.name || "?").trim().charAt(0).toUpperCase();
     const delay = rank != null ? Math.min(rank - 1, 10) * 45 : 0;
+    const imgSrc = safeImgUrl(item.image);
     if (topsMode) {
-      const media = item.image
-        ? `<img src="${item.image}" alt="" loading="lazy" width="44" height="44">`
+      const media = imgSrc
+        ? `<img src="${imgSrc}" alt="" loading="lazy" width="44" height="44">`
         : `<span class="tops-row-fallback">${initial}</span>`;
       const cost = Number(item.cost || 0);
       const selling = Number(item.selling || 0);
@@ -1401,8 +1415,8 @@
       </article>`;
     }
     if (stockInMode) {
-      const media = item.image
-        ? `<img src="${item.image}" alt="" loading="lazy" width="44" height="44">`
+      const media = imgSrc
+        ? `<img src="${imgSrc}" alt="" loading="lazy" width="44" height="44">`
         : `<span class="tops-row-fallback">${initial}</span>`;
       const qtyVal = item.qty != null ? fmt(item.qty) : "—";
       const moneyVal = item.cost != null ? fmt(item.cost) : "—";
@@ -1422,8 +1436,8 @@
         </div>
       </article>`;
     }
-    const media = item.image
-      ? `<img src="${item.image}" alt="${item.name}" loading="lazy" width="72" height="72">`
+    const media = imgSrc
+      ? `<img src="${imgSrc}" alt="${item.name}" loading="lazy" width="72" height="72">`
       : `<span class="product-tile-fallback" style="--tile-accent:${color}">${initial}</span>`;
     const rankHtml = rank != null ? `<span class="product-tile-rank">#${rank}</span>` : "";
     const revHtml =
@@ -6611,13 +6625,17 @@
 
   const cardHtml = (row) => {
     const bal = Number(row.balance || 0);
-    return `<article class="sup-card cd-card ${bal > 0 ? "is-we-owe" : ""}" data-id="${row.id}">
+    const balLabel =
+      bal < 0
+        ? `+${fmt(Math.abs(bal))} so‘m`
+        : `${fmt(Math.abs(bal))} so‘m`;
+    return `<article class="sup-card cd-card ${bal > 0 ? "is-we-owe" : bal < 0 ? "is-credit" : ""}" data-id="${row.id}">
       <div class="sup-card-head">
         <div>
           <h4>${esc(row.name)}</h4>
           <p>${esc(row.phone || "Telefon yo‘q")}</p>
         </div>
-        <div class="sup-bal ${bal > 0 ? "is-we-owe" : "is-clear"}">${fmt(Math.abs(bal))} so‘m</div>
+        <div class="sup-bal ${bal > 0 ? "is-we-owe" : bal < 0 ? "is-credit" : "is-clear"}">${esc(balLabel)}</div>
       </div>
       <div class="sup-card-actions">
         <button type="button" class="btn-soft cd-open" data-id="${row.id}">Ochish</button>

@@ -81,8 +81,11 @@ def build_client_debt_message(
 ) -> str:
     """
     Mijoz qarzlari (kabinet) — DevSMS shabloni:
-      Mijoz qarzdor: Qarz = shu amaldagi summa, Qoldiq = jami qarz.
-      Biz qarzdor (qoldiq < 0): Qarz = 0, Qoldiq = +summa.
+      Mijoz qarzdor (qoldiq ≥ 0):
+        Qarz = amal (to'lov − / qo'shish +), Qoldiq = minusiz.
+      Biz mijozga qarzdormiz (qoldiq < 0), masalan 400k qarzga 500k to'lov:
+        Qarz: 400 000 so'm   ← to'lovdan oldingi mijoz qarzi
+        Qoldiq: +100 000 so'm ← + bilan (biz qarzdormiz)
     """
     shop = (shop or "").strip() or "Kulol Optom"
     branch = (branch or "").strip()
@@ -96,12 +99,17 @@ def build_client_debt_message(
     link = (check_link or "").strip() or DEFAULT_CLIENT_CHECK
 
     if bal < 0:
-        qarz_line = "Qarz: 0 so'm"
+        # Ortiqcha to'lov: oldingi mijoz qarzi (agar bor bo'lsa) — belgisiz
+        prior = bal - tx
+        if tx < 0 and prior > 0:
+            qarz_line = f"Qarz: {_fmt_som(prior)} so'm"
+        else:
+            qarz_line = f"Qarz: {_fmt_som(tx)} so'm"
         qoldiq_line = f"Qoldiq: +{_fmt_som(abs(bal))} so'm"
     else:
         # To'lov (ayirish): tx manfiy → "Qarz: -15 000 so'm"
         # Qarz qo'shish: musbat → "Qarz: 15 000 so'm"
-        # Qoldiq doim minusiz
+        # Qoldiq: +siz (mijoz bizdan qarzdor)
         qarz_line = f"Qarz: {_fmt_som(tx)} so'm"
         qoldiq_line = f"Qoldiq: {_fmt_som(abs(bal))} so'm"
 
@@ -164,7 +172,7 @@ def sample_debt_template(shop: str) -> str:
 
 
 def sample_client_credit_template(shop: str) -> str:
-    """Moderatsiya: biz mijozga qarzdormiz (qoldiq manfiy)."""
+    """Moderatsiya: 400k qarzga 500k to'lov → biz +100k qarzdormiz."""
     label = (shop or "").strip() or "Kulol Optom - Oziq ovqat"
     if " - " in label:
         shop_part, branch_part = label.split(" - ", 1)
@@ -173,8 +181,8 @@ def sample_client_credit_template(shop: str) -> str:
     return build_client_debt_message(
         shop=shop_part.strip() or "Kulol Optom",
         branch=branch_part.strip(),
-        transaction_amount=0,
-        balance=-2140500,
+        transaction_amount=-500000,
+        balance=-100000,
     )
 
 
