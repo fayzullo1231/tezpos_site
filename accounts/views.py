@@ -26,6 +26,7 @@ from django.views.decorators.http import require_GET, require_POST, require_http
 
 import os
 import re
+import urllib.request
 
 from . import tezpos_api
 from .auth_views import (
@@ -1135,7 +1136,8 @@ def _payment_label(method):
 def _sale_items(detail: dict | None) -> list[dict]:
     if not isinstance(detail, dict):
         return []
-    for key in ("items", "lines", "details", "sale_items", "products"):
+    # "details" oxirida — ba'zan boshqa ma'lumot bo'ladi
+    for key in ("items", "lines", "sale_items", "products", "details"):
         rows = detail.get(key)
         if isinstance(rows, list) and rows:
             return [x for x in rows if isinstance(x, dict)]
@@ -1295,15 +1297,59 @@ def _sale_day(sale: dict) -> date | None:
 
 
 def _rel_image_url(url: str | None) -> str:
+    """Backend HTTP media → sayt HTTPS proxy (Mixed Content yo‘q)."""
     if not url:
         return ""
-    url = str(url)
-    if url.startswith("http://") or url.startswith("https://"):
+    url = str(url).strip()
+    base = tezpos_api.normalize_api_base().rstrip("/")
+
+    media_path = ""
+    if "/media/" in url:
+        media_path = url.split("/media/", 1)[1].lstrip("/")
+    elif url.startswith("media/"):
+        media_path = url[len("media/") :].lstrip("/")
+
+    if media_path:
+        if ".." in media_path or media_path.startswith("\\"):
+            return ""
+        return f"/accounts/backend-media/{media_path}"
+
+    if url.startswith("https://"):
         return url
-    base = tezpos_api.normalize_api_base()
+    if url.startswith("http://"):
+        if url.startswith(base + "/"):
+            path = url[len(base) + 1 :]
+            if path.startswith("media/"):
+                return f"/accounts/backend-media/{path[len('media/'):]}"
+        return url
     if url.startswith("/"):
         return f"{base}{url}"
     return f"{base}/{url}"
+
+
+@require_GET
+def backend_media_proxy(request, path: str = ""):
+    """HTTPS sayt orqali backend /media/ ni berish — Mixed Content oldini oladi."""
+    path = (path or "").lstrip("/")
+    if not path or ".." in path or path.startswith("\\"):
+        raise Http404()
+    base = tezpos_api.normalize_api_base().rstrip("/")
+    upstream = f"{base}/media/{path}"
+    try:
+        req = urllib.request.Request(
+            upstream,
+            headers={"User-Agent": "TezPOS-Site-Media/1.0", "Accept": "*/*"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            content = resp.read()
+            content_type = resp.headers.get("Content-Type") or "application/octet-stream"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("backend media proxy fail %s: %s", upstream, exc)
+        raise Http404() from exc
+    out = HttpResponse(content, content_type=content_type)
+    out["Cache-Control"] = "public, max-age=86400"
+    return out
 
 
 def _barcode_token(value) -> str:
@@ -4487,9 +4533,14 @@ def _top_products_from_details(
             pid, name, _nested = _item_product_ref(item)
             qty = _item_qty(item)
             unit_price = _item_unit_price(item)
+            computed = (qty * unit_price).quantize(Decimal("0.01")) if qty and unit_price else Decimal("0")
             line_rev = _dec(
-                item.get("total") or item.get("line_total"), str(qty * unit_price)
+                item.get("total") or item.get("line_total"),
+                str(computed),
             )
+            # Chiziqdagi total ba'zan butun chek summasi — qty*narx ishonchliroq
+            if computed > 0 and line_rev > computed * Decimal("2") + Decimal("1"):
+                line_rev = computed
             if unit_price <= 0 and qty > 0 and line_rev > 0:
                 unit_price = (line_rev / qty).quantize(Decimal("0.01"))
             if not pid:
@@ -4896,25 +4947,26 @@ def _build_top_products_pack(
     """
     span = (end - start).days + 1
     memo_prefix = f"{server}|{(token or '')[-12:]}"
+    # Oraliq savdolar to‘liq yuklansin (oldingi 200 detail_cap ≈ yarim kunlik tushumni kesardi)
     if span <= 1:
-        max_pages, detail_cap, overall = 80, 400, 55.0
+        max_pages, detail_cap, overall = 120, 1500, 90.0
     elif span <= 7:
-        max_pages, detail_cap, overall = 60, 300, 50.0
+        max_pages, detail_cap, overall = 150, 3000, 120.0
     elif span <= 31:
-        max_pages, detail_cap, overall = 50, 200, 45.0
+        max_pages, detail_cap, overall = 200, 5000, 150.0
     else:
-        max_pages, detail_cap, overall = 40, 120, 40.0
+        max_pages, detail_cap, overall = 250, 8000, 180.0
 
     try:
         sales = _memo_get(
-            f"{memo_prefix}|topsales4|{start}|{end}|{max_pages}",
-            60.0,
+            f"{memo_prefix}|topsales5|{start}|{end}|{max_pages}",
+            45.0,
             lambda: tezpos_api.get_sales(
                 token,
                 server,
                 date_from=start.isoformat(),
                 date_to=end.isoformat(),
-                timeout=22,
+                timeout=30,
                 max_pages=max_pages,
             ),
         ) or []
@@ -4971,14 +5023,22 @@ def _build_top_products_pack(
             need_fetch.append(sid)
 
     if need_fetch:
-        fetched = _fetch_sale_details(
-            token,
-            server,
-            need_fetch,
-            limit=min(detail_cap, max(len(need_fetch), 1)),
-            per_sale_timeout=2.2,
-            overall_timeout=overall,
-        )
+        # Bo‘laklab barcha chek detallarini olish (ketma-ket timeout kesmasin)
+        fetched: dict[str, dict] = {}
+        chunk = 250
+        for i in range(0, min(len(need_fetch), detail_cap), chunk):
+            part = need_fetch[i : i + chunk]
+            got = _fetch_sale_details(
+                token,
+                server,
+                part,
+                limit=len(part),
+                per_sale_timeout=2.5,
+                overall_timeout=min(overall, 60.0),
+            )
+            fetched.update(got)
+            if len(fetched) >= detail_cap:
+                break
         details_map.update(fetched)
 
     top_products = _top_products_from_details(

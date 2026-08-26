@@ -55,15 +55,32 @@ class LabelTemplateAdmin(admin.ModelAdmin):
 
 @admin.register(DesktopInstaller)
 class DesktopInstallerAdmin(admin.ModelAdmin):
-    list_display = ("title", "version", "is_active", "file", "updated_at")
+    list_display = ("title", "version", "is_active", "file_info", "updated_at")
     list_filter = ("is_active",)
     search_fields = ("title", "version")
-    readonly_fields = ("created_at", "updated_at")
+    readonly_fields = ("created_at", "updated_at", "file_info")
     fields = (
         "title",
         "version",
         "file",
+        "file_info",
         "is_active",
         "created_at",
         "updated_at",
     )
+
+    @admin.display(description="Fayl")
+    def file_info(self, obj: DesktopInstaller) -> str:
+        try:
+            name = (obj.file.name if obj.file else "") or ""
+        except Exception:
+            return "— (o‘qib bo‘lmadi)"
+        if not name:
+            return "— yuklanmagan"
+        try:
+            exists = obj.file.storage.exists(name)
+        except Exception:
+            exists = False
+        short = name.rsplit("/", 1)[-1]
+        return f"{short} · {'diskda bor' if exists else 'diskda yo‘q — qayta yuklang'}"
+

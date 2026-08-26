@@ -871,15 +871,22 @@ def get_sales(
             data = None
         if isinstance(data, list):
             _absorb(data)
-            return collected
-        if isinstance(data, dict):
+            # Bare list ba'zan faqat 1-sahifa (20/100). Davom etamiz.
+            if len(collected) in (20, 25, 50, 100) or (
+                len(collected) > 0 and len(collected) % 100 == 0 and len(collected) < 500
+            ):
+                start_page = 2
+            else:
+                return collected
+        elif isinstance(data, dict):
             chunk = _sale_rows(data)
             _absorb(chunk)
             has_next = bool(data.get("next"))
             total = _sale_total_hint(data)
             # 20 ta DRF sahifa emas: all=true to‘liq list
+            page_sized = len(chunk) in (20, 25, 50, 100)
             complete = (not has_next) and (
-                len(chunk) != 20 or (total > 0 and len(collected) >= total)
+                (not page_sized) or (total > 0 and len(collected) >= total)
             )
             if complete or not catalog_has_more(
                 actual=len(chunk),
@@ -890,6 +897,8 @@ def get_sales(
             ):
                 return collected
             start_page = 2
+        else:
+            data = None
 
     page = start_page
     while page <= max_pages:

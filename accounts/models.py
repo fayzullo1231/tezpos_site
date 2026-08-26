@@ -62,7 +62,11 @@ class DesktopInstaller(models.Model):
 
     title = models.CharField(max_length=120, default="TezPOS Setup")
     version = models.CharField(max_length=40, blank=True, default="")
-    file = models.FileField(upload_to="installers/")
+    file = models.FileField(
+        upload_to="installers/",
+        blank=True,
+        help_text="TezPOS Setup .exe faylini yuklang.",
+    )
     is_active = models.BooleanField(
         default=True,
         help_text="Faol bo‘lsa, saytdagi Install shu faylni yuklaydi.",
