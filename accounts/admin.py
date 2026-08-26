@@ -1,15 +1,20 @@
+import logging
+import traceback
+
 from django.contrib import admin
+from django.http import HttpResponse
 
 from .models import (
     DesktopInstaller,
     LabelTemplate,
     ClientDebtor,
-    ClientDebtorLedger,
     DebtSmsTemplate,
     Supplier,
     SupplierLedger,
     TenantProfile,
 )
+
+logger = logging.getLogger("django.request")
 
 
 @admin.register(TenantProfile)
@@ -55,32 +60,36 @@ class LabelTemplateAdmin(admin.ModelAdmin):
 
 @admin.register(DesktopInstaller)
 class DesktopInstallerAdmin(admin.ModelAdmin):
-    list_display = ("title", "version", "is_active", "file_info", "updated_at")
+    """Minimal admin — FileField list_display productionda 500 berishi mumkin."""
+
+    list_display = ("title", "version", "is_active", "updated_at")
     list_filter = ("is_active",)
     search_fields = ("title", "version")
-    readonly_fields = ("created_at", "updated_at", "file_info")
-    fields = (
-        "title",
-        "version",
-        "file",
-        "file_info",
-        "is_active",
-        "created_at",
-        "updated_at",
-    )
+    readonly_fields = ("created_at", "updated_at")
+    fields = ("title", "version", "file", "is_active", "created_at", "updated_at")
 
-    @admin.display(description="Fayl")
-    def file_info(self, obj: DesktopInstaller) -> str:
+    def changelist_view(self, request, extra_context=None):
         try:
-            name = (obj.file.name if obj.file else "") or ""
-        except Exception:
-            return "— (o‘qib bo‘lmadi)"
-        if not name:
-            return "— yuklanmagan"
-        try:
-            exists = obj.file.storage.exists(name)
-        except Exception:
-            exists = False
-        short = name.rsplit("/", 1)[-1]
-        return f"{short} · {'diskda bor' if exists else 'diskda yo‘q — qayta yuklang'}"
+            return super().changelist_view(request, extra_context=extra_context)
+        except Exception as exc:
+            logger.exception("DesktopInstaller changelist failed")
+            body = (
+                "DesktopInstaller admin xato:\n\n"
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"{traceback.format_exc()}"
+            )
+            return HttpResponse(body, status=500, content_type="text/plain; charset=utf-8")
 
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        try:
+            return super().changeform_view(
+                request, object_id, form_url, extra_context=extra_context
+            )
+        except Exception as exc:
+            logger.exception("DesktopInstaller changeform failed")
+            body = (
+                "DesktopInstaller forma xato:\n\n"
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"{traceback.format_exc()}"
+            )
+            return HttpResponse(body, status=500, content_type="text/plain; charset=utf-8")

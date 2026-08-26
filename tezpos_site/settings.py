@@ -200,10 +200,30 @@ TELEGRAM_CRON_SECRET = os.environ.get("TELEGRAM_CRON_SECRET", "").strip()
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {"format": "[{levelname}] {name}: {message}", "style": "{"},
+    },
     "handlers": {
-        "console": {"class": "logging.StreamHandler"},
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING",
     },
     "loggers": {
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        "django.server": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
         "tezpos.slow": {"handlers": ["console"], "level": "WARNING"},
         "tezpos.telegram": {"handlers": ["console"], "level": "INFO"},
     },
