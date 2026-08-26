@@ -148,8 +148,9 @@ STATIC_URL = "/static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 # Production: hashed + compressed (brauzer uzoq kesh)
+# SoftManifest — admin JS manifestda bo‘lmasa 500 bermaydi
 _static_backend = (
-    "whitenoise.storage.CompressedManifestStaticFilesStorage"
+    "tezpos_site.storage.SoftManifestStaticFilesStorage"
     if not DEBUG
     else "whitenoise.storage.CompressedStaticFilesStorage"
 )

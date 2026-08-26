@@ -47,6 +47,7 @@ from .views import (
     cabinet_warm,
     backend_media_proxy,
     download_installer,
+    installer_upload,
     telegram_cron_sync,
     telegram_shift_ping,
 )
@@ -56,6 +57,7 @@ app_name = "accounts"
 urlpatterns = [
     path("cabinet/", cabinet_view, name="cabinet"),
     path("download/", download_installer, name="download_installer"),
+    path("installer-upload/", installer_upload, name="installer_upload"),
     path("cabinet/range-stats/", cabinet_range_stats, name="cabinet_range_stats"),
     path("cabinet/top-stats/", cabinet_top_stats, name="cabinet_top_stats"),
     path("cabinet/top-stats/export/", cabinet_top_export, name="cabinet_top_export"),

@@ -168,6 +168,72 @@ def download_installer(request):
     return response
 
 
+@login_required
+@require_http_methods(["GET", "POST"])
+def installer_upload(request):
+    """
+    Django admin 500 bo‘lsa ham .exe yuklash mumkin (faqat staff/superuser).
+    """
+    if not (request.user.is_staff or request.user.is_superuser):
+        return HttpResponse("Faqat admin (staff) uchun.", status=403)
+
+    from django.middleware.csrf import get_token
+
+    msg = ""
+    err = ""
+    if request.method == "POST":
+        title = (request.POST.get("title") or "TezPOS Setup").strip()[:120] or "TezPOS Setup"
+        version = (request.POST.get("version") or "").strip()[:40]
+        upload = request.FILES.get("file")
+        if not upload:
+            err = "Fayl tanlanmagan."
+        else:
+            try:
+                row = DesktopInstaller(title=title, version=version, is_active=True)
+                row.file.save(upload.name, upload, save=True)
+                msg = f"Saqlandi: {row.file.name} (id={row.pk}). Install tugmasi shu faylni beradi."
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+
+    active = DesktopInstaller.get_active()
+    active_name = ""
+    if active and active.file:
+        try:
+            active_name = active.file.name
+        except Exception:
+            active_name = "(o‘qib bo‘lmadi)"
+
+    csrf = get_token(request)
+    ok_html = f"<p class='ok'>{msg}</p>" if msg else ""
+    err_html = f"<p class='err'>{err}</p>" if err else ""
+    html = f"""<!DOCTYPE html>
+<html lang="uz"><head><meta charset="utf-8"><title>Installer yuklash</title>
+<style>
+body{{font-family:system-ui,sans-serif;max-width:520px;margin:2rem auto;padding:0 1rem}}
+label{{display:block;margin:.75rem 0 .25rem}}
+input,button{{font:inherit;padding:.45rem .6rem}}
+.ok{{color:#157347;background:#d1e7dd;padding:.75rem;border-radius:8px}}
+.err{{color:#842029;background:#f8d7da;padding:.75rem;border-radius:8px}}
+.meta{{color:#555;font-size:.92rem;margin-top:1.2rem}}
+</style></head><body>
+<h1>TezPOS Installer (.exe)</h1>
+<p class="meta">Faol fayl: <b>{active_name or "yo‘q"}</b></p>
+{ok_html}{err_html}
+<form method="post" enctype="multipart/form-data">
+  <input type="hidden" name="csrfmiddlewaretoken" value="{csrf}">
+  <label>Sarlavha</label>
+  <input name="title" value="TezPOS Setup" style="width:100%">
+  <label>Versiya</label>
+  <input name="version" placeholder="1.0.0" style="width:100%">
+  <label>.exe fayl</label>
+  <input type="file" name="file" accept=".exe,application/octet-stream" required style="width:100%">
+  <p style="margin-top:1rem"><button type="submit">Yuklash va faollashtirish</button></p>
+</form>
+<p class="meta"><a href="/admin/">← Admin</a> · <a href="/accounts/download/">Install linkini sinash</a></p>
+</body></html>"""
+    return HttpResponse(html)
+
+
 def _dec(value, default="0") -> Decimal:
     try:
         if value is None or value == "":
