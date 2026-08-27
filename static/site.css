@@ -4060,3 +4060,7 @@ body.cabinet-body {
   padding: .7rem .8rem; font: inherit; resize: vertical; min-height: 110px;
 }
 .cd-card .sup-bal.is-we-owe { color: #dc2626 !important; }
+.cd-card .sup-bal.is-credit { color: #047857 !important; }
+.cd-card.is-credit { border-color: #a7f3d0; background: linear-gradient(180deg,#fff 0%,#f0fdf4 100%); }
+.sup-bal.is-credit { color: #047857 !important; }
+.sup-detail-balance.is-credit { color: #047857 !important; }

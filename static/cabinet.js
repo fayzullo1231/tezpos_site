@@ -2223,18 +2223,35 @@
       const url = data.stockInUrl;
       if (!url) return;
       const reqId = ++req;
-      if (grid) {
-        grid.className = "tops-list";
-        grid.innerHTML = typeof skelHtml === "function" ? skelHtml("lines", 6) : "…";
+      const ssKey = `stockin:${iso}`;
+      let hadCache = false;
+      if (!force && typeof cacheGet === "function") {
+        const hit = cacheGet(ssKey);
+        if (hit && hit.ok) {
+          hadCache = true;
+          cache[iso] = hit;
+          paintKpis(hit);
+          paintProducts(hit.products || []);
+          paintReceipts(hit.receipts || []);
+        }
       }
-      if (receiptsBody) {
-        receiptsBody.innerHTML =
-          `<tr><td colspan="6" class="cabinet-empty">Yuklanmoqda…</td></tr>`;
+      if (!hadCache) {
+        if (grid) {
+          grid.className = "tops-list";
+          grid.innerHTML = typeof skelHtml === "function" ? skelHtml("lines", 6) : "…";
+        }
+        if (receiptsBody) {
+          receiptsBody.innerHTML =
+            `<tr><td colspan="6" class="cabinet-empty">Yuklanmoqda…</td></tr>`;
+        }
       }
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = setTimeout(() => ctrl?.abort(), 22000);
       try {
         const res = await fetch(`${url}?date=${encodeURIComponent(iso)}`, {
           credentials: "same-origin",
           headers: { Accept: "application/json" },
+          signal: ctrl?.signal,
         });
         const payload = await res.json();
         if (reqId !== req) return;
@@ -2242,11 +2259,18 @@
           throw new Error(payload?.error || "fail");
         }
         cache[iso] = payload;
+        if (typeof cacheSet === "function") cacheSet(ssKey, payload);
         paintKpis(payload);
         paintProducts(Array.isArray(payload.products) ? payload.products : []);
         paintReceipts(Array.isArray(payload.receipts) ? payload.receipts : []);
       } catch (_err) {
         if (reqId !== req) return;
+        if (cache[iso]) {
+          paintKpis(cache[iso]);
+          paintProducts(cache[iso].products || []);
+          paintReceipts(cache[iso].receipts || []);
+          return;
+        }
         if (grid) {
           grid.innerHTML = `<p class="cabinet-hint">Kirim ma’lumotlari yuklanmadi. Qayta urinib ko‘ring.</p>`;
         }
@@ -2254,6 +2278,8 @@
           receiptsBody.innerHTML =
             `<tr><td colspan="6" class="cabinet-empty">Yuklanmadi</td></tr>`;
         }
+      } finally {
+        clearTimeout(timer);
       }
     };
 
@@ -6747,8 +6773,17 @@
     document.getElementById("cd-detail-title").textContent = row.name;
     document.getElementById("cd-detail-meta").textContent = row.phone || "Telefon yo‘q";
     const bal = document.getElementById("cd-detail-balance");
-    bal.className = `sup-detail-balance ${Number(row.balance) > 0 ? "is-we-owe" : "is-clear"}`;
-    bal.textContent = `Qarz: ${fmt(Math.abs(Number(row.balance) || 0))} so‘m`;
+    const n = Number(row.balance) || 0;
+    if (n < 0) {
+      bal.className = "sup-detail-balance is-credit";
+      bal.textContent = `Biz qarzdormiz: +${fmt(Math.abs(n))} so‘m`;
+    } else if (n > 0) {
+      bal.className = "sup-detail-balance is-we-owe";
+      bal.textContent = `Qarz: ${fmt(n)} so‘m`;
+    } else {
+      bal.className = "sup-detail-balance is-clear";
+      bal.textContent = `Qarz: 0 so‘m`;
+    }
     document.getElementById("cd-detail-ledger").innerHTML = (row.ledger || []).length
       ? timelineHtml(row.ledger)
       : `<p class="cabinet-hint">Hali yozuv yo‘q.</p>`;

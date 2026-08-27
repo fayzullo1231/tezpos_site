@@ -1537,12 +1537,28 @@ def _map_product(raw: dict) -> SimpleNamespace:
     list_prices = _parse_list_prices(
         raw.get("list_prices") or raw.get("price_lists") or raw.get("prices")
     )
+    selling = _first_dec(
+        raw.get("price"),
+        raw.get("selling_price"),
+        raw.get("sale_price"),
+        raw.get("sell_price"),
+    )
     wholesale = Decimal("0")
     if list_prices:
-        try:
-            wholesale = min(list_prices.values())
-        except ValueError:
-            wholesale = Decimal("0")
+        # Sotuv narxidan past bo'lganlar — optom (sotuv listini min qilib olmaslik)
+        below = [
+            v
+            for v in list_prices.values()
+            if v > 0 and (selling <= 0 or v < selling - Decimal("0.5"))
+        ]
+        if below:
+            wholesale = min(below)
+    if wholesale <= 0:
+        wholesale = _first_dec(
+            raw.get("wholesale_price"),
+            raw.get("wholesale"),
+            raw.get("optom_price"),
+        )
 
     image_url = _rel_image_url(raw.get("image_url") or raw.get("image"))
     images_raw = raw.get("images") or []
@@ -1563,12 +1579,6 @@ def _map_product(raw: dict) -> SimpleNamespace:
         raw.get("stock_qty"),
         raw.get("stock"),
         raw.get("qty"),
-    )
-    selling = _first_dec(
-        raw.get("price"),
-        raw.get("selling_price"),
-        raw.get("sale_price"),
-        raw.get("sell_price"),
     )
     cost = _first_dec(
         raw.get("cost_price"),
@@ -1944,10 +1954,33 @@ def _price_within(unit: float, catalog: float, ratio: float = 0.01, floor: float
 
 
 def _is_api_selling_list(pl: dict) -> bool:
+    """POS Es() bilan mos: sotuv/chakana; optom emas."""
+    if pl.get("is_selling"):
+        return True
     name = (pl.get("name") or "").strip().casefold()
-    return bool(
-        pl.get("is_selling")
-        or name in {"sotuv", "sotish", "sotuv narxi", "retail", "selling"}
+    if not name:
+        return False
+    if "optom" in name or "wholesale" in name or "ulgurji" in name:
+        return False
+    if name in {"sotuv", "sotish", "sotuv narxi", "retail", "selling", "chakana", "dona", "asosiy"}:
+        return True
+    return any(
+        x in name
+        for x in ("sotuv", "sotish", "chakana", "retail", "selling", "dona")
+    )
+
+
+def _is_api_optom_list(pl: dict) -> bool:
+    if _is_api_selling_list(pl):
+        return False
+    name = (pl.get("name") or "").strip().casefold()
+    if not name:
+        return True  # noaniq qo'shimcha ro'yxat — optom tomonda
+    return (
+        "optom" in name
+        or "wholesale" in name
+        or "ulgurji" in name
+        or name not in {"sotuv", "sotish", "retail", "selling"}
     )
 
 
@@ -1957,9 +1990,8 @@ def _match_price_list_id(
     price_lists: list[dict],
 ) -> str:
     """
-    Birlik narxini Sotuv yoki Optom (narxlar ro'yxati) ga biriktiradi.
-    Mahsulot topilsa — eng yaqin katalog narxi (Boshqa bo'lmaydi).
-    Topilmasa — Sotuv (oddiy chakana savdo).
+    Birlik narxini Sotuv yoki Optom ga biriktiradi.
+    Qoida: shubhada Sotuv. Optom faqat narx optomga aniq mos kelganda.
     """
     if not product:
         return SELLING_LIST_ID
@@ -1970,41 +2002,116 @@ def _match_price_list_id(
 
     selling = float(getattr(product, "selling_price", 0) or 0)
     list_prices = getattr(product, "list_prices", None) or {}
-    candidates: list[tuple[str, float]] = []
-    if selling > 0:
-        candidates.append((SELLING_LIST_ID, selling))
 
+    sell_prices: list[float] = []
+    if selling > 0:
+        sell_prices.append(selling)
+    for pl in price_lists:
+        lid = str(pl.get("id") or "")
+        if not lid or lid not in list_prices:
+            continue
+        if not _is_api_selling_list(pl):
+            continue
+        sp = float(list_prices[lid] or 0)
+        if sp > 0:
+            sell_prices.append(sp)
+
+    optom_candidates: list[tuple[str, float]] = []
     for pl in price_lists:
         lid = str(pl.get("id") or "")
         if not lid or lid not in list_prices:
             continue
         if _is_api_selling_list(pl):
             continue
+        if not _is_api_optom_list(pl):
+            continue
         lp = float(list_prices[lid] or 0)
         if lp > 0:
-            candidates.append((lid, lp))
+            optom_candidates.append((lid, lp))
 
-    if not candidates:
+    # wholesale_price maydoni ham (list_prices bo'sh bo'lsa) — sotuvdan past bo'lsagina
+    wh = float(getattr(product, "wholesale_price", 0) or 0)
+    if (
+        wh > 0
+        and (selling <= 0 or wh < selling - 0.5)
+        and not any(abs(wh - lp) < 0.01 for _, lp in optom_candidates)
+    ):
+        optom_candidates.append(("__wholesale_field__", wh))
+
+    best_sell_dist = (
+        min(abs(up - sp) for sp in sell_prices) if sell_prices else None
+    )
+
+    best_optom: tuple[float, str] | None = None
+    for lid, lp in optom_candidates:
+        # Optom sotuvdan past bo'lishi kerak (barobar bo'lsa — Sotuv)
+        if selling > 0 and lp >= selling - 0.5:
+            continue
+        dist = abs(up - lp)
+        # Optom faqat qattiq moslik (±1% yoki 1 so'm)
+        if not _price_within(up, lp, ratio=0.01, floor=1.0):
+            continue
+        if best_optom is None or dist < best_optom[0]:
+            best_optom = (dist, lid)
+
+    if best_optom is not None:
+        odist, oid = best_optom
+        # Sotuv bir xil yoki yaqinroq — Sotuv
+        if best_sell_dist is not None and best_sell_dist <= odist + 0.5:
+            return SELLING_LIST_ID
+        # Sotuv ham diapazonda — Sotuv ustun
+        if sell_prices and any(
+            _price_within(up, sp, ratio=0.015, floor=2.0) for sp in sell_prices
+        ):
+            return SELLING_LIST_ID
+        # Optom aniq yaqinroq
+        if best_sell_dist is None or odist * 1.25 < best_sell_dist:
+            if oid == "__wholesale_field__":
+                return OTHER_LIST_ID
+            return oid
+
+    return SELLING_LIST_ID
+
+
+def _classify_line_price_list(
+    *,
+    raw_pl,
+    unit_price: Decimal,
+    product: SimpleNamespace | None,
+    price_lists: list[dict],
+    selling_list_ids: set[str],
+) -> str:
+    """Savdo qatorini Sotuv (__selling__) yoki optom list id ga ajratadi."""
+    list_id = ""
+    if isinstance(raw_pl, dict):
+        raw_pl = raw_pl.get("id")
+    if raw_pl not in (None, ""):
+        list_id = str(raw_pl).strip()
+
+    if list_id in ("selling", "retail", SELLING_LIST_ID) or list_id in selling_list_ids:
         return SELLING_LIST_ID
 
-    # Eng yaqin narx
-    best_id, best_price = min(candidates, key=lambda x: abs(up - x[1]))
-    best_dist = abs(up - best_price)
-
-    # Agar sotuv ham deyarli yaqin bo'lsa — Sotuv ustun (bir xil masofa)
-    if selling > 0:
-        sell_dist = abs(up - selling)
-        if sell_dist <= best_dist + 0.5:
-            # Qattiq moslik: sotuv ±1.5% ichida
-            if _price_within(up, selling, ratio=0.015, floor=1.0):
-                return SELLING_LIST_ID
-            # Optom aniqroq (kamida 1.5x yaqinroq) bo'lmasa — Sotuv
-            if best_id != SELLING_LIST_ID and best_dist * 1.5 < sell_dist:
-                return best_id
+    pl = None
+    if list_id:
+        pl = next((x for x in price_lists if str(x.get("id") or "") == list_id), None)
+        if pl and _is_api_selling_list(pl):
             return SELLING_LIST_ID
 
-    return best_id
+    # Aniq optom ro'yxati tanlangan — lekin narx sotuvga mos bo'lsa Sotuv
+    matched = _match_price_list_id(unit_price, product, price_lists)
+    if list_id and pl and _is_api_optom_list(pl):
+        if matched == SELLING_LIST_ID:
+            return SELLING_LIST_ID
+        return list_id
 
+    # Ro'yxat yo'q yoki noma'lum — narx bo'yicha (default Sotuv)
+    if not list_id or not pl:
+        return matched
+
+    # Boshqa ma'lum ro'yxat
+    if matched == SELLING_LIST_ID:
+        return SELLING_LIST_ID
+    return list_id
 
 def _aggregate_price_list_stats(
     sale_details: list[dict],
@@ -2078,15 +2185,24 @@ def _aggregate_price_list_stats(
                 or item.get("list_id")
                 or sale_pl
             )
-            if isinstance(raw_pl, dict):
-                raw_pl = raw_pl.get("id")
-            list_id = str(raw_pl).strip() if raw_pl not in (None, "") else ""
-            if list_id in ("selling", "retail", SELLING_LIST_ID) or list_id in selling_list_ids:
-                list_id = SELLING_LIST_ID
-            elif list_id and list_id in buckets:
-                pass
-            elif list_id:
-                # API bergan noma’lum optom ro‘yxati — Sotuvga tashlamaymiz
+            list_id = _classify_line_price_list(
+                raw_pl=raw_pl,
+                unit_price=unit_price,
+                product=p,
+                price_lists=price_lists,
+                selling_list_ids=selling_list_ids,
+            )
+            if list_id == OTHER_LIST_ID and OTHER_LIST_ID not in buckets:
+                buckets[OTHER_LIST_ID] = {
+                    "id": OTHER_LIST_ID,
+                    "name": "Optom",
+                    "qty": 0.0,
+                    "checks": set(),
+                    "revenue": 0.0,
+                    "cost": 0.0,
+                    "costed_revenue": 0.0,
+                }
+            elif list_id not in buckets and list_id != SELLING_LIST_ID:
                 pl_name = (
                     item.get("price_list_name")
                     or item.get("list_name")
@@ -2104,8 +2220,6 @@ def _aggregate_price_list_stats(
                     "cost": 0.0,
                     "costed_revenue": 0.0,
                 }
-            else:
-                list_id = _match_price_list_id(unit_price, p, price_lists)
             if list_id not in buckets:
                 list_id = SELLING_LIST_ID
             unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
@@ -4651,13 +4765,13 @@ def _top_products_from_details(
                 or item.get("list_id")
                 or sale_pl
             )
-            if isinstance(raw_pl, dict):
-                raw_pl = raw_pl.get("id")
-            list_id = str(raw_pl).strip() if raw_pl not in (None, "") else ""
-            if list_id in ("selling", "retail", SELLING_LIST_ID) or list_id in selling_list_ids:
-                list_id = SELLING_LIST_ID
-            elif not list_id:
-                list_id = _match_price_list_id(unit_price, p, price_lists)
+            list_id = _classify_line_price_list(
+                raw_pl=raw_pl,
+                unit_price=unit_price,
+                product=p,
+                price_lists=price_lists,
+                selling_list_ids=selling_list_ids,
+            )
             is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
 
             product_qty[pid] += qty
@@ -5295,33 +5409,25 @@ def cabinet_stock_in(request):
     server = request.session[SESSION_SERVER]
     day = _parse_sale_date(request.GET.get("date") or request.GET.get("sale_date"))
     memo_prefix = f"{server}|{(token or '')[-12:]}"
+    memo_key = f"{memo_prefix}|stockin_v2|{day.isoformat()}"
+
+    cached = _memo_peek(memo_key)
+    if isinstance(cached, dict) and cached.get("ok"):
+        return JsonResponse(cached)
 
     try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_r = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|stockin|{day.isoformat()}",
-                    60.0,
-                    lambda: tezpos_api.get_stock_receipts(
-                        token,
-                        server,
-                        date_from=day.isoformat(),
-                        date_to=day.isoformat(),
-                        timeout=18,
-                        max_pages=30,
-                    ),
-                )
+        # Katalog kutmasdan — asosiy sekinlik shu edi (Katта ombor snapshot)
+        raw_receipts = (
+            tezpos_api.get_stock_receipts(
+                token,
+                server,
+                date_from=day.isoformat(),
+                date_to=day.isoformat(),
+                timeout=12,
+                max_pages=8,
             )
-            fut_p = pool.submit(
-                lambda: _memo_get(
-                    f"{memo_prefix}|catalog_snap",
-                    120.0,
-                    lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=14)
-                    or [],
-                )
-            )
-            raw_receipts = fut_r.result() or []
-            products_raw = fut_p.result() or []
+            or []
+        )
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -5330,35 +5436,67 @@ def cabinet_stock_in(request):
     except (TimeoutError, OSError) as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=200)
 
-    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-    products_by_id = {str(p.id): p for p in products}
-    products_by_name = _products_by_name(products)
-
     raw_receipts = [r for r in raw_receipts if isinstance(r, dict)]
-    # Sana filtri API da ishlamasa — lokal filtrlash
     filtered = []
     for r in raw_receipts:
         d = _receipt_day(r)
         if d is None or d == day:
             filtered.append(r)
-    if not filtered and raw_receipts:
-        # date_from/to qo‘llab-quvvatlanmasa — kengroq so‘rov + filtrlash
+
+    # Faqat API umuman bo‘sh qaytarsa — sana filtrisiz qisqa qidiruv
+    if not raw_receipts:
         try:
-            wider = tezpos_api.get_stock_receipts(
-                token,
-                server,
-                date_from=(day - timedelta(days=7)).isoformat(),
-                date_to=(day + timedelta(days=1)).isoformat(),
-                timeout=16,
-                max_pages=40,
+            wider = (
+                tezpos_api.get_stock_receipts(
+                    token,
+                    server,
+                    date_from=None,
+                    date_to=None,
+                    timeout=10,
+                    max_pages=4,
+                )
+                or []
             )
         except (tezpos_api.TezPosApiError, TimeoutError, OSError):
             wider = []
-        for r in wider or []:
+        for r in wider:
             if isinstance(r, dict) and _receipt_day(r) == day:
                 filtered.append(r)
+    elif not filtered:
+        # Qatorlar bor, lekin bu kun yo‘q — agar eng eski kun hali tanlangan kundan yangi
+        # bo‘lsa, yana bir necha sahifa o‘qiymiz (ortiqcha ±7 kun so‘rovisiz).
+        days_seen = [d for d in (_receipt_day(r) for r in raw_receipts) if d]
+        oldest = min(days_seen) if days_seen else None
+        if oldest and oldest > day:
+            try:
+                more = (
+                    tezpos_api.get_stock_receipts(
+                        token,
+                        server,
+                        date_from=day.isoformat(),
+                        date_to=day.isoformat(),
+                        timeout=12,
+                        max_pages=16,
+                    )
+                    or []
+                )
+            except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+                more = []
+            filtered = [
+                r
+                for r in more
+                if isinstance(r, dict) and (_receipt_day(r) is None or _receipt_day(r) == day)
+            ]
 
-    # Items yo‘q bo‘lsa — detail fetch
+    # Katalog: faqat keshda bo‘lsa (bloklamaydi). Rasmlar/nomlar uchun boyitish.
+    products_raw = _memo_peek(f"{memo_prefix}|catalog_snap") or []
+    products_by_id: dict = {}
+    products_by_name: dict = {}
+    if isinstance(products_raw, list) and products_raw:
+        products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+        products_by_id = {str(p.id): p for p in products}
+        products_by_name = _products_by_name(products)
+
     need_ids = [
         str(r.get("id") or "")
         for r in filtered
@@ -5372,8 +5510,9 @@ def cabinet_stock_in(request):
             except (tezpos_api.TezPosApiError, TimeoutError, OSError):
                 return rid, None
 
-        with ThreadPoolExecutor(max_workers=min(8, max(2, len(need_ids)))) as pool:
-            for fut in as_completed([pool.submit(_one, rid) for rid in need_ids[:80]]):
+        # Har bir hujjat uchun alohida so‘rov — 24 tadan oshirmaymiz
+        with ThreadPoolExecutor(max_workers=min(6, max(2, len(need_ids)))) as pool:
+            for fut in as_completed([pool.submit(_one, rid) for rid in need_ids[:24]]):
                 try:
                     rid, data = fut.result()
                 except Exception:
@@ -5397,18 +5536,18 @@ def cabinet_stock_in(request):
     total_qty = sum(float(x.get("total_qty") or 0) for x in receipts_payload)
     sku_count = len(products_agg)
 
-    return JsonResponse(
-        {
-            "ok": True,
-            "date": day.isoformat(),
-            "receipts_count": len(receipts_payload),
-            "sku_count": sku_count,
-            "total_qty": total_qty,
-            "total_cost": total_cost,
-            "receipts": receipts_payload,
-            "products": products_agg,
-        }
-    )
+    payload = {
+        "ok": True,
+        "date": day.isoformat(),
+        "receipts_count": len(receipts_payload),
+        "sku_count": sku_count,
+        "total_qty": total_qty,
+        "total_cost": total_cost,
+        "receipts": receipts_payload,
+        "products": products_agg,
+    }
+    _TEZPOS_MEMO[memo_key] = (time.time(), payload)
+    return JsonResponse(payload)
 
 
 @login_required

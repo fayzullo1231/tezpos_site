@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import date
 from typing import Any
 from urllib.parse import urlparse
 
@@ -1251,6 +1252,9 @@ STOCK_RECEIPT_LIST_PATHS = (
     "/api/warehouse/stock-receipts/",
     "/api/catalog/receipts/",
 )
+# Ishlagan endpointni eslab qolish — har safar 404 zanjirini kutmaslik
+_STOCK_RECEIPT_PATH: dict[str, str] = {}
+_STOCK_RECEIPT_DETAIL_PREFIX: dict[str, str] = {}
 
 
 def get_stock_receipts(
@@ -1281,8 +1285,54 @@ def get_stock_receipts(
             n += 1
         return n
 
+    def _parse_bound(s: str | None):
+        if not s:
+            return None
+        try:
+            return date.fromisoformat(str(s)[:10])
+        except ValueError:
+            return None
+
+    from_d = _parse_bound(date_from)
+    to_d = _parse_bound(date_to)
+
+    def _row_day(row: dict):
+        for key in (
+            "completed_at",
+            "received_at",
+            "created_at",
+            "date",
+            "posted_at",
+        ):
+            raw = row.get(key)
+            if not raw:
+                continue
+            text = str(raw).strip()
+            if not text:
+                continue
+            try:
+                return date.fromisoformat(text[:10])
+            except ValueError:
+                continue
+        return None
+
+    def _page_older_than_range(rows: list) -> bool:
+        """Sahifa yangidan eskiga tartiblangan deb hisoblab, diapazondan eski bo‘lsa to‘xtatamiz."""
+        if not from_d or not rows:
+            return False
+        days = [_row_day(r) for r in rows if isinstance(r, dict)]
+        days = [d for d in days if d is not None]
+        if not days:
+            return False
+        return max(days) < from_d
+
     last_err: TezPosApiError | None = None
-    for path in STOCK_RECEIPT_LIST_PATHS:
+    paths = list(STOCK_RECEIPT_LIST_PATHS)
+    cached_path = _STOCK_RECEIPT_PATH.get(_server_slug(server_name) or server_name)
+    if cached_path and cached_path in paths:
+        paths = [cached_path] + [p for p in paths if p != cached_path]
+
+    for path in paths:
         collected.clear()
         seen.clear()
         try:
@@ -1309,9 +1359,12 @@ def get_stock_receipts(
             continue
         rows = _rows_from_list_payload(data)
         _absorb(rows)
+        _STOCK_RECEIPT_PATH[_server_slug(server_name) or server_name] = path
         if isinstance(data, list) or (
             isinstance(data, dict) and not data.get("next") and len(rows) != 20
         ):
+            return collected
+        if _page_older_than_range(rows):
             return collected
         page = 2
         while page <= max_pages:
@@ -1329,7 +1382,7 @@ def get_stock_receipts(
                         "date_from": date_from,
                         "date_to": date_to,
                     },
-                    timeout=min(timeout, 12),
+                    timeout=min(timeout, 10),
                 )
             except TezPosApiError as exc:
                 if exc.status in (401, 403):
@@ -1341,6 +1394,13 @@ def get_stock_receipts(
             added = _absorb(chunk)
             if added <= 0:
                 break
+            if _page_older_than_range(chunk):
+                break
+            # Sana filtri ishlayotgan bo‘lsa — kerakli kunni topgach ortiqcha sahifa kerak emas
+            if from_d and to_d and from_d == to_d:
+                matched = sum(1 for r in collected if _row_day(r) == from_d)
+                if matched >= 40:
+                    break
             has_next = bool(data.get("next")) if isinstance(data, dict) else False
             if not has_next and len(chunk) < 100:
                 break
@@ -1354,19 +1414,28 @@ def get_stock_receipts(
 def get_stock_receipt(token: str, server_name: str, receipt_id: str) -> dict:
     """Bitta kirim hujjati (tovarlar bilan)."""
     last_exc: TezPosApiError | None = None
-    for path in (
+    paths = [
         f"/api/catalog/stock-receipts/{receipt_id}/",
         f"/api/inventory/stock-receipts/{receipt_id}/",
         f"/api/warehouse/stock-receipts/{receipt_id}/",
-    ):
+    ]
+    slug = _server_slug(server_name) or server_name
+    pref = _STOCK_RECEIPT_DETAIL_PREFIX.get(slug)
+    if pref:
+        preferred = f"{pref}{receipt_id}/"
+        paths = [preferred] + [p for p in paths if p != preferred]
+    for path in paths:
         try:
             data = api_request(
                 "GET",
                 path,
                 token=token,
                 server_name=server_name,
-                timeout=10,
+                timeout=6,
             )
+            # Prefiks: /api/catalog/stock-receipts/
+            trimmed = path.rstrip("/")
+            _STOCK_RECEIPT_DETAIL_PREFIX[slug] = trimmed[: trimmed.rfind("/") + 1]
             return data if isinstance(data, dict) else {}
         except TezPosApiError as exc:
             last_exc = exc
