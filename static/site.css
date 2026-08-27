@@ -3905,7 +3905,8 @@ body.cabinet-body {
 
 .sup-modal[hidden] { display: none !important; }
 .sup-modal {
-  position: fixed; inset: 0; z-index: 1200; display: grid; place-items: end center;
+  /* Splash (100000) va boshqa overlaylardan yuqoriroq */
+  position: fixed; inset: 0; z-index: 200000; display: grid; place-items: end center;
 }
 .sup-modal-backdrop {
   position: absolute; inset: 0; background: rgba(15, 23, 42, .45);

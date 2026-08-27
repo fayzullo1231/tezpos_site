@@ -74,6 +74,11 @@ if [[ -f "$APP_DIR/deploy/tezpos-telegram-sync.service" ]]; then
   cp -f "$APP_DIR/deploy/tezpos-telegram-sync.service" /etc/systemd/system/
   cp -f "$APP_DIR/deploy/tezpos-telegram-sync.timer" /etc/systemd/system/
 fi
+# Static CSS/JS kesh sozlamalari (immutable o‘chirilgan)
+if [[ -f "$APP_DIR/deploy/nginx-tez-pos.uz.conf" ]] && [[ -d /etc/nginx/sites-available ]]; then
+  cp -f "$APP_DIR/deploy/nginx-tez-pos.uz.conf" /etc/nginx/sites-available/tez-pos.uz
+  nginx -t && systemctl reload nginx || true
+fi
 systemctl daemon-reload
 systemctl enable tezpos-site
 systemctl restart tezpos-site

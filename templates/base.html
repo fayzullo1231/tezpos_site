@@ -11,9 +11,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'site.css' %}">
-  <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}">
-  <link rel="apple-touch-icon" href="{% static 'img/favicon.png' %}">
+  <link rel="stylesheet" href="{% static 'site.css' %}?v=20260827a">
+  <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}?v=20260827a">
+  <link rel="apple-touch-icon" href="{% static 'img/favicon.png' %}?v=20260827a">
   {% block extra_head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -21,7 +21,7 @@
   <header class="site-header">
     <div class="container nav-wrap nav-shell">
       <a class="brand brand-logo" href="/">
-        <img src="/static/img/logo.png" alt="TezPOS" height="36">
+        <img src="{% static 'img/logo.png' %}?v=20260827a" alt="TezPOS" height="36">
       </a>
       <nav class="site-nav">
         <a href="/">Asosiy</a>
@@ -48,7 +48,7 @@
     {% block content %}{% endblock %}
   </main>
   {% endblock %}
-  <script src="/static/site.js" defer></script>
+  <script src="{% static 'site.js' %}?v=20260827a" defer></script>
   {% block extra_js %}{% endblock %}
 </body>
 </html>

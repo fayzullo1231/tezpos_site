@@ -80,7 +80,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "accounts",
+    "accounts.apps.AccountsConfig",
     "billing",
     "catalog",
     "sales",
@@ -157,7 +157,7 @@ STORAGES = {
         "BACKEND": _static_backend,
     },
 }
-WHITENOISE_MAX_AGE = 60 * 60 * 24 * 30  # 30 kun
+WHITENOISE_MAX_AGE = 60 * 60  # 1 soat (hash yo‘q — uzoq immutable kesh dizaynni sindiradi)
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", str(BASE_DIR / "media")))

@@ -6303,11 +6303,13 @@
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.supplier) throw new Error(json.error || "Topilmadi");
       paintDetail(json.supplier);
       paintSummary(json.summary);
       detailModal.hidden = false;
+      detailModal.removeAttribute("hidden");
+      detailModal.style.display = "grid";
       document.body.style.overflow = "hidden";
     } catch (e) {
       if (errorEl) {
@@ -6319,6 +6321,8 @@
   const closeDetail = () => {
     if (!detailModal) return;
     detailModal.hidden = true;
+    detailModal.setAttribute("hidden", "");
+    detailModal.style.display = "";
     document.body.style.overflow = "";
     activeId = null;
     activeDetail = null;
@@ -6751,25 +6755,44 @@
   };
 
   const openDetail = async (id) => {
+    if (!detailModal || !id) {
+      if (errorEl) {
+        errorEl.hidden = false;
+        errorEl.textContent = "Modal topilmadi. Sahifani yangilang.";
+      }
+      return;
+    }
     try {
       const res = await fetch(`${data.clientDebtsUrl}?id=${encodeURIComponent(id)}`, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.debtor) throw new Error(json.error || "Topilmadi");
       paintDetail(json.debtor);
       detailModal.hidden = false;
+      detailModal.removeAttribute("hidden");
+      detailModal.style.display = "grid";
       document.body.style.overflow = "hidden";
+      detailModal.querySelector(".sup-modal-sheet")?.scrollIntoView({
+        block: "nearest",
+        behavior: "smooth",
+      });
     } catch (e) {
       if (errorEl) {
         errorEl.hidden = false;
         errorEl.textContent = e.message || "Ochilmadi";
+        errorEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } else {
+        alert(e.message || "Ochilmadi");
       }
     }
   };
   const closeDetail = () => {
+    if (!detailModal) return;
     detailModal.hidden = true;
+    detailModal.setAttribute("hidden", "");
+    detailModal.style.display = "";
     document.body.style.overflow = "";
     activeId = null;
     active = null;
