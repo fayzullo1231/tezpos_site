@@ -461,6 +461,58 @@ class CostedProfitTests(SimpleTestCase):
         self.assertAlmostEqual(row["profit"], 79 * 700)
         self.assertAlmostEqual(row["profit_selling"], 79 * 700)
 
+    def test_top_stats_wholesale_list_retail_price_counts_as_selling(self):
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        p = _map_product(
+            {
+                "id": "mayo",
+                "name": "CHIMBOY MAYANEZ",
+                "price": 17000,
+                "cost_price": 15900,
+                "wholesale_price": 16400,
+            }
+        )
+        by_id = {"mayo": p}
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-09-02T12:00:00+05:00",
+                "price_list_id": "optom",
+                "items": [
+                    {
+                        "product_id": "mayo",
+                        "quantity": 5,
+                        "unit_price": 17000,
+                        "total": 85000,
+                    },
+                    {
+                        "product_id": "mayo",
+                        "quantity": 13,
+                        "unit_price": 16400,
+                        "total": 213200,
+                    },
+                ],
+            },
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            by_id,
+            {},
+            [{"id": "optom", "name": "Optom", "type": "wholesale"}],
+            period_start=date(2026, 9, 2),
+            period_end=date(2026, 9, 2),
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertAlmostEqual(row["qty_selling"], 5)
+        self.assertAlmostEqual(row["qty_wholesale"], 13)
+        self.assertAlmostEqual(row["revenue_selling"], 85000)
+        self.assertAlmostEqual(row["revenue_wholesale"], 213200)
+        self.assertAlmostEqual(summary["qty_selling"], 5)
+        self.assertAlmostEqual(summary["qty_wholesale"], 13)
+
 
 class ProfitMarginRegressionTests(SimpleTestCase):
     """Foyda/marja: profit = tushum - tannarx; marja = foyda / tushum × 100."""

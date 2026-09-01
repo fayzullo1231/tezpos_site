@@ -1511,6 +1511,9 @@
             <span><em>Sotuvda</em><b>${fmt(qtySell)} dona · ${fmtSom(item.revenue_selling || 0)}</b></span>
             <span><em>Optomda</em><b>${fmt(qtyOptom)} dona · ${fmtSom(item.revenue_wholesale || 0)}</b></span>
           </div>
+          <div class="tops-row-split tops-row-split--total">
+            <span><em>Jami</em><b>${fmt(Number(qtySell) + Number(qtyOptom))} dona · ${fmtSom(item.revenue || 0)}</b></span>
+          </div>
           <div class="tops-row-split tops-row-split--profit">
             <span><em>Foyda (sotuv)</em><b>${fmtSom(item.profit_selling || 0)}</b></span>
             <span><em>Foyda (optom)</em><b>${fmtSom(item.profit_wholesale || 0)}</b></span>
@@ -1851,15 +1854,7 @@
   const refreshTopsUi = () => {
     const rows = topsDisplayRows();
     data.topProducts = rows;
-    const summary =
-      data.topsProductSummary && Object.keys(data.topsProductSummary).length
-        ? data.topsProductSummary
-        : summarizeTopsFromRows(rows);
-    if (topsChannelParam() !== "all") {
-      paintTopsSummary(summarizeTopsFromRows(rows), { partial: topsPartial });
-    } else {
-      paintTopsSummary(summary, { partial: topsPartial });
-    }
+    paintTopsSummary(summarizeTopsFromRows(rows), { partial: topsPartial });
     renderProducts(topsLimitN());
   };
 
@@ -1943,14 +1938,14 @@
     set("tops-kpi-revenue", summary.total_revenue ? fmtSom(summary.total_revenue) : "—");
     set(
       "tops-kpi-wholesale",
-      summary.revenue_wholesale
-        ? `${fmt(summary.qty_wholesale || 0)} dona · ${fmtSom(summary.revenue_wholesale)}`
+      summary.qty_wholesale != null
+        ? `${fmt(summary.qty_wholesale)} dona · ${fmtSom(summary.revenue_wholesale || 0)}`
         : "—"
     );
     set(
       "tops-kpi-retail",
-      summary.revenue_selling
-        ? `${fmt(summary.qty_selling || 0)} dona · ${fmtSom(summary.revenue_selling)}`
+      summary.qty_selling != null
+        ? `${fmt(summary.qty_selling)} dona · ${fmtSom(summary.revenue_selling || 0)}`
         : "—"
     );
     set("tops-kpi-profit", summary.total_profit != null ? fmtSom(summary.total_profit) : "—");

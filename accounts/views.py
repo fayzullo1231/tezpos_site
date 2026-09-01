@@ -2189,6 +2189,59 @@ def _match_price_list_id(
     return SELLING_LIST_ID
 
 
+def _line_is_retail_sale(
+    *,
+    qty: Decimal,
+    line_rev: Decimal,
+    unit_price: Decimal,
+    item: dict,
+    sale_pl,
+    product: SimpleNamespace | None,
+    price_lists: list[dict],
+    selling_list_ids: set[str],
+) -> bool:
+    """
+    Sotuv vs optom dona/summa — haqiqiy sotilgan narx (tushum ÷ miqdor) bo‘yicha.
+    Chek ro‘yxati optom bo‘lsa ham, qator sotuv narxida sotilsa — sotuv hisoblanadi.
+    """
+    if qty > 0 and line_rev > 0:
+        eff = (line_rev / qty).quantize(Decimal("0.01"))
+    elif unit_price > 0:
+        eff = unit_price
+    else:
+        eff = Decimal("0")
+
+    raw_pl = (
+        item.get("price_list_id")
+        or item.get("price_list")
+        or item.get("list_id")
+        or sale_pl
+    )
+    if isinstance(raw_pl, dict):
+        raw_pl = raw_pl.get("id")
+    pl_str = str(raw_pl or "").strip()
+
+    if pl_str in ("selling", "retail", SELLING_LIST_ID) or pl_str in selling_list_ids:
+        return True
+
+    pl = None
+    if pl_str:
+        pl = next((x for x in price_lists if str(x.get("id") or "") == pl_str), None)
+        if pl and _is_api_selling_list(pl):
+            return True
+
+    matched = _match_price_list_id(eff, product, price_lists)
+    is_retail = matched == SELLING_LIST_ID or matched in selling_list_ids
+
+    if pl_str and pl and _is_api_optom_list(pl):
+        # Optom chek — lekin qator narxi sotuvga mos bo‘lsa sotuv
+        if is_retail:
+            return True
+        return False
+
+    return is_retail
+
+
 def _classify_line_price_list(
     *,
     raw_pl,
@@ -5344,7 +5397,21 @@ def _product_sales_stats(
                     continue
                 pid = f"name:{name.casefold()}"
 
-            is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
+            unit_price = _item_unit_price(item)
+            p_lookup = products_by_id.get(pid) if not str(pid).startswith("name:") else None
+            if not p_lookup and name:
+                p_lookup = _find_product(products_by_id, products_by_name, product_name=name)
+            is_selling = _line_is_retail_sale(
+                qty=qty,
+                line_rev=line_rev,
+                unit_price=unit_price,
+                item=item,
+                sale_pl=sale_pl,
+                product=p_lookup,
+                price_lists=price_lists,
+                selling_list_ids=selling_list_ids,
+            )
+
             if channel == "wholesale" and is_selling:
                 continue
             if channel == "retail" and not is_selling:
