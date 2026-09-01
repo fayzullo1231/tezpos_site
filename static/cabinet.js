@@ -10,7 +10,7 @@
   ];
 
   // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
-  const CACHE_P = "tezpos_v8_";
+  const CACHE_P = "tezpos_v13_";
   const cacheGet = (key) => {
     try {
       const raw = sessionStorage.getItem(CACHE_P + key);
@@ -28,6 +28,40 @@
   };
   window.tezposCacheGet = cacheGet;
   window.tezposCacheSet = cacheSet;
+
+  const SECTION_NEEDS_CATALOG = new Set([
+    "products",
+    "inventory",
+    "stock_value",
+    "labels",
+    "signals",
+  ]);
+
+  const fetchProgressive = async (url, params, { onData, needsFull }) => {
+    const base = new URLSearchParams(params);
+    try {
+      const fastQs = new URLSearchParams(base);
+      fastQs.set("fast", "1");
+      const r1 = await fetch(`${url}?${fastQs}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const j1 = await r1.json().catch(() => null);
+      if (j1 && !j1.error) onData(j1, true);
+      const wantFull = typeof needsFull === "function" ? needsFull(j1) : true;
+      if (!wantFull) return j1;
+      const r2 = await fetch(`${url}?${base}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const j2 = await r2.json().catch(() => null);
+      if (j2 && !j2.error) onData(j2, false);
+      return j2 || j1;
+    } catch (_e) {
+      return null;
+    }
+  };
+  window.tezposFetchProgressive = fetchProgressive;
 
   const showApiBanner = (msg, ok = false) => {
     const el = document.getElementById("cabinet-api-banner");
@@ -318,13 +352,13 @@
   };
   window.tezposEnsureCatalog = ensureCatalog;
 
-  const warmCabinet = () => {
-    if (data.section === "labels") {
+  const warmCabinet = (section = data.section || "overview") => {
+    if (section === "labels") {
       ensureCatalog({ force: !data.catalogComplete });
       return;
     }
     if (warmStarted) {
-      ensureCatalog();
+      if (SECTION_NEEDS_CATALOG.has(section)) ensureCatalog();
       return;
     }
     warmStarted = true;
@@ -334,13 +368,22 @@
         headers: { Accept: "application/json" },
       }).catch(() => {});
     }
-    ensureCatalog();
-    // Bugungi range-stats + day-sales oldindan
+    if (SECTION_NEEDS_CATALOG.has(section)) {
+      ensureCatalog();
+    }
+
     const today = new Date();
     const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
       today.getDate()
     ).padStart(2, "0")}`;
-    if (data.rangeStatsUrl) {
+
+    const warmRange = section === "overview" || section === "reports";
+    const warmDaySales = section === "overview" || section === "sales";
+    const warmShifts = section === "shifts";
+    const warmReports = section === "reports";
+    const warmAbc = section === "abc";
+
+    if (warmRange && data.rangeStatsUrl) {
       const key = `${iso}_${iso}`;
       const ss = cacheGet("salesStats") || {};
       if (!ss[key]) {
@@ -377,7 +420,7 @@
           .catch(() => {});
       }
     }
-    if (data.daySalesUrl) {
+    if (warmDaySales && data.daySalesUrl) {
       const ds = cacheGet("daySales") || {};
       if (!ds[iso]) {
         fetch(`${data.daySalesUrl}?sale_date=${iso}`, {
@@ -399,7 +442,7 @@
           .catch(() => {});
       }
     }
-    if (data.shiftsUrl && !cacheGet("shifts")) {
+    if (warmShifts && data.shiftsUrl && !cacheGet("shifts")) {
       fetch(data.shiftsUrl, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
@@ -415,7 +458,7 @@
         })
         .catch(() => {});
     }
-    if (data.reportsUrl && !cacheGet("reports")) {
+    if (warmReports && data.reportsUrl && !cacheGet("reports")) {
       fetch(data.reportsUrl, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
@@ -427,7 +470,7 @@
         })
         .catch(() => {});
     }
-    if (data.abcUrl && !cacheGet("abc")) {
+    if (warmAbc && data.abcUrl && !cacheGet("abc")) {
       fetch(data.abcUrl, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
@@ -442,8 +485,14 @@
   };
   window.tezposWarmCabinet = warmCabinet;
 
-  ensureCatalog();
-  warmCabinet();
+  const bootCabinet = () => {
+    warmCabinet(data.section || "overview");
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => setTimeout(bootCabinet, 0));
+  } else {
+    setTimeout(bootCabinet, 0);
+  }
 
   // Menyudan bosilishi bilan keshni isitish (sahifa ochilishidan oldin)
   document.querySelectorAll(".cabinet-nav a").forEach((a) => {
@@ -1597,15 +1646,19 @@
       applyReportsPayload({ reports: data.reports, summary: null });
     }
     if (data.reportsUrl) {
-      fetch(data.reportsUrl, {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      })
-        .then((r) => r.json())
-        .then((json) => {
-          if (json && !json.error) applyReportsPayload(json);
-        })
-        .catch(() => {});
+      fetchProgressive(
+        data.reportsUrl,
+        {},
+        {
+          onData: (json) => {
+            if (json && !json.error) {
+              if (window.tezposCacheSet) window.tezposCacheSet("reports", json);
+              applyReportsPayload(json);
+            }
+          },
+          needsFull: (j) => Boolean(j?.partial || j?.estimated),
+        }
+      );
     }
     periodToggle?.querySelectorAll("button").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -1698,6 +1751,11 @@
     const v = String(productsSelect?.value || "10").trim();
     return v === "all" ? "all" : v;
   };
+  const topsApiLimit = () => {
+    const f = topsFilterSelect?.value || "all";
+    if (f === "unsold" || f === "never") return "all";
+    return topsLimitParam();
+  };
   const topsLimitN = () => {
     const v = topsLimitParam();
     if (v === "all") return 0;
@@ -1750,7 +1808,7 @@
     return list;
   };
 
-  const paintTopsSummary = (summary) => {
+  const paintTopsSummary = (summary, { partial = false } = {}) => {
     const box = document.getElementById("tops-summary-kpis");
     if (!box || !summary || !Object.keys(summary).length) {
       if (box) box.hidden = true;
@@ -1773,6 +1831,19 @@
       "tops-kpi-split",
       `${fmt(summary.qty_selling || 0)} / ${fmt(summary.qty_wholesale || 0)} dona`
     );
+    let hint = document.getElementById("tops-partial-hint");
+    if (partial) {
+      if (!hint) {
+        hint = document.createElement("p");
+        hint.id = "tops-partial-hint";
+        hint.className = "cabinet-hint";
+        box.after(hint);
+      }
+      hint.textContent = "To‘liq statistika hisoblanmoqda…";
+      hint.hidden = false;
+    } else if (hint) {
+      hint.hidden = true;
+    }
   };
 
   const renderProducts = (limit) => {
@@ -1922,8 +1993,28 @@
     }
   };
 
+  const topsNeedsFull = () => {
+    const f = topsFilterSelect?.value || "all";
+    if (f === "unsold" || f === "never") return true;
+    return topsApiLimit() === "all";
+  };
+
+  const applyTopsPayload = (payload, isFast) => {
+    const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
+    const key = `all_${topsFrom}_${topsTo}_${topsApiLimit()}`;
+    topsCache[key] = rows;
+    data.topProducts = rows;
+    data.topsProductSummary = payload.productSummary || {};
+    data._topsCache = topsCache;
+    if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
+    paintTopsSummary(data.topsProductSummary, { partial: Boolean(payload.partial || isFast) });
+    syncTopsExport();
+    renderProducts(topsLimitN());
+  };
+
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
-    const key = `all_${fromIso}_${toIsoVal}`;
+    const apiLimit = topsApiLimit();
+    const key = `all_${fromIso}_${toIsoVal}_${apiLimit}`;
     if (!Object.keys(topsCache).length && data._topsCache) {
       // Eski kesh — rich_ kalitlaridan tashqarisini tashlaymiz
       Object.keys(data._topsCache).forEach((k) => {
@@ -1948,27 +2039,26 @@
       productsGrid.innerHTML = skelHtml("lines", 8);
     }
     try {
-      const qs = new URLSearchParams({
-        from: fromIso,
-        to: toIsoVal,
-        limit: "all",
+      const params = { from: fromIso, to: toIsoVal, limit: apiLimit };
+      const apply = (payload, isFast) => {
+        if (reqId !== topsReq) return;
+        applyTopsPayload(payload, isFast);
+      };
+      if (force || topsNeedsFull()) {
+        const qs = new URLSearchParams(params);
+        const res = await fetch(`${url}?${qs}`, {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+        });
+        if (!res.ok) throw new Error("fail");
+        const payload = await res.json();
+        apply(payload, false);
+        return;
+      }
+      await fetchProgressive(url, params, {
+        onData: apply,
+        needsFull: (j) => Boolean(j?.partial) || topsNeedsFull(),
       });
-      const res = await fetch(`${url}?${qs}`, {
-        headers: { Accept: "application/json" },
-        credentials: "same-origin",
-      });
-      if (!res.ok) throw new Error("fail");
-      const payload = await res.json();
-      if (reqId !== topsReq) return;
-      const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
-      topsCache[key] = rows;
-      data.topProducts = rows;
-      data.topsProductSummary = payload.productSummary || {};
-      data._topsCache = topsCache;
-      if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
-      paintTopsSummary(data.topsProductSummary);
-      syncTopsExport();
-      renderProducts(topsLimitN());
     } catch (_err) {
       if (reqId !== topsReq) return;
       if (!hasCache) {
@@ -2094,13 +2184,13 @@
     }
     productsSelect?.addEventListener("change", () => {
       syncTopsExport();
-      renderProducts(topsLimitN());
+      loadTopProducts(topsFrom, topsTo, { force: true });
     });
     topsSortSelect?.addEventListener("change", () => {
       renderProducts(topsLimitN());
     });
     topsFilterSelect?.addEventListener("change", () => {
-      renderProducts(topsLimitN());
+      loadTopProducts(topsFrom, topsTo, { force: true });
     });
     syncTopsHint();
     loadTopProducts(topsFrom, topsTo, { force: true });
@@ -2340,9 +2430,32 @@
             `<tr><td colspan="6" class="cabinet-empty">Yuklanmoqda…</td></tr>`;
         }
       }
+      const applyStockIn = (payload) => {
+        if (!payload || payload.error || payload.ok === false) return;
+        cache[iso] = payload;
+        if (typeof cacheSet === "function" && !payload.partial) cacheSet(ssKey, payload);
+        paintKpis(payload);
+        paintProducts(Array.isArray(payload.products) ? payload.products : []);
+        paintReceipts(Array.isArray(payload.receipts) ? payload.receipts : []);
+      };
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
       const timer = setTimeout(() => ctrl?.abort(), 22000);
       try {
+        const prog = window.tezposFetchProgressive;
+        if (typeof prog === "function" && !force) {
+          await prog(
+            url,
+            { date: iso },
+            {
+              onData: (payload) => {
+                if (reqId !== req) return;
+                applyStockIn(payload);
+              },
+              needsFull: (j) => Boolean(j?.partial),
+            }
+          );
+          return;
+        }
         const res = await fetch(`${url}?date=${encodeURIComponent(iso)}`, {
           credentials: "same-origin",
           headers: { Accept: "application/json" },
@@ -2353,11 +2466,7 @@
         if (!payload || payload.error || payload.ok === false) {
           throw new Error(payload?.error || "fail");
         }
-        cache[iso] = payload;
-        if (typeof cacheSet === "function") cacheSet(ssKey, payload);
-        paintKpis(payload);
-        paintProducts(Array.isArray(payload.products) ? payload.products : []);
-        paintReceipts(Array.isArray(payload.receipts) ? payload.receipts : []);
+        applyStockIn(payload);
       } catch (_err) {
         if (reqId !== req) return;
         if (cache[iso]) {
@@ -4756,6 +4865,20 @@
   const loadDaySales = () => {
     if (!data.daySalesUrl || !document.getElementById("sales-mgmt-table")) return;
     const dateKey = data.saleDate || "";
+    const applyPack = (json, isFast) => {
+      if (!json || json.error) return;
+      paintDaySales(json);
+      if (window.tezposCacheSet && dateKey && !isFast) {
+        const next = window.tezposCacheGet("daySales") || {};
+        next[dateKey] = json;
+        window.tezposCacheSet("daySales", next);
+      }
+      const loading = document.getElementById("day-sales-loading");
+      if (loading) {
+        loading.hidden = !json.partial;
+        loading.textContent = json.partial ? "Foyda hisoblanmoqda…" : "";
+      }
+    };
     if (!daySales.length && data._daySalesPack) {
       paintDaySales(data._daySalesPack);
     }
@@ -4764,25 +4887,15 @@
       if (ds[dateKey]) paintDaySales(ds[dateKey]);
     }
     if (daySales.length) {
-      // Foniy yangilash — loading yo‘q
-      const qs = new URLSearchParams();
-      if (dateKey) qs.set("sale_date", dateKey);
-      fetch(data.daySalesUrl + (qs.toString() ? "?" + qs : ""), {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      })
-        .then((r) => r.json())
-        .then((json) => {
-          if (json && !json.error) {
-            paintDaySales(json);
-            if (window.tezposCacheSet && dateKey) {
-              const next = window.tezposCacheGet("daySales") || {};
-              next[dateKey] = json;
-              window.tezposCacheSet("daySales", next);
-            }
-          }
-        })
-        .catch(() => {});
+      const params = dateKey ? { sale_date: dateKey } : {};
+      fetchProgressive(data.daySalesUrl, params, {
+        onData: applyPack,
+        needsFull: (j) =>
+          Boolean(j?.partial) &&
+          Number(j?.gross || 0) > 0 &&
+          Number(j?.profit || 0) === 0 &&
+          Number(j?.cost || 0) === 0,
+      }).catch(() => {});
       return;
     }
     const loading = document.getElementById("day-sales-loading");
@@ -4790,33 +4903,24 @@
       loading.hidden = false;
       loading.textContent = "…";
     }
-    const qs = new URLSearchParams();
-    if (dateKey) qs.set("sale_date", dateKey);
-    fetch(data.daySalesUrl + (qs.toString() ? "?" + qs : ""), {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    })
-      .then((r) => r.json())
-      .then((json) => {
-        if (json && !json.error) {
-          paintDaySales(json);
-          if (window.tezposCacheSet && dateKey) {
-            const next = window.tezposCacheGet("daySales") || {};
-            next[dateKey] = json;
-            window.tezposCacheSet("daySales", next);
-          }
-          if (loading) loading.hidden = true;
-        } else if (loading) {
-          loading.hidden = false;
-          loading.textContent = json?.error || "Yuklanmadi";
-        }
-      })
-      .catch(() => {
-        if (loading) {
-          loading.hidden = false;
-          loading.textContent = "API sekin / ulanmadi";
-        }
-      });
+    const params = dateKey ? { sale_date: dateKey } : {};
+    const dayNeedsFull = (j) =>
+      Boolean(j?.partial) &&
+      Number(j?.gross || 0) > 0 &&
+      Number(j?.profit || 0) === 0 &&
+      Number(j?.cost || 0) === 0;
+    fetchProgressive(data.daySalesUrl, params, {
+      onData: (json, isFast) => {
+        applyPack(json, isFast);
+        if (!json?.partial && loading) loading.hidden = true;
+      },
+      needsFull: dayNeedsFull,
+    }).catch(() => {
+      if (loading) {
+        loading.hidden = false;
+        loading.textContent = "API sekin / ulanmadi";
+      }
+    });
   };
   loadDaySales();
 
@@ -6012,22 +6116,23 @@
   if (cached && cached.rows) paintAbc(cached);
 
   if (data.abcUrl) {
-    fetch(data.abcUrl, {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    })
-      .then((r) => r.json())
-      .then((json) => {
-        if (json && !json.error) {
-          if (window.tezposCacheSet) window.tezposCacheSet("abc", json);
-          paintAbc(json);
-        }
-      })
-      .catch(() => {
-        if (!cached) {
-          tbody.innerHTML = '<tr><td colspan="7">Yuklanmadi</td></tr>';
-        }
-      });
+    fetchProgressive(
+      data.abcUrl,
+      {},
+      {
+        onData: (json) => {
+          if (json && !json.error) {
+            if (window.tezposCacheSet) window.tezposCacheSet("abc", json);
+            paintAbc(json);
+          }
+        },
+        needsFull: (j) => Boolean(j?.partial),
+      }
+    ).catch(() => {
+      if (!cached) {
+        tbody.innerHTML = '<tr><td colspan="7">Yuklanmadi</td></tr>';
+      }
+    });
   }
 })();
 
