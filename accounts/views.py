@@ -5133,6 +5133,102 @@ def cabinet_range_stats(request):
 
 _TOP_LIMIT_ALL = 50_000
 _TOP_LOOKBACK_DAYS = 90
+_SKIP_SALE_STATUSES = frozenset(
+    {
+        "cancelled",
+        "canceled",
+        "void",
+        "deleted",
+        "returned",
+        "refunded",
+        "draft",
+        "reversed",
+    }
+)
+
+
+def _is_countable_sale(sale: dict) -> bool:
+    """Bekor/qaytarilgan cheklarni statistikadan chiqaradi."""
+    if not isinstance(sale, dict):
+        return False
+    if sale.get("is_cancelled") or sale.get("is_void") or sale.get("is_deleted"):
+        return False
+    if sale.get("cancelled_at") or sale.get("voided_at") or sale.get("deleted_at"):
+        return False
+    if sale.get("is_return") or sale.get("returned"):
+        return False
+    st = str(sale.get("status") or sale.get("state") or "").strip().lower()
+    if st in _SKIP_SALE_STATUSES:
+        return False
+    if st.startswith("cancel") or st.startswith("void"):
+        return False
+    return True
+
+
+def _new_top_daily_bucket() -> dict:
+    return {
+        "qty": Decimal("0"),
+        "revenue": Decimal("0"),
+        "cost": Decimal("0"),
+        "profit": Decimal("0"),
+        "qty_selling": Decimal("0"),
+        "qty_wholesale": Decimal("0"),
+        "revenue_selling": Decimal("0"),
+        "revenue_wholesale": Decimal("0"),
+    }
+
+
+def _top_daily_row(day_iso: str, bucket: dict) -> dict:
+    rev = bucket["revenue"]
+    profit = bucket["profit"]
+    return {
+        "date": day_iso,
+        "total_quantity": float(bucket["qty"]),
+        "total_amount": float(rev),
+        "wholesale_quantity": float(bucket["qty_wholesale"]),
+        "wholesale_amount": float(bucket["revenue_wholesale"]),
+        "retail_quantity": float(bucket["qty_selling"]),
+        "retail_amount": float(bucket["revenue_selling"]),
+        "cost_amount": float(bucket["cost"]),
+        "profit": float(profit),
+        "margin_percent": _margin_on_revenue(profit, rev),
+    }
+
+
+def _parse_top_date_range(
+    request_get,
+    today: date,
+) -> tuple[date, date, str]:
+    """Top reyting: custom yoki preset oralig‘i."""
+    custom_from = _parse_iso_date(request_get.get("from"))
+    custom_to = _parse_iso_date(request_get.get("to"))
+    range_key = (request_get.get("range") or "").strip()
+
+    if custom_from and custom_to:
+        start, end = custom_from, custom_to
+        if end < start:
+            start, end = end, start
+        if (end - start).days > 730:
+            start = end - timedelta(days=730)
+        range_key = f"custom:{start.isoformat()}:{end.isoformat()}"
+        return start, end, range_key
+
+    if range_key == "yesterday":
+        y = today - timedelta(days=1)
+        return y, y, range_key
+    if range_key == "prev_m":
+        first_this = today.replace(day=1)
+        end = first_this - timedelta(days=1)
+        start = end.replace(day=1)
+        return start, end, range_key
+    if range_key == "y0":
+        return today.replace(month=1, day=1), today, range_key
+
+    allowed = {"d1", "d7", "d15", "d30", "m1", "m3", "m6", "y1"}
+    if range_key not in allowed:
+        range_key = "d1"
+    start, end = _range_window(range_key, today)
+    return start, end, range_key
 
 
 def _scan_product_last_sales(sales: list) -> dict[str, datetime]:
@@ -5174,12 +5270,19 @@ def _product_sales_stats(
     period_end: date,
     limit: int = _TOP_LIMIT_ALL,
     seed_last_sale: dict[str, datetime] | None = None,
+    channel: str = "all",
 ) -> tuple[list[dict], dict]:
     """
-    Davr bo‘yicha mahsulot statistikasi: sotuv/optom, sotilgan/sotilmagan,
-    oxirgi sotuv sanasi va necha kundan beri sotilmagan.
+    Davr bo‘yicha mahsulot statistikasi: sotuv/optom kunlik, foyda/marja.
+    channel: all | wholesale | retail
     """
     price_lists = price_lists or []
+    channel = (channel or "all").strip().lower()
+    if channel not in ("all", "wholesale", "retail", "selling"):
+        channel = "all"
+    if channel == "selling":
+        channel = "retail"
+
     selling_list_ids = {
         str(pl.get("id"))
         for pl in price_lists
@@ -5195,11 +5298,12 @@ def _product_sales_stats(
     product_qty_optom: dict[str, Decimal] = defaultdict(Decimal)
     product_rev_sell: dict[str, Decimal] = defaultdict(Decimal)
     product_rev_optom: dict[str, Decimal] = defaultdict(Decimal)
+    product_daily: dict[str, dict[str, dict]] = defaultdict(dict)
     product_meta: dict[str, dict] = {}
     last_sale: dict[str, datetime] = dict(seed_last_sale or {})
 
     for detail in details.values():
-        if not isinstance(detail, dict):
+        if not isinstance(detail, dict) or not _is_countable_sale(detail):
             continue
         sale_day = _sale_day(detail)
         sale_dt = _parse_dt(
@@ -5207,9 +5311,7 @@ def _product_sales_stats(
             or detail.get("created_at")
             or detail.get("sold_at")
         )
-        in_period = bool(
-            sale_day and period_start <= sale_day <= period_end
-        )
+        in_period = bool(sale_day and period_start <= sale_day <= period_end)
         sale_pl = (
             detail.get("price_list_id")
             or detail.get("price_list")
@@ -5218,28 +5320,29 @@ def _product_sales_stats(
         if isinstance(sale_pl, dict):
             sale_pl = sale_pl.get("id")
         for item in _sale_items(detail):
+            qty_dec, line_rev, line_cost, line_profit, list_id = _compute_line_financials(
+                item,
+                sale_pl=sale_pl,
+                products_by_id=products_by_id,
+                products_by_name=products_by_name,
+                price_lists=price_lists,
+                selling_list_ids=selling_list_ids,
+            )
+            qty = qty_dec
+            if qty == 0 and line_rev == 0:
+                continue
+
             pid, name, _nested = _item_product_ref(item)
-            qty = _item_qty(item)
-            unit_price = _item_unit_price(item)
-            computed = (
-                (qty * unit_price).quantize(Decimal("0.01"))
-                if qty and unit_price
-                else Decimal("0")
-            )
-            line_rev = _dec(
-                item.get("total") or item.get("line_total"),
-                str(computed),
-            )
-            if computed > 0 and line_rev > computed * Decimal("2") + Decimal("1"):
-                line_rev = computed
-            if unit_price <= 0 and qty > 0 and line_rev > 0:
-                unit_price = (line_rev / qty).quantize(Decimal("0.01"))
             if not pid:
                 name = (name or "").strip()
                 if not name:
                     continue
                 pid = f"name:{name.casefold()}"
-            if qty <= 0 and line_rev <= 0:
+
+            is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
+            if channel == "wholesale" and is_selling:
+                continue
+            if channel == "retail" and not is_selling:
                 continue
 
             if sale_dt and qty > 0:
@@ -5254,40 +5357,9 @@ def _product_sales_stats(
             if not p and name:
                 p = _find_product(products_by_id, products_by_name, product_name=name)
 
-            unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
-            raw_pl = (
-                item.get("price_list_id")
-                or item.get("price_list")
-                or item.get("list_id")
-                or sale_pl
-            )
-            list_id = _classify_line_price_list(
-                raw_pl=raw_pl,
-                unit_price=unit_price,
-                product=p,
-                price_lists=price_lists,
-                selling_list_ids=selling_list_ids,
-            )
-            is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
-
-            raw_line_total = _dec(
-                item.get("total") or item.get("line_total"),
-                str(computed),
-            )
-            line_rev, line_profit = _line_revenue_profit_teZpos(
-                qty=qty,
-                unit_price=unit_price,
-                raw_line_total=raw_line_total,
-                unit_cost=unit_cost,
-                product=p,
-                is_selling=is_selling,
-                selling_list_ids=selling_list_ids,
-            )
-
             product_qty[pid] += qty
             product_rev[pid] += line_rev
-            if unit_cost > 0 and qty > 0:
-                product_cost[pid] += unit_cost * qty
+            product_cost[pid] += line_cost
             product_profit[pid] += line_profit
             if is_selling:
                 product_qty_sell[pid] += qty
@@ -5298,12 +5370,38 @@ def _product_sales_stats(
                 product_rev_optom[pid] += line_rev
                 product_profit_optom[pid] += line_profit
 
+            if sale_day:
+                day_key = sale_day.isoformat()
+                daily_map = product_daily[pid]
+                bucket = daily_map.get(day_key)
+                if not bucket:
+                    bucket = _new_top_daily_bucket()
+                    daily_map[day_key] = bucket
+                bucket["qty"] += qty
+                bucket["revenue"] += line_rev
+                bucket["cost"] += line_cost
+                bucket["profit"] += line_profit
+                if is_selling:
+                    bucket["qty_selling"] += qty
+                    bucket["revenue_selling"] += line_rev
+                else:
+                    bucket["qty_wholesale"] += qty
+                    bucket["revenue_wholesale"] += line_rev
+
+            unit_price = _item_unit_price(item)
+            if unit_price <= 0 and qty > 0 and line_rev > 0:
+                unit_price = (line_rev / qty).quantize(Decimal("0.01"))
+            unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
             wholesale = Decimal("0")
             selling = Decimal("0")
             cost_show = unit_cost
+            barcode = ""
+            sku = ""
             if p:
                 selling = Decimal(str(p.selling_price or 0))
                 wholesale = Decimal(str(p.wholesale_price or 0))
+                barcode = str(getattr(p, "barcode", "") or "")
+                sku = str(getattr(p, "sku", "") or getattr(p, "article", "") or "")
                 if wholesale <= 0:
                     list_prices = getattr(p, "list_prices", None) or {}
                     vals = [
@@ -5323,6 +5421,8 @@ def _product_sales_stats(
                 "wholesale": float(wholesale or meta.get("wholesale") or 0),
                 "selling": float(selling or meta.get("selling") or unit_price),
                 "cost": float(cost_show or meta.get("cost") or 0),
+                "barcode": barcode or meta.get("barcode") or "",
+                "sku": sku or meta.get("sku") or "",
             }
 
     all_pids: set[str] = set(products_by_id.keys()) | set(product_qty.keys())
@@ -5338,6 +5438,8 @@ def _product_sales_stats(
                 "wholesale": float(p.wholesale_price or 0),
                 "selling": float(p.selling_price or 0),
                 "cost": float(p.cost_price or 0),
+                "barcode": str(getattr(p, "barcode", "") or ""),
+                "sku": str(getattr(p, "sku", "") or getattr(p, "article", "") or ""),
             }
         qty = product_qty.get(pid) or Decimal("0")
         rev = product_rev.get(pid) or Decimal("0")
@@ -5349,6 +5451,11 @@ def _product_sales_stats(
         if cost_unit <= 0 and p and (p.cost_price or Decimal("0")) > 0:
             cost_unit = float(p.cost_price)
 
+        daily_list = [
+            _top_daily_row(day_iso, bucket)
+            for day_iso, bucket in sorted(product_daily.get(pid, {}).items())
+        ]
+
         last_dt = last_sale.get(pid)
         last_sale_iso = ""
         days_unsold: int | None = None
@@ -5356,7 +5463,7 @@ def _product_sales_stats(
             last_sale_iso = timezone.localtime(last_dt).date().isoformat()
             days_unsold = max(0, (period_end - timezone.localtime(last_dt).date()).days)
         elif float(qty) <= 0:
-            days_unsold = None  # hech qachon sotilmagan
+            days_unsold = None
 
         sold_in_period = float(qty) > 0
         if sold_in_period:
@@ -5366,33 +5473,60 @@ def _product_sales_stats(
         else:
             status = "never"
 
+        margin_pct = _margin_on_revenue(profit, rev)
         out.append(
             {
                 "id": str(pid),
+                "product_id": str(pid),
                 "name": (p.name if p else "") or meta.get("name") or "Mahsulot",
+                "product_name": (p.name if p else "") or meta.get("name") or "Mahsulot",
+                "barcode": (getattr(p, "barcode", "") if p else "") or meta.get("barcode") or "",
+                "sku": (getattr(p, "sku", "") if p else "") or meta.get("sku") or "",
                 "image": (p.display_image if p else "") or meta.get("image") or "",
                 "qty": float(qty),
+                "total_quantity": float(qty),
                 "qty_selling": float(product_qty_sell.get(pid) or 0),
                 "qty_wholesale": float(product_qty_optom.get(pid) or 0),
                 "revenue": float(rev),
+                "total_amount": float(rev),
                 "revenue_selling": float(product_rev_sell.get(pid) or 0),
                 "revenue_wholesale": float(product_rev_optom.get(pid) or 0),
                 "profit_selling": float(profit_sell),
                 "profit_wholesale": float(profit_optom),
                 "cost": cost_unit,
                 "cost_total": float(cost_total),
+                "cost_amount": float(cost_total),
                 "profit": float(profit),
+                "margin_percent": margin_pct,
+                "margin": margin_pct,
                 "stock": float(p.stock_qty) if p else float(meta.get("stock") or 0),
+                "wholesale_price": float(p.wholesale_price or 0)
+                if p and (p.wholesale_price or 0)
+                else float(meta.get("wholesale") or 0),
+                "selling_price": float(p.selling_price)
+                if p
+                else float(meta.get("selling") or 0),
                 "wholesale": float(p.wholesale_price or 0)
                 if p and (p.wholesale_price or 0)
                 else float(meta.get("wholesale") or 0),
                 "selling": float(p.selling_price)
                 if p
                 else float(meta.get("selling") or 0),
+                "retail": {
+                    "quantity": float(product_qty_sell.get(pid) or 0),
+                    "amount": float(product_rev_sell.get(pid) or 0),
+                    "profit": float(profit_sell),
+                },
+                "wholesale_stats": {
+                    "quantity": float(product_qty_optom.get(pid) or 0),
+                    "amount": float(product_rev_optom.get(pid) or 0),
+                    "profit": float(profit_optom),
+                },
                 "status": status,
                 "sold_in_period": sold_in_period,
                 "last_sale": last_sale_iso,
                 "days_unsold": days_unsold,
+                "daily": daily_list,
             }
         )
 
@@ -5417,6 +5551,13 @@ def _product_sales_stats(
         for r in unsold_rows
         if r.get("days_unsold") is not None
     ]
+    total_qty = sum(float(r.get("qty") or 0) for r in sold_rows)
+    total_rev = sum(float(r.get("revenue") or 0) for r in sold_rows)
+    total_profit = sum(float(r.get("profit") or 0) for r in sold_rows)
+    total_cost = sum(float(r.get("cost_total") or 0) for r in sold_rows)
+    rev_wholesale = sum(float(r.get("revenue_wholesale") or 0) for r in sold_rows)
+    rev_selling = sum(float(r.get("revenue_selling") or 0) for r in sold_rows)
+    top_row = sold_rows[0] if sold_rows else None
     summary = {
         "total": len(out),
         "sold": len(sold_rows),
@@ -5427,6 +5568,19 @@ def _product_sales_stats(
         "qty_wholesale": round(sum(float(r.get("qty_wholesale") or 0) for r in sold_rows), 3),
         "profit_selling": round(sum(float(r.get("profit_selling") or 0) for r in sold_rows), 2),
         "profit_wholesale": round(sum(float(r.get("profit_wholesale") or 0) for r in sold_rows), 2),
+        "total_quantity": round(total_qty, 3),
+        "total_amount": round(total_rev, 2),
+        "total_revenue": round(total_rev, 2),
+        "revenue_wholesale": round(rev_wholesale, 2),
+        "revenue_selling": round(rev_selling, 2),
+        "cost_amount": round(total_cost, 2),
+        "total_profit": round(total_profit, 2),
+        "profit": round(total_profit, 2),
+        "margin_percent": _margin_on_revenue(total_profit, total_rev),
+        "margin": _margin_on_revenue(total_profit, total_rev),
+        "top_product": (top_row.get("name") if top_row else "") or "",
+        "top_product_qty": float(top_row.get("qty") or 0) if top_row else 0,
+        "channel": channel,
     }
 
     if limit > 0 and limit < _TOP_LIMIT_ALL:
@@ -5701,23 +5855,16 @@ def cabinet_top_stats(request):
     server = request.session[SESSION_SERVER]
     today = timezone.localdate()
 
-    custom_from = _parse_iso_date(request.GET.get("from"))
-    custom_to = _parse_iso_date(request.GET.get("to"))
-    if custom_from and custom_to:
-        start, end = custom_from, custom_to
-        if end < start:
-            start, end = end, start
-        if (end - start).days > 730:
-            start = end - timedelta(days=730)
-    else:
-        start, end = today, today
-
+    start, end, range_key = _parse_top_date_range(request.GET, today)
     span = (end - start).days + 1
     limit = _parse_top_limit(request.GET.get("limit"))
     fast = (request.GET.get("fast") or "").strip().lower() in ("1", "true", "yes")
+    channel = (request.GET.get("channel") or "all").strip().lower()
+    if channel == "selling":
+        channel = "retail"
 
     pack = _build_top_products_pack(
-        token, server, start=start, end=end, limit=limit, fast=fast
+        token, server, start=start, end=end, limit=limit, fast=fast, channel=channel
     )
     if pack.get("error") == "auth":
         clear_tezpos_session(request)
@@ -5727,8 +5874,10 @@ def cabinet_top_stats(request):
 
     return JsonResponse(
         {
+            "range": range_key,
             "from": start.isoformat(),
             "to": end.isoformat(),
+            "channel": channel,
             "topProducts": pack.get("topProducts") or [],
             "productSummary": pack.get("productSummary") or {},
             "count": len(pack.get("topProducts") or []),
@@ -5750,6 +5899,7 @@ def _build_top_products_pack(
     end: date,
     limit: int = 100,
     fast: bool = False,
+    channel: str = "all",
 ) -> dict:
     """
     Belgilangan kun(lar)dagi barcha cheklar bo‘yicha mahsulot yig‘indisi.
@@ -5757,8 +5907,11 @@ def _build_top_products_pack(
     """
     span = (end - start).days + 1
     memo_prefix = f"{server}|{(token or '')[-12:]}"
+    channel = (channel or "all").strip().lower()
+    if channel == "selling":
+        channel = "retail"
     mode = "f" if fast else "x"
-    pack_key = f"{memo_prefix}|topspack10|{start}|{end}|{limit}|{mode}"
+    pack_key = f"{memo_prefix}|topspack11|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     if cached and time.time() - cached[0] < (45.0 if fast else 90.0):
         return cached[1]
@@ -5893,7 +6046,7 @@ def _build_top_products_pack(
         pl for pl in (price_lists or []) if isinstance(pl, dict) and pl.get("is_active", True)
     ]
 
-    period_sales = [s for s in period_sales if isinstance(s, dict)]
+    period_sales = [s for s in period_sales if isinstance(s, dict) and _is_countable_sale(s)]
 
     details_map: dict[str, dict] = {}
     need_fetch: list[str] = []
@@ -5934,6 +6087,7 @@ def _build_top_products_pack(
         period_end=end,
         limit=limit,
         seed_last_sale=seed_last_sale,
+        channel=channel,
     )
 
     # Agar katalog yuklangan bo‘lsa — to‘liq ro‘yxat (sotilgan + sotilmagan) saqlanadi.
@@ -5999,7 +6153,11 @@ def cabinet_top_export(request):
         if (end - start).days > 730:
             start = end - timedelta(days=730)
     else:
-        start, end = today, today
+        start, end, _rk = _parse_top_date_range(request.GET, today)
+
+    channel = (request.GET.get("channel") or "all").strip().lower()
+    if channel == "selling":
+        channel = "retail"
 
     try:
         limit = _parse_top_limit(request.GET.get("limit"))
@@ -6007,7 +6165,7 @@ def cabinet_top_export(request):
         limit = 100
 
     pack = _build_top_products_pack(
-        token, server, start=start, end=end, limit=limit
+        token, server, start=start, end=end, limit=limit, channel=channel
     )
     if pack.get("error") == "auth":
         clear_tezpos_session(request)
@@ -6029,6 +6187,7 @@ def cabinet_top_export(request):
         [
             "#",
             "Mahsulot",
+            "Barkod",
             "Holat",
             "Sotildi",
             "Sotuvda (dona)",
@@ -6043,6 +6202,7 @@ def cabinet_top_export(request):
             "Foyda (optom)",
             "Jami tannarx",
             "Jami foyda",
+            "Marja %",
             "Oxirgi sotuv",
             "Kun sotilmagan",
             "Sana dan",
@@ -6059,13 +6219,14 @@ def cabinet_top_export(request):
             [
                 i,
                 row.get("name") or "",
+                row.get("barcode") or row.get("sku") or "",
                 st,
                 float(row.get("qty") or 0),
                 float(row.get("qty_selling") or 0),
                 float(row.get("qty_wholesale") or 0),
                 float(row.get("cost") or 0),
-                float(row.get("selling") or 0),
-                float(row.get("wholesale") or 0),
+                float(row.get("selling") or row.get("selling_price") or 0),
+                float(row.get("wholesale") or row.get("wholesale_price") or 0),
                 float(row.get("revenue") or 0),
                 float(row.get("revenue_selling") or 0),
                 float(row.get("revenue_wholesale") or 0),
@@ -6073,6 +6234,7 @@ def cabinet_top_export(request):
                 float(row.get("profit_wholesale") or 0),
                 float(row.get("cost_total") or 0),
                 float(row.get("profit") or 0),
+                float(row.get("margin_percent") or row.get("margin") or 0),
                 row.get("last_sale") or "",
                 row.get("days_unsold") if row.get("days_unsold") is not None else "",
                 start.isoformat(),

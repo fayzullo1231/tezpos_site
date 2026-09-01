@@ -487,10 +487,19 @@
     <section class="cabinet-card tops-products-panel">
         <div class="cabinet-card-head">
         <div>
-          <h3>Top tovar</h3>
-          <p class="cabinet-hint" id="tops-period-hint">Tanlangan sana oralig‘idagi eng yaxshi sotilgan mahsulotlar</p>
+          <h3>Top reyting</h3>
+          <p class="cabinet-hint" id="tops-period-hint">Tanlangan sana oralig‘idagi barcha sotilgan mahsulotlar</p>
         </div>
         <div class="tops-toolbar">
+          <div class="tops-period-presets" id="tops-period-presets" role="group" aria-label="Davr">
+            <button type="button" class="tops-preset active" data-range="d1">Bugun</button>
+            <button type="button" class="tops-preset" data-range="yesterday">Kecha</button>
+            <button type="button" class="tops-preset" data-range="d7">7 kun</button>
+            <button type="button" class="tops-preset" data-range="d30">30 kun</button>
+            <button type="button" class="tops-preset" data-range="m1">Shu oy</button>
+            <button type="button" class="tops-preset" data-range="prev_m">O‘tgan oy</button>
+            <button type="button" class="tops-preset" data-range="y0">Yil</button>
+          </div>
           <div class="sales-date-picker" id="tops-date-picker">
             <button type="button" class="sales-date-trigger" id="tops-date-trigger" aria-expanded="false" aria-haspopup="dialog">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -530,7 +539,14 @@
             </select>
           </label>
           <label class="cabinet-select-wrap">
-            <select id="tops-filter-select" class="cabinet-select" aria-label="Filtr">
+            <select id="tops-channel-select" class="cabinet-select" aria-label="Savdo turi">
+              <option value="all" selected>Barchasi</option>
+              <option value="wholesale">Faqat optom</option>
+              <option value="retail">Faqat sotuv narxi</option>
+            </select>
+          </label>
+          <label class="cabinet-select-wrap">
+            <select id="tops-filter-select" class="cabinet-select" aria-label="Holat filtri">
               <option value="all" selected>Hammasi</option>
               <option value="sold">Sotilgan</option>
               <option value="unsold">Sotilmagan (davrda)</option>
@@ -538,11 +554,10 @@
             </select>
           </label>
           <label class="cabinet-select-wrap">
-            <select id="tops-products-select" class="cabinet-select" aria-label="Top miqdor">
-              <option value="10" selected>Top 10</option>
-              <option value="30">Top 30</option>
-              <option value="50">Top 50</option>
-              <option value="100">Top 100</option>
+            <select id="tops-products-select" class="cabinet-select" aria-label="Ko‘rsatish">
+              <option value="20" selected>20 ta</option>
+              <option value="50">50 ta</option>
+              <option value="100">100 ta</option>
               <option value="all">Barchasi</option>
             </select>
           </label>
@@ -552,21 +567,53 @@
           </a>
         </div>
         </div>
-      <div class="tops-summary-kpis" id="tops-summary-kpis" hidden>
-        <div class="tops-summary-kpi"><span>Jami</span><strong id="tops-kpi-total">—</strong></div>
-        <div class="tops-summary-kpi"><span>Sotilgan</span><strong id="tops-kpi-sold">—</strong></div>
-        <div class="tops-summary-kpi"><span>Sotilmagan</span><strong id="tops-kpi-unsold">—</strong></div>
-        <div class="tops-summary-kpi"><span>Hech qachon</span><strong id="tops-kpi-never">—</strong></div>
-        <div class="tops-summary-kpi"><span>O‘rtacha sotilmagan</span><strong id="tops-kpi-avg-idle">—</strong></div>
-        <div class="tops-summary-kpi"><span>Sotuvda / Optomda</span><strong id="tops-kpi-split">—</strong></div>
+      <div class="tops-summary-kpis tops-summary-kpis--rich" id="tops-summary-kpis" hidden>
+        <div class="tops-summary-kpi"><span>Eng ko‘p sotilgan</span><strong id="tops-kpi-top-name">—</strong></div>
+        <div class="tops-summary-kpi"><span>Jami dona</span><strong id="tops-kpi-qty">—</strong></div>
+        <div class="tops-summary-kpi"><span>Jami savdo</span><strong id="tops-kpi-revenue">—</strong></div>
+        <div class="tops-summary-kpi"><span>Optom savdo</span><strong id="tops-kpi-wholesale">—</strong></div>
+        <div class="tops-summary-kpi"><span>Oddiy sotuv</span><strong id="tops-kpi-retail">—</strong></div>
+        <div class="tops-summary-kpi"><span>Jami foyda</span><strong id="tops-kpi-profit" class="is-profit">—</strong></div>
+        <div class="tops-summary-kpi"><span>Marja</span><strong id="tops-kpi-margin">—</strong></div>
+        <div class="tops-summary-kpi tops-summary-kpi--meta"><span>Mahsulotlar</span><strong id="tops-kpi-meta">—</strong></div>
       </div>
+      <p class="cabinet-hint" id="tops-empty-hint" hidden>Bu davrda sotuvlar mavjud emas.</p>
       <div class="product-tile-grid product-tile-grid--list product-tile-grid--full" id="tops-products-grid">
         <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
           <span class="sk"></span><span class="sk"></span><span class="sk"></span>
           <span class="sk"></span><span class="sk"></span>
         </div>
-      </div>
+        </div>
     </section>
+    <div class="tops-detail-modal" id="tops-detail-modal" hidden role="dialog" aria-modal="true" aria-labelledby="tops-detail-title">
+      <div class="tops-detail-backdrop" id="tops-detail-backdrop"></div>
+      <div class="tops-detail-panel">
+        <header class="tops-detail-head">
+          <div>
+            <h3 id="tops-detail-title">Mahsulot</h3>
+            <p class="cabinet-hint" id="tops-detail-sub">—</p>
+          </div>
+          <button type="button" class="tops-detail-close" id="tops-detail-close" aria-label="Yopish">×</button>
+        </header>
+        <div class="tops-detail-summary" id="tops-detail-summary"></div>
+        <div class="cabinet-table-wrap tops-detail-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Sana</th>
+                <th>Optom dona</th>
+                <th>Optom summa</th>
+                <th>Sotuv dona</th>
+                <th>Sotuv summa</th>
+                <th>Tannarx</th>
+                <th>Foyda</th>
+              </tr>
+            </thead>
+            <tbody id="tops-detail-daily"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
     <section class="cabinet-card">
         <div class="cabinet-card-head">
           <h3>Top xaridor</h3>
@@ -1739,5 +1786,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=20260902-margin-fix" defer></script>
+<script src="/static/cabinet.js?v=20260902-top-reyting" defer></script>
 {% endblock %}

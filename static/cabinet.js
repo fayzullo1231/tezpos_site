@@ -1455,13 +1455,15 @@
       const qtySell = Number(item.qty_selling || 0);
       const qtyOptom = Number(item.qty_wholesale || 0);
       const profit = Number(item.profit || 0);
+      const marginPct = Number(item.margin_percent != null ? item.margin_percent : item.margin || 0);
       const soldInPeriod = Boolean(item.sold_in_period);
       const status = String(item.status || (soldInPeriod ? "sold" : "idle"));
+      const barcode = String(item.barcode || item.sku || "").trim();
       const rowClass =
         status === "never"
           ? "tops-row--rich is-never"
           : soldInPeriod
-            ? "tops-row--rich"
+            ? "tops-row--rich is-clickable"
             : "tops-row--rich is-unsold";
       let idleHtml = "";
       if (!soldInPeriod) {
@@ -1473,11 +1475,12 @@
           idleHtml = `<p class="tops-row-idle">Oxirgi sotuv: ${item.last_sale}</p>`;
         }
       }
-      return `<article class="tops-row ${rowClass} cab-reveal-item" style="animation-delay:${delay}ms">
+      return `<article class="tops-row ${rowClass} cab-reveal-item" style="animation-delay:${delay}ms" data-product-id="${item.id || ""}" tabindex="${soldInPeriod ? "0" : "-1"}" role="${soldInPeriod ? "button" : "article"}">
         <div class="tops-row-rank">${rank != null ? rank : "—"}</div>
         <div class="tops-row-media">${media}</div>
         <div class="tops-row-main">
           <div class="tops-row-name">${item.name || "—"}</div>
+          ${barcode ? `<div class="tops-row-barcode">${barcode}</div>` : ""}
           <div class="tops-row-prices">
             <span><em>Sotib olish</em><b>${cost > 0 ? fmtSom(cost) : "—"}</b></span>
             <span><em>Sotuv</em><b>${selling > 0 ? fmtSom(selling) : "—"}</b></span>
@@ -1504,7 +1507,8 @@
           </div>
           <div class="tops-row-metric tops-row-metric--profit">
             <em>Foyda</em>
-            <strong>${Number.isFinite(Number(item.profit)) ? fmtSom(item.profit) : "—"}</strong>
+            <strong>${Number.isFinite(profit) ? fmtSom(profit) : "—"}</strong>
+            ${soldInPeriod ? `<span class="tops-row-margin">Marja ${marginPct.toFixed(1)}%</span>` : ""}
           </div>
         </div>
       </article>`;
@@ -1723,6 +1727,8 @@
   const productsSelect = document.getElementById("tops-products-select");
   const topsSortSelect = document.getElementById("tops-sort-select");
   const topsFilterSelect = document.getElementById("tops-filter-select");
+  const topsChannelSelect = document.getElementById("tops-channel-select");
+  const topsPeriodPresets = document.getElementById("tops-period-presets");
   const productsGrid = document.getElementById("tops-products-grid");
   const topsDatePicker = document.getElementById("tops-date-picker");
   const topsDateTrigger = document.getElementById("tops-date-trigger");
@@ -1752,19 +1758,16 @@
   const topsExportBtn = document.getElementById("tops-export-btn");
 
   const topsLimitParam = () => {
-    const v = String(productsSelect?.value || "10").trim();
+    const v = String(productsSelect?.value || "20").trim();
     return v === "all" ? "all" : v;
   };
-  const topsApiLimit = () => {
-    const f = topsFilterSelect?.value || "all";
-    if (f === "unsold" || f === "never") return "all";
-    return topsLimitParam();
-  };
+  const topsApiLimit = () => "all";
+  const topsChannelParam = () => String(topsChannelSelect?.value || "all").trim();
   const topsLimitN = () => {
     const v = topsLimitParam();
     if (v === "all") return 0;
     const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? n : 10;
+    return Number.isFinite(n) && n > 0 ? n : 20;
   };
 
   const syncTopsExport = () => {
@@ -1772,7 +1775,8 @@
     const qs = new URLSearchParams({
       from: topsFrom,
       to: topsTo,
-      limit: topsLimitParam(),
+      limit: "all",
+      channel: topsChannelParam(),
     });
     topsExportBtn.href = `${data.topExportUrl}?${qs}`;
   };
@@ -1814,26 +1818,43 @@
 
   const paintTopsSummary = (summary, { partial = false } = {}) => {
     const box = document.getElementById("tops-summary-kpis");
+    const emptyHint = document.getElementById("tops-empty-hint");
     if (!box || !summary || !Object.keys(summary).length) {
       if (box) box.hidden = true;
       return;
     }
-    box.hidden = false;
+    const soldQty =
+      Number(summary.total_quantity || 0) ||
+      Number(summary.qty_selling || 0) + Number(summary.qty_wholesale || 0);
+    box.hidden = soldQty <= 0 && Number(summary.sold || 0) <= 0;
+    if (emptyHint) emptyHint.hidden = soldQty > 0 || Number(summary.sold || 0) > 0;
     const set = (id, val) => {
       const el = document.getElementById(id);
       if (el) el.textContent = val;
     };
-    set("tops-kpi-total", fmt(summary.total || 0));
-    set("tops-kpi-sold", fmt(summary.sold || 0));
-    set("tops-kpi-unsold", fmt(summary.unsold || 0));
-    set("tops-kpi-never", fmt(summary.never_sold || 0));
+    set("tops-kpi-top-name", summary.top_product || "—");
+    set("tops-kpi-qty", soldQty > 0 ? `${fmt(soldQty)} dona` : "—");
+    set("tops-kpi-revenue", summary.total_revenue ? fmtSom(summary.total_revenue) : "—");
     set(
-      "tops-kpi-avg-idle",
-      summary.avg_days_unsold > 0 ? `${summary.avg_days_unsold} kun` : "—"
+      "tops-kpi-wholesale",
+      summary.revenue_wholesale
+        ? `${fmt(summary.qty_wholesale || 0)} dona · ${fmtSom(summary.revenue_wholesale)}`
+        : "—"
     );
     set(
-      "tops-kpi-split",
-      `${fmt(summary.qty_selling || 0)} / ${fmt(summary.qty_wholesale || 0)} dona · foyda ${fmtSom(summary.profit_selling || 0)} / ${fmtSom(summary.profit_wholesale || 0)}`
+      "tops-kpi-retail",
+      summary.revenue_selling
+        ? `${fmt(summary.qty_selling || 0)} dona · ${fmtSom(summary.revenue_selling)}`
+        : "—"
+    );
+    set("tops-kpi-profit", summary.total_profit != null ? fmtSom(summary.total_profit) : "—");
+    set(
+      "tops-kpi-margin",
+      summary.margin_percent != null ? `${Number(summary.margin_percent).toFixed(2)}%` : "—"
+    );
+    set(
+      "tops-kpi-meta",
+      `${fmt(summary.sold || 0)} sotilgan · ${fmt(summary.unsold || 0)} sotilmagan`
     );
     let hint = document.getElementById("tops-partial-hint");
     if (partial) {
@@ -1858,9 +1879,13 @@
     if (!productsGrid) return;
     productsGrid.className = "tops-list";
     if (!rows.length) {
-      productsGrid.innerHTML = `<p class="cabinet-hint">Tanlangan filtr bo‘yicha mahsulot topilmadi.</p>`;
+      const emptyHint = document.getElementById("tops-empty-hint");
+      if (emptyHint) emptyHint.hidden = false;
+      productsGrid.innerHTML = `<p class="cabinet-hint">Bu davrda sotuvlar mavjud emas.</p>`;
       return;
     }
+    const emptyHint = document.getElementById("tops-empty-hint");
+    if (emptyHint) emptyHint.hidden = true;
     productsGrid.innerHTML = rows
       .map((row, i) => productTileHtml(row, palette[i % palette.length], i + 1, { tops: true }))
       .join("");
@@ -1997,15 +2022,69 @@
     }
   };
 
-  const topsNeedsFull = () => {
-    const f = topsFilterSelect?.value || "all";
-    if (f === "unsold" || f === "never") return true;
-    return topsApiLimit() === "all";
+  const topsNeedsFull = () => true;
+
+  const formatTopDay = (iso) => {
+    const d = parseIso(iso);
+    if (!d) return iso || "—";
+    return d.toLocaleDateString("uz-UZ", { day: "2-digit", month: "2-digit", year: "numeric" });
+  };
+
+  const openTopsDetail = (item) => {
+    const modal = document.getElementById("tops-detail-modal");
+    const title = document.getElementById("tops-detail-title");
+    const sub = document.getElementById("tops-detail-sub");
+    const summaryEl = document.getElementById("tops-detail-summary");
+    const dailyBody = document.getElementById("tops-detail-daily");
+    if (!modal || !item) return;
+    if (title) title.textContent = item.name || "Mahsulot";
+    if (sub) {
+      const code = String(item.barcode || item.sku || "").trim();
+      sub.textContent = code ? `Kod: ${code}` : "Kunlik sotuv tafsilotlari";
+    }
+    if (summaryEl) {
+      const margin = Number(item.margin_percent != null ? item.margin_percent : item.margin || 0);
+      summaryEl.innerHTML = `
+        <div><span>Jami sotildi</span><strong>${fmt(item.qty || 0)} dona</strong></div>
+        <div><span>Optom</span><strong>${fmt(item.qty_wholesale || 0)} dona · ${fmtSom(item.revenue_wholesale || 0)}</strong></div>
+        <div><span>Sotuv narxi</span><strong>${fmt(item.qty_selling || 0)} dona · ${fmtSom(item.revenue_selling || 0)}</strong></div>
+        <div><span>Jami savdo</span><strong>${fmtSom(item.revenue || 0)}</strong></div>
+        <div><span>Tannarx</span><strong>${fmtSom(item.cost_total || 0)}</strong></div>
+        <div><span>Foyda</span><strong class="is-profit">${fmtSom(item.profit || 0)}</strong></div>
+        <div><span>Marja</span><strong>${margin.toFixed(2)}%</strong></div>
+      `;
+    }
+    const daily = Array.isArray(item.daily) ? item.daily : [];
+    if (dailyBody) {
+      dailyBody.innerHTML = daily.length
+        ? daily
+            .map(
+              (row) => `<tr>
+              <td>${formatTopDay(row.date)}</td>
+              <td>${fmt(row.wholesale_quantity || 0)}</td>
+              <td>${fmtSom(row.wholesale_amount || 0)}</td>
+              <td>${fmt(row.retail_quantity || 0)}</td>
+              <td>${fmtSom(row.retail_amount || 0)}</td>
+              <td>${fmtSom(row.cost_amount || 0)}</td>
+              <td class="is-profit">${fmtSom(row.profit || 0)}</td>
+            </tr>`
+            )
+            .join("")
+        : `<tr><td colspan="7" class="cabinet-hint">Kunlik ma’lumot yo‘q</td></tr>`;
+    }
+    modal.hidden = false;
+    document.body.classList.add("tops-modal-open");
+  };
+
+  const closeTopsDetail = () => {
+    const modal = document.getElementById("tops-detail-modal");
+    if (modal) modal.hidden = true;
+    document.body.classList.remove("tops-modal-open");
   };
 
   const applyTopsPayload = (payload, isFast) => {
     const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
-    const key = `all_${topsFrom}_${topsTo}_${topsApiLimit()}`;
+    const key = `all_${topsFrom}_${topsTo}_${topsChannelParam()}`;
     topsCache[key] = rows;
     data.topProducts = rows;
     data.topsProductSummary = payload.productSummary || {};
@@ -2018,7 +2097,8 @@
 
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
     const apiLimit = topsApiLimit();
-    const key = `all_${fromIso}_${toIsoVal}_${apiLimit}`;
+    const channel = topsChannelParam();
+    const key = `all_${fromIso}_${toIsoVal}_${channel}`;
     if (!Object.keys(topsCache).length && data._topsCache) {
       // Eski kesh — rich_ kalitlaridan tashqarisini tashlaymiz
       Object.keys(data._topsCache).forEach((k) => {
@@ -2043,7 +2123,7 @@
       productsGrid.innerHTML = skelHtml("lines", 8);
     }
     try {
-      const params = { from: fromIso, to: toIsoVal, limit: apiLimit };
+      const params = { from: fromIso, to: toIsoVal, limit: apiLimit, channel };
       const apply = (payload, isFast) => {
         if (reqId !== topsReq) return;
         applyTopsPayload(payload, isFast);
@@ -2188,13 +2268,77 @@
     }
     productsSelect?.addEventListener("change", () => {
       syncTopsExport();
-      loadTopProducts(topsFrom, topsTo, { force: true });
+      renderProducts(topsLimitN());
     });
     topsSortSelect?.addEventListener("change", () => {
       renderProducts(topsLimitN());
     });
     topsFilterSelect?.addEventListener("change", () => {
+      renderProducts(topsLimitN());
+    });
+    topsChannelSelect?.addEventListener("change", () => {
       loadTopProducts(topsFrom, topsTo, { force: true });
+    });
+    topsPeriodPresets?.addEventListener("click", (e) => {
+      const btn = e.target.closest(".tops-preset");
+      if (!btn) return;
+      e.preventDefault();
+      const range = btn.dataset.range;
+      if (!range) return;
+      topsPeriodPresets.querySelectorAll(".tops-preset").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const today = todayDate;
+      let start = today;
+      let end = today;
+      if (range === "yesterday") {
+        const y = new Date(today);
+        y.setDate(y.getDate() - 1);
+        start = end = y;
+      } else if (range === "d7") {
+        start = new Date(today);
+        start.setDate(start.getDate() - 6);
+        end = today;
+      } else if (range === "d30") {
+        start = new Date(today);
+        start.setDate(start.getDate() - 29);
+        end = today;
+      } else if (range === "m1") {
+        start = new Date(today.getFullYear(), today.getMonth(), 1);
+        end = today;
+      } else if (range === "prev_m") {
+        end = new Date(today.getFullYear(), today.getMonth(), 0);
+        start = new Date(end.getFullYear(), end.getMonth(), 1);
+      } else if (range === "y0") {
+        start = new Date(today.getFullYear(), 0, 1);
+        end = today;
+      }
+      topsFrom = toIso(start);
+      topsTo = toIso(end);
+      topsDraftStart = startOfDay(start);
+      topsDraftEnd = startOfDay(end);
+      syncTopsHint();
+      loadTopProducts(topsFrom, topsTo, { force: true });
+    });
+    productsGrid?.addEventListener("click", (e) => {
+      const row = e.target.closest(".tops-row.is-clickable");
+      if (!row) return;
+      const pid = row.dataset.productId;
+      const item = (data.topProducts || []).find((r) => String(r.id) === String(pid));
+      if (item) openTopsDetail(item);
+    });
+    productsGrid?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const row = e.target.closest(".tops-row.is-clickable");
+      if (!row) return;
+      e.preventDefault();
+      const pid = row.dataset.productId;
+      const item = (data.topProducts || []).find((r) => String(r.id) === String(pid));
+      if (item) openTopsDetail(item);
+    });
+    document.getElementById("tops-detail-close")?.addEventListener("click", closeTopsDetail);
+    document.getElementById("tops-detail-backdrop")?.addEventListener("click", closeTopsDetail);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeTopsDetail();
     });
     syncTopsHint();
     loadTopProducts(topsFrom, topsTo, { force: true });

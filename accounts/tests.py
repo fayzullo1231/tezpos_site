@@ -590,6 +590,180 @@ class ProfitMarginRegressionTests(SimpleTestCase):
         self.assertAlmostEqual(jami["checks"], 2)
 
 
+class TopStatsDailyTests(SimpleTestCase):
+    def _product(self):
+        from accounts.views import _map_product
+
+        return _map_product(
+            {
+                "id": "cola",
+                "name": "Coca Cola 1.5L",
+                "barcode": "8600123456789",
+                "price": 10000,
+                "cost_price": 8000,
+                "wholesale_price": 9000,
+            }
+        )
+
+    def test_daily_retail_and_wholesale_split(self):
+        from datetime import date
+
+        from accounts.views import _product_sales_stats
+
+        p = self._product()
+        by_id = {p.id: p}
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-09-01T12:00:00+05:00",
+                "items": [
+                    {
+                        "product_id": p.id,
+                        "quantity": 20,
+                        "unit_price": 9000,
+                        "total": 180000,
+                    },
+                    {
+                        "product_id": p.id,
+                        "quantity": 15,
+                        "unit_price": 10000,
+                        "total": 150000,
+                    },
+                ],
+            },
+            "s2": {
+                "id": "s2",
+                "completed_at": "2026-09-02T12:00:00+05:00",
+                "items": [
+                    {
+                        "product_id": p.id,
+                        "quantity": 10,
+                        "unit_price": 9000,
+                        "total": 90000,
+                    },
+                    {
+                        "product_id": p.id,
+                        "quantity": 25,
+                        "unit_price": 10000,
+                        "total": 250000,
+                    },
+                ],
+            },
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            by_id,
+            {},
+            [],
+            period_start=date(2026, 9, 1),
+            period_end=date(2026, 9, 2),
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertEqual(row["barcode"], "8600123456789")
+        self.assertAlmostEqual(row["qty"], 70)
+        self.assertAlmostEqual(row["qty_wholesale"], 30)
+        self.assertAlmostEqual(row["qty_selling"], 40)
+        self.assertAlmostEqual(row["revenue_wholesale"], 270000)
+        self.assertAlmostEqual(row["revenue_selling"], 400000)
+        self.assertAlmostEqual(row["revenue"], 670000)
+        self.assertAlmostEqual(row["cost_total"], 560000)
+        self.assertAlmostEqual(row["profit"], 110000)
+        self.assertEqual(len(row["daily"]), 2)
+        d1 = row["daily"][0]
+        self.assertEqual(d1["date"], "2026-09-01")
+        self.assertAlmostEqual(d1["wholesale_quantity"], 20)
+        self.assertAlmostEqual(d1["retail_quantity"], 15)
+        self.assertAlmostEqual(d1["total_quantity"], 35)
+        self.assertAlmostEqual(summary["total_quantity"], 70)
+
+    def test_channel_wholesale_only(self):
+        from datetime import date
+
+        from accounts.views import _product_sales_stats
+
+        p = self._product()
+        by_id = {p.id: p}
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-09-01T12:00:00+05:00",
+                "items": [
+                    {
+                        "product_id": p.id,
+                        "quantity": 50,
+                        "unit_price": 9000,
+                        "total": 450000,
+                    },
+                    {
+                        "product_id": p.id,
+                        "quantity": 100,
+                        "unit_price": 10000,
+                        "total": 1000000,
+                    },
+                ],
+            },
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            by_id,
+            {},
+            [],
+            period_start=date(2026, 9, 1),
+            period_end=date(2026, 9, 1),
+            channel="wholesale",
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertAlmostEqual(row["qty"], 50)
+        self.assertAlmostEqual(row["revenue"], 450000)
+        self.assertAlmostEqual(summary["revenue_wholesale"], 450000)
+
+    def test_cancelled_sale_excluded(self):
+        from datetime import date
+
+        from accounts.views import _is_countable_sale, _product_sales_stats
+
+        self.assertFalse(_is_countable_sale({"status": "cancelled"}))
+        p = self._product()
+        by_id = {p.id: p}
+        sales = {
+            "ok": {
+                "id": "ok",
+                "completed_at": "2026-09-01T12:00:00+05:00",
+                "items": [
+                    {
+                        "product_id": p.id,
+                        "quantity": 10,
+                        "unit_price": 10000,
+                        "total": 100000,
+                    }
+                ],
+            },
+            "bad": {
+                "id": "bad",
+                "status": "cancelled",
+                "completed_at": "2026-09-01T13:00:00+05:00",
+                "items": [
+                    {
+                        "product_id": p.id,
+                        "quantity": 99,
+                        "unit_price": 10000,
+                        "total": 990000,
+                    }
+                ],
+            },
+        }
+        rows, _summary = _product_sales_stats(
+            sales,
+            by_id,
+            {},
+            [],
+            period_start=date(2026, 9, 1),
+            period_end=date(2026, 9, 1),
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertAlmostEqual(row["qty"], 10)
+
+
 class BarcodeExcelTemplateTests(SimpleTestCase):
     def test_all_codes_go_in_one_cell_with_comma_and_newline(self):
         from accounts.views import (
