@@ -526,6 +526,15 @@
               <option value="qty_asc">Kam → ko‘p</option>
               <option value="rev_desc">Tushum: ko‘p → kam</option>
               <option value="rev_asc">Tushum: kam → ko‘p</option>
+              <option value="idle_desc">Sotilmagan: uzoq → qisqa</option>
+            </select>
+          </label>
+          <label class="cabinet-select-wrap">
+            <select id="tops-filter-select" class="cabinet-select" aria-label="Filtr">
+              <option value="all" selected>Hammasi</option>
+              <option value="sold">Sotilgan</option>
+              <option value="unsold">Sotilmagan (davrda)</option>
+              <option value="never">Hech qachon sotilmagan</option>
             </select>
           </label>
           <label class="cabinet-select-wrap">
@@ -543,6 +552,14 @@
           </a>
         </div>
         </div>
+      <div class="tops-summary-kpis" id="tops-summary-kpis" hidden>
+        <div class="tops-summary-kpi"><span>Jami</span><strong id="tops-kpi-total">—</strong></div>
+        <div class="tops-summary-kpi"><span>Sotilgan</span><strong id="tops-kpi-sold">—</strong></div>
+        <div class="tops-summary-kpi"><span>Sotilmagan</span><strong id="tops-kpi-unsold">—</strong></div>
+        <div class="tops-summary-kpi"><span>Hech qachon</span><strong id="tops-kpi-never">—</strong></div>
+        <div class="tops-summary-kpi"><span>O‘rtacha sotilmagan</span><strong id="tops-kpi-avg-idle">—</strong></div>
+        <div class="tops-summary-kpi"><span>Sotuvda / Optomda</span><strong id="tops-kpi-split">—</strong></div>
+      </div>
       <div class="product-tile-grid product-tile-grid--list product-tile-grid--full" id="tops-products-grid">
         <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">
           <span class="sk"></span><span class="sk"></span><span class="sk"></span>
@@ -1722,5 +1739,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=20260901-range" defer></script>
+<script src="/static/cabinet.js?v=20260901-tops-stats" defer></script>
 {% endblock %}

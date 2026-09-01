@@ -4804,13 +4804,23 @@ def cabinet_range_stats(request):
     return JsonResponse(payload)
 
 
-def _top_products_from_details(
+_TOP_LIMIT_ALL = 50_000
+
+
+def _product_sales_stats(
     details: dict,
     products_by_id: dict,
     products_by_name: dict,
-    limit: int = 100,
     price_lists: list[dict] | None = None,
-) -> list[dict]:
+    *,
+    period_start: date,
+    period_end: date,
+    limit: int = _TOP_LIMIT_ALL,
+) -> tuple[list[dict], dict]:
+    """
+    Davr bo‘yicha mahsulot statistikasi: sotuv/optom, sotilgan/sotilmagan,
+    oxirgi sotuv sanasi va necha kundan beri sotilmagan.
+    """
     price_lists = price_lists or []
     selling_list_ids = {
         str(pl.get("id"))
@@ -4826,10 +4836,20 @@ def _top_products_from_details(
     product_rev_sell: dict[str, Decimal] = defaultdict(Decimal)
     product_rev_optom: dict[str, Decimal] = defaultdict(Decimal)
     product_meta: dict[str, dict] = {}
+    last_sale: dict[str, datetime] = {}
 
     for detail in details.values():
         if not isinstance(detail, dict):
             continue
+        sale_day = _sale_day(detail)
+        sale_dt = _parse_dt(
+            detail.get("completed_at")
+            or detail.get("created_at")
+            or detail.get("sold_at")
+        )
+        in_period = bool(
+            sale_day and period_start <= sale_day <= period_end
+        )
         sale_pl = (
             detail.get("price_list_id")
             or detail.get("price_list")
@@ -4841,12 +4861,15 @@ def _top_products_from_details(
             pid, name, _nested = _item_product_ref(item)
             qty = _item_qty(item)
             unit_price = _item_unit_price(item)
-            computed = (qty * unit_price).quantize(Decimal("0.01")) if qty and unit_price else Decimal("0")
+            computed = (
+                (qty * unit_price).quantize(Decimal("0.01"))
+                if qty and unit_price
+                else Decimal("0")
+            )
             line_rev = _dec(
                 item.get("total") or item.get("line_total"),
                 str(computed),
             )
-            # Chiziqdagi total ba'zan butun chek summasi — qty*narx ishonchliroq
             if computed > 0 and line_rev > computed * Decimal("2") + Decimal("1"):
                 line_rev = computed
             if unit_price <= 0 and qty > 0 and line_rev > 0:
@@ -4858,6 +4881,15 @@ def _top_products_from_details(
                 pid = f"name:{name.casefold()}"
             if qty <= 0 and line_rev <= 0:
                 continue
+
+            if sale_dt and qty > 0:
+                prev = last_sale.get(pid)
+                if prev is None or sale_dt > prev:
+                    last_sale[pid] = sale_dt
+
+            if not in_period:
+                continue
+
             p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
             if not p and name:
                 p = _find_product(products_by_id, products_by_name, product_name=name)
@@ -4917,22 +4949,46 @@ def _top_products_from_details(
                 "cost": float(cost_show or meta.get("cost") or 0),
             }
 
-    out = []
-    ranked = sorted(
-        product_qty.items(),
-        key=lambda x: (float(x[1]), float(product_rev.get(x[0]) or 0)),
-        reverse=True,
-    )[:limit]
-    for pid, qty in ranked:
+    all_pids: set[str] = set(products_by_id.keys()) | set(product_qty.keys())
+    out: list[dict] = []
+    for pid in all_pids:
+        p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
+        meta = product_meta.get(pid) or {}
+        if p and pid not in product_meta:
+            meta = {
+                "name": p.name,
+                "image": p.display_image or "",
+                "stock": float(p.stock_qty or 0),
+                "wholesale": float(p.wholesale_price or 0),
+                "selling": float(p.selling_price or 0),
+                "cost": float(p.cost_price or 0),
+            }
+        qty = product_qty.get(pid) or Decimal("0")
         rev = product_rev.get(pid) or Decimal("0")
         cost_total = product_cost.get(pid) or Decimal("0")
         costed_rev = product_costed_rev.get(pid) or Decimal("0")
         profit = (costed_rev - cost_total) if cost_total > 0 else Decimal("0")
-        meta = product_meta.get(pid) or {}
-        p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
         cost_unit = float(meta.get("cost") or 0)
         if cost_unit <= 0 and p and (p.cost_price or Decimal("0")) > 0:
             cost_unit = float(p.cost_price)
+
+        last_dt = last_sale.get(pid)
+        last_sale_iso = ""
+        days_unsold: int | None = None
+        if last_dt:
+            last_sale_iso = timezone.localtime(last_dt).date().isoformat()
+            days_unsold = max(0, (period_end - timezone.localtime(last_dt).date()).days)
+        elif float(qty) <= 0:
+            days_unsold = None  # hech qachon sotilmagan
+
+        sold_in_period = float(qty) > 0
+        if sold_in_period:
+            status = "sold"
+        elif last_dt:
+            status = "idle"
+        else:
+            status = "never"
+
         out.append(
             {
                 "id": str(pid),
@@ -4954,9 +5010,72 @@ def _top_products_from_details(
                 "selling": float(p.selling_price)
                 if p
                 else float(meta.get("selling") or 0),
+                "status": status,
+                "sold_in_period": sold_in_period,
+                "last_sale": last_sale_iso,
+                "days_unsold": days_unsold,
             }
         )
-    return out
+
+    sold_rows = [r for r in out if r.get("sold_in_period")]
+    unsold_rows = [r for r in out if not r.get("sold_in_period")]
+    sold_rows.sort(
+        key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)),
+        reverse=True,
+    )
+    unsold_rows.sort(
+        key=lambda r: (
+            r.get("days_unsold") is None,
+            -(r.get("days_unsold") or 0),
+            str(r.get("name") or ""),
+        ),
+    )
+    out = sold_rows + unsold_rows
+
+    never_count = sum(1 for r in unsold_rows if r.get("status") == "never")
+    idle_days = [
+        int(r["days_unsold"])
+        for r in unsold_rows
+        if r.get("days_unsold") is not None
+    ]
+    summary = {
+        "total": len(out),
+        "sold": len(sold_rows),
+        "unsold": len(unsold_rows),
+        "never_sold": never_count,
+        "avg_days_unsold": round(sum(idle_days) / len(idle_days), 1) if idle_days else 0,
+        "qty_selling": round(sum(float(r.get("qty_selling") or 0) for r in sold_rows), 3),
+        "qty_wholesale": round(sum(float(r.get("qty_wholesale") or 0) for r in sold_rows), 3),
+    }
+
+    if limit > 0 and limit < _TOP_LIMIT_ALL:
+        out = out[:limit]
+    return out, summary
+
+
+def _top_products_from_details(
+    details: dict,
+    products_by_id: dict,
+    products_by_name: dict,
+    limit: int = 100,
+    price_lists: list[dict] | None = None,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> list[dict]:
+    """Eski nom — to‘liq mahsulot statistikasi."""
+    if period_start is None or period_end is None:
+        period_start = period_end = timezone.localdate()
+    rows, _summary = _product_sales_stats(
+        details,
+        products_by_id,
+        products_by_name,
+        price_lists,
+        period_start=period_start,
+        period_end=period_end,
+        limit=limit,
+    )
+    return rows
 
 
 def _top_products_qty_sum(rows: list[dict]) -> float:
@@ -5176,9 +5295,6 @@ def _top_products_from_api_items(
     return out[:limit]
 
 
-_TOP_LIMIT_ALL = 50_000
-
-
 def _parse_top_limit(raw, default: int = 100) -> int:
     """'all' / 0 — barcha mahsulotlar."""
     val = str(raw or "").strip().lower()
@@ -5232,6 +5348,7 @@ def cabinet_top_stats(request):
             "from": start.isoformat(),
             "to": end.isoformat(),
             "topProducts": pack.get("topProducts") or [],
+            "productSummary": pack.get("productSummary") or {},
             "count": len(pack.get("topProducts") or []),
             "checks": pack.get("checks") or 0,
             "details_used": pack.get("details_used") or 0,
@@ -5255,7 +5372,10 @@ def _build_top_products_pack(
     """
     span = (end - start).days + 1
     memo_prefix = f"{server}|{(token or '')[-12:]}"
-    # Oraliq savdolar to‘liq yuklansin (oldingi 200 detail_cap ≈ yarim kunlik tushumni kesardi)
+    lookback_days = 365
+    history_start = end - timedelta(days=lookback_days)
+    load_from = min(start, history_start)
+
     if span <= 1:
         max_pages, detail_cap, overall = 120, 1500, 90.0
     elif span <= 7:
@@ -5267,12 +5387,12 @@ def _build_top_products_pack(
 
     try:
         sales = _memo_get(
-            f"{memo_prefix}|topsales5|{start}|{end}|{max_pages}",
+            f"{memo_prefix}|topsales6|{load_from}|{end}|{max_pages}",
             45.0,
             lambda: tezpos_api.get_sales(
                 token,
                 server,
-                date_from=start.isoformat(),
+                date_from=load_from.isoformat(),
                 date_to=end.isoformat(),
                 timeout=30,
                 max_pages=max_pages,
@@ -5285,19 +5405,14 @@ def _build_top_products_pack(
     except (TimeoutError, OSError) as exc:
         return {"error": str(exc)}
 
-    products_raw = []
     try:
-        products_raw = _memo_get(
-            f"{memo_prefix}|catalog_snap",
-            120.0,
-            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=12) or [],
-        ) or []
-    except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
-        products_raw = []
-
-    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-    products_by_id = {str(p.id): p for p in products}
-    products_by_name = _products_by_name(products)
+        products_by_id, products_by_name, products = _ensure_catalog_maps(
+            token, server, memo_prefix, timeout=18.0
+        )
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            return {"error": "auth"}
+        products_by_id, products_by_name, products = {}, {}, []
 
     price_lists: list[dict] = []
     try:
@@ -5313,7 +5428,7 @@ def _build_top_products_pack(
     ]
 
     sales = [s for s in sales if isinstance(s, dict)]
-    sales = [
+    period_sales = [
         s
         for s in sales
         if (d := _sale_day(s)) is not None and start <= d <= end
@@ -5331,7 +5446,6 @@ def _build_top_products_pack(
             need_fetch.append(sid)
 
     if need_fetch:
-        # Bo‘laklab barcha chek detallarini olish (ketma-ket timeout kesmasin)
         fetched: dict[str, dict] = {}
         chunk = 250
         for i in range(0, min(len(need_fetch), detail_cap), chunk):
@@ -5349,16 +5463,26 @@ def _build_top_products_pack(
                 break
         details_map.update(fetched)
 
-    top_products = _top_products_from_details(
+    product_summary: dict = {}
+    top_products, product_summary = _product_sales_stats(
         details_map,
         products_by_id,
         products_by_name,
+        price_lists,
+        period_start=start,
+        period_end=end,
         limit=limit,
-        price_lists=price_lists,
     )
 
-    # Agar cheklar itemsiz qolsa — API ni faqat zaxira sifatida
-    if not top_products:
+    # Agar katalog yuklangan bo‘lsa — to‘liq ro‘yxat (sotilgan + sotilmagan) saqlanadi.
+    # API faqat katalog yo‘q va chek tafsilotlari yetarli bo‘lmaganda.
+    if (
+        not products_by_id
+        and (
+            not top_products
+            or not any(r.get("sold_in_period") for r in top_products)
+        )
+    ):
         try:
             top_payload = tezpos_api.get_top_products(
                 token,
@@ -5384,7 +5508,8 @@ def _build_top_products_pack(
 
     return {
         "topProducts": top_products,
-        "checks": len(sales),
+        "productSummary": product_summary,
+        "checks": len(period_sales),
         "details_used": len(details_map),
         "source": source,
         "products_by_id": products_by_id,
@@ -5440,6 +5565,7 @@ def cabinet_top_export(request):
         [
             "#",
             "Mahsulot",
+            "Holat",
             "Sotildi",
             "Sotuvda (dona)",
             "Optomda (dona)",
@@ -5451,6 +5577,8 @@ def cabinet_top_export(request):
             "Tushum (optom)",
             "Jami tannarx",
             "Jami foyda",
+            "Oxirgi sotuv",
+            "Kun sotilmagan",
             "Sana dan",
             "Sana gacha",
             "Cheklar",
@@ -5458,11 +5586,14 @@ def cabinet_top_export(request):
     )
     for cell in ws[1]:
         cell.font = Font(bold=True)
+    status_labels = {"sold": "Sotilgan", "idle": "Sotilmagan", "never": "Hech qachon"}
     for i, row in enumerate(rows, start=1):
+        st = status_labels.get(str(row.get("status") or ""), "—")
         ws.append(
             [
                 i,
                 row.get("name") or "",
+                st,
                 float(row.get("qty") or 0),
                 float(row.get("qty_selling") or 0),
                 float(row.get("qty_wholesale") or 0),
@@ -5474,6 +5605,8 @@ def cabinet_top_export(request):
                 float(row.get("revenue_wholesale") or 0),
                 float(row.get("cost_total") or 0),
                 float(row.get("profit") or 0),
+                row.get("last_sale") or "",
+                row.get("days_unsold") if row.get("days_unsold") is not None else "",
                 start.isoformat(),
                 end.isoformat(),
                 int(pack.get("checks") or 0),
@@ -5481,14 +5614,16 @@ def cabinet_top_export(request):
         )
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 36
-    for col in ("C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"):
+    ws.column_dimensions["C"].width = 14
+    for col in ("D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "P"):
         ws.column_dimensions[col].width = 14
         for cell in ws[col][1:]:
             cell.number_format = "#,##0.##"
             cell.alignment = Alignment(horizontal="right")
-    ws.column_dimensions["N"].width = 12
     ws.column_dimensions["O"].width = 12
-    ws.column_dimensions["P"].width = 10
+    ws.column_dimensions["Q"].width = 12
+    ws.column_dimensions["R"].width = 12
+    ws.column_dimensions["S"].width = 10
 
     bio = BytesIO()
     wb.save(bio)

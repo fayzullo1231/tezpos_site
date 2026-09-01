@@ -1406,7 +1406,25 @@
       const qtySell = Number(item.qty_selling || 0);
       const qtyOptom = Number(item.qty_wholesale || 0);
       const profit = Number(item.profit || 0);
-      return `<article class="tops-row tops-row--rich cab-reveal-item" style="animation-delay:${delay}ms">
+      const soldInPeriod = Boolean(item.sold_in_period);
+      const status = String(item.status || (soldInPeriod ? "sold" : "idle"));
+      const rowClass =
+        status === "never"
+          ? "tops-row--rich is-never"
+          : soldInPeriod
+            ? "tops-row--rich"
+            : "tops-row--rich is-unsold";
+      let idleHtml = "";
+      if (!soldInPeriod) {
+        if (status === "never") {
+          idleHtml = `<p class="tops-row-idle">Hech qachon sotilmagan</p>`;
+        } else if (item.days_unsold != null) {
+          idleHtml = `<p class="tops-row-idle">${fmt(item.days_unsold)} kun sotilmagan · oxirgi: ${item.last_sale || "—"}</p>`;
+        } else if (item.last_sale) {
+          idleHtml = `<p class="tops-row-idle">Oxirgi sotuv: ${item.last_sale}</p>`;
+        }
+      }
+      return `<article class="tops-row ${rowClass} cab-reveal-item" style="animation-delay:${delay}ms">
         <div class="tops-row-rank">${rank != null ? rank : "—"}</div>
         <div class="tops-row-media">${media}</div>
         <div class="tops-row-main">
@@ -1420,6 +1438,7 @@
             <span><em>Sotuvda</em><b>${fmt(qtySell)} dona</b></span>
             <span><em>Optomda</em><b>${fmt(qtyOptom)} dona</b></span>
           </div>
+          ${idleHtml}
         </div>
         <div class="tops-row-metrics">
           <div class="tops-row-metric">
@@ -1646,6 +1665,7 @@
 
   const productsSelect = document.getElementById("tops-products-select");
   const topsSortSelect = document.getElementById("tops-sort-select");
+  const topsFilterSelect = document.getElementById("tops-filter-select");
   const productsGrid = document.getElementById("tops-products-grid");
   const topsDatePicker = document.getElementById("tops-date-picker");
   const topsDateTrigger = document.getElementById("tops-date-trigger");
@@ -1703,6 +1723,16 @@
       const bq = Number(b.qty || 0);
       const ar = Number(a.revenue || 0);
       const br = Number(b.revenue || 0);
+      const ad = a.days_unsold == null ? -1 : Number(a.days_unsold);
+      const bd = b.days_unsold == null ? -1 : Number(b.days_unsold);
+      if (key === "idle_desc") {
+        const as = a.sold_in_period ? 0 : 1;
+        const bs = b.sold_in_period ? 0 : 1;
+        if (as !== bs) return bs - as;
+        if (ad < 0 && bd >= 0) return -1;
+        if (bd < 0 && ad >= 0) return 1;
+        return bd - ad || String(a.name || "").localeCompare(String(b.name || ""));
+      }
       if (key === "qty_asc") return aq - bq || ar - br;
       if (key === "rev_asc") return ar - br || aq - bq;
       if (key === "rev_desc") return br - ar || bq - aq;
@@ -1711,17 +1741,54 @@
     return list;
   };
 
+  const filterTopRows = (rows) => {
+    const f = topsFilterSelect?.value || "all";
+    const list = (rows || []).slice();
+    if (f === "sold") return list.filter((r) => r.sold_in_period);
+    if (f === "unsold") return list.filter((r) => !r.sold_in_period);
+    if (f === "never") return list.filter((r) => r.status === "never");
+    return list;
+  };
+
+  const paintTopsSummary = (summary) => {
+    const box = document.getElementById("tops-summary-kpis");
+    if (!box || !summary || !Object.keys(summary).length) {
+      if (box) box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    const set = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val;
+    };
+    set("tops-kpi-total", fmt(summary.total || 0));
+    set("tops-kpi-sold", fmt(summary.sold || 0));
+    set("tops-kpi-unsold", fmt(summary.unsold || 0));
+    set("tops-kpi-never", fmt(summary.never_sold || 0));
+    set(
+      "tops-kpi-avg-idle",
+      summary.avg_days_unsold > 0 ? `${summary.avg_days_unsold} kun` : "—"
+    );
+    set(
+      "tops-kpi-split",
+      `${fmt(summary.qty_selling || 0)} / ${fmt(summary.qty_wholesale || 0)} dona`
+    );
+  };
+
   const renderProducts = (limit) => {
-    const sorted = sortTopRows(data.topProducts || [], topsSortSelect?.value || "qty_desc");
+    const filtered = filterTopRows(data.topProducts || []);
+    const sorted = sortTopRows(filtered, topsSortSelect?.value || "qty_desc");
     const n = Number(limit);
     const rows = Number.isFinite(n) && n > 0 ? sorted.slice(0, n) : sorted;
     if (!productsGrid) return;
     productsGrid.className = "tops-list";
-    productsGrid.innerHTML = rows.length
-      ? rows
-          .map((row, i) => productTileHtml(row, palette[i % palette.length], i + 1, { tops: true }))
-          .join("")
-      : `<p class="cabinet-hint">Bu sana oralig‘ida top tovarlar yo‘q.</p>`;
+    if (!rows.length) {
+      productsGrid.innerHTML = `<p class="cabinet-hint">Tanlangan filtr bo‘yicha mahsulot topilmadi.</p>`;
+      return;
+    }
+    productsGrid.innerHTML = rows
+      .map((row, i) => productTileHtml(row, palette[i % palette.length], i + 1, { tops: true }))
+      .join("");
   };
 
   const syncTopsHint = () => {
@@ -1896,8 +1963,10 @@
       const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
       topsCache[key] = rows;
       data.topProducts = rows;
+      data.topsProductSummary = payload.productSummary || {};
       data._topsCache = topsCache;
       if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
+      paintTopsSummary(data.topsProductSummary);
       syncTopsExport();
       renderProducts(topsLimitN());
     } catch (_err) {
@@ -2028,6 +2097,9 @@
       renderProducts(topsLimitN());
     });
     topsSortSelect?.addEventListener("change", () => {
+      renderProducts(topsLimitN());
+    });
+    topsFilterSelect?.addEventListener("change", () => {
       renderProducts(topsLimitN());
     });
     syncTopsHint();

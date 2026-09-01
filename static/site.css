@@ -2893,6 +2893,22 @@ html.cabinet-ready .cabinet-content {
 .tops-row-prices b,
 .tops-row-split b { font-weight: 750; color: #0f172a; }
 .tops-row-metric--profit strong { color: #16a34a; }
+.tops-row.is-unsold { opacity: .92; border-color: #fecaca; background: linear-gradient(180deg, #fff8f8 0%, #fff 70%); }
+.tops-row.is-never { border-color: #fde68a; background: linear-gradient(180deg, #fffbeb 0%, #fff 70%); }
+.tops-row-idle {
+  margin-top: .25rem; font-size: .76rem; color: #b45309; font-weight: 600;
+}
+.tops-summary-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: .55rem;
+  margin: 0 0 1rem;
+}
+.tops-summary-kpi {
+  border: 1px solid #e8edf5; border-radius: 12px; padding: .55rem .7rem; background: #fafbfd;
+}
+.tops-summary-kpi span { display: block; font-size: .72rem; color: #8b97ab; font-weight: 600; }
+.tops-summary-kpi strong { display: block; margin-top: .15rem; font-size: 1.05rem; color: #002048; }
 .tops-row-rank {
   font-family: "Space Grotesk", Manrope, sans-serif;
   font-weight: 700;
