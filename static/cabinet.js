@@ -377,11 +377,32 @@
       today.getDate()
     ).padStart(2, "0")}`;
 
+    const warmTops = section === "tops";
     const warmRange = section === "overview" || section === "reports";
     const warmDaySales = section === "overview" || section === "sales";
     const warmShifts = section === "shifts";
     const warmReports = section === "reports";
     const warmAbc = section === "abc";
+
+    if (warmTops && data.topStatsUrl) {
+      const tc = cacheGet("tops") || {};
+      const tkey = `all_${iso}_${iso}`;
+      if (!tc[tkey]) {
+        const qs = new URLSearchParams({ from: iso, to: iso, limit: "all", fast: "1" });
+        fetch(`${data.topStatsUrl}?${qs}`, {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        })
+          .then((r) => r.json())
+          .then((json) => {
+            if (!json || json.error) return;
+            const next = cacheGet("tops") || {};
+            next[tkey] = json.topProducts || [];
+            cacheSet("tops", next);
+          })
+          .catch(() => {});
+      }
+    }
 
     if (warmRange && data.rangeStatsUrl) {
       const key = `${iso}_${iso}`;
@@ -1754,8 +1775,93 @@
   let topsPickMode = "start";
   let topsReq = 0;
   const topsCache = {};
+  let topsRawProducts = [];
+  let topsPartial = false;
   let topsCalHome = null;
   const topsExportBtn = document.getElementById("tops-export-btn");
+
+  const topsCacheKey = (fromIso, toIsoVal) => `all_${fromIso}_${toIsoVal}`;
+
+  const projectRowChannel = (row, channel) => {
+    if (!row || channel === "all") return row;
+    if (channel === "wholesale") {
+      const qty = Number(row.qty_wholesale || 0);
+      const revenue = Number(row.revenue_wholesale || 0);
+      const profit = Number(row.profit_wholesale || 0);
+      const cost_total = revenue - profit;
+      return {
+        ...row,
+        qty,
+        revenue,
+        profit,
+        cost_total,
+        sold_in_period: qty > 0,
+        margin_percent: revenue > 0 ? (profit / revenue) * 100 : 0,
+      };
+    }
+    const qty = Number(row.qty_selling || 0);
+    const revenue = Number(row.revenue_selling || 0);
+    const profit = Number(row.profit_selling || 0);
+    const cost_total = revenue - profit;
+    return {
+      ...row,
+      qty,
+      revenue,
+      profit,
+      cost_total,
+      sold_in_period: qty > 0,
+      margin_percent: revenue > 0 ? (profit / revenue) * 100 : 0,
+    };
+  };
+
+  const topsDisplayRows = () => {
+    const ch = topsChannelParam();
+    const raw = topsRawProducts.length ? topsRawProducts : data.topProducts || [];
+    if (ch === "all") return raw;
+    return raw
+      .map((r) => projectRowChannel(r, ch))
+      .filter((r) => r.sold_in_period || r.status === "never" || r.status === "idle");
+  };
+
+  const summarizeTopsFromRows = (rows) => {
+    const sold = (rows || []).filter((r) => r.sold_in_period);
+    const totalQty = sold.reduce((s, r) => s + Number(r.qty || 0), 0);
+    const totalRev = sold.reduce((s, r) => s + Number(r.revenue || 0), 0);
+    const totalProfit = sold.reduce((s, r) => s + Number(r.profit || 0), 0);
+    const qtySell = sold.reduce((s, r) => s + Number(r.qty_selling || 0), 0);
+    const qtyWh = sold.reduce((s, r) => s + Number(r.qty_wholesale || 0), 0);
+    const revSell = sold.reduce((s, r) => s + Number(r.revenue_selling || 0), 0);
+    const revWh = sold.reduce((s, r) => s + Number(r.revenue_wholesale || 0), 0);
+    const top = sold[0];
+    return {
+      sold: sold.length,
+      unsold: (rows || []).length - sold.length,
+      total_quantity: totalQty,
+      total_revenue: totalRev,
+      revenue_selling: revSell,
+      revenue_wholesale: revWh,
+      qty_selling: qtySell,
+      qty_wholesale: qtyWh,
+      total_profit: totalProfit,
+      margin_percent: totalRev > 0 ? (totalProfit / totalRev) * 100 : 0,
+      top_product: top ? top.name : "",
+    };
+  };
+
+  const refreshTopsUi = () => {
+    const rows = topsDisplayRows();
+    data.topProducts = rows;
+    const summary =
+      data.topsProductSummary && Object.keys(data.topsProductSummary).length
+        ? data.topsProductSummary
+        : summarizeTopsFromRows(rows);
+    if (topsChannelParam() !== "all") {
+      paintTopsSummary(summarizeTopsFromRows(rows), { partial: topsPartial });
+    } else {
+      paintTopsSummary(summary, { partial: topsPartial });
+    }
+    renderProducts(topsLimitN());
+  };
 
   const topsLimitParam = () => {
     const v = String(productsSelect?.value || "20").trim();
@@ -1872,7 +1978,7 @@
   };
 
   const renderProducts = (limit) => {
-    const filtered = filterTopRows(data.topProducts || []);
+    const filtered = filterTopRows(topsDisplayRows());
     const sorted = sortTopRows(filtered, topsSortSelect?.value || "qty_desc");
     const n = Number(limit);
     const rows = Number.isFinite(n) && n > 0 ? sorted.slice(0, n) : sorted;
@@ -2022,7 +2128,10 @@
     }
   };
 
-  const topsNeedsFull = () => true;
+  const topsNeedsFull = () => {
+    const f = topsFilterSelect?.value || "all";
+    return f === "unsold" || f === "never";
+  };
 
   const formatTopDay = (iso) => {
     const d = parseIso(iso);
@@ -2084,35 +2193,32 @@
 
   const applyTopsPayload = (payload, isFast) => {
     const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
-    const key = `all_${topsFrom}_${topsTo}_${topsChannelParam()}`;
+    const key = topsCacheKey(topsFrom, topsTo);
     topsCache[key] = rows;
-    data.topProducts = rows;
-    data.topsProductSummary = payload.productSummary || {};
+    topsRawProducts = rows;
+    topsPartial = Boolean(payload.partial || isFast);
     data._topsCache = topsCache;
     if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
-    paintTopsSummary(data.topsProductSummary, { partial: Boolean(payload.partial || isFast) });
+    if (payload.productSummary && topsChannelParam() === "all") {
+      data.topsProductSummary = payload.productSummary;
+    }
     syncTopsExport();
-    renderProducts(topsLimitN());
+    refreshTopsUi();
   };
 
   const loadTopProducts = async (fromIso, toIsoVal, { force = false } = {}) => {
     const apiLimit = topsApiLimit();
-    const channel = topsChannelParam();
-    const key = `all_${fromIso}_${toIsoVal}_${channel}`;
+    const key = topsCacheKey(fromIso, toIsoVal);
     if (!Object.keys(topsCache).length && data._topsCache) {
-      // Eski kesh — rich_ kalitlaridan tashqarisini tashlaymiz
       Object.keys(data._topsCache).forEach((k) => {
         if (String(k).startsWith("all_")) topsCache[k] = data._topsCache[k];
       });
     }
     syncTopsExport();
     if (!force && topsCache[key]) {
-      data.topProducts = topsCache[key];
-      renderProducts(topsLimitN());
+      topsRawProducts = topsCache[key];
+      refreshTopsUi();
       return;
-    }
-    if (!force && !topsCache[key] && (data.topProducts || []).length) {
-      renderProducts(topsLimitN());
     }
     const url = data.topStatsUrl;
     if (!url || !productsGrid) return;
@@ -2123,20 +2229,19 @@
       productsGrid.innerHTML = skelHtml("lines", 8);
     }
     try {
-      const params = { from: fromIso, to: toIsoVal, limit: apiLimit, channel };
+      const params = { from: fromIso, to: toIsoVal, limit: apiLimit, channel: "all" };
       const apply = (payload, isFast) => {
         if (reqId !== topsReq) return;
         applyTopsPayload(payload, isFast);
       };
-      if (force || topsNeedsFull()) {
+      if (force && topsNeedsFull()) {
         const qs = new URLSearchParams(params);
         const res = await fetch(`${url}?${qs}`, {
           headers: { Accept: "application/json" },
           credentials: "same-origin",
         });
         if (!res.ok) throw new Error("fail");
-        const payload = await res.json();
-        apply(payload, false);
+        apply(await res.json(), false);
         return;
       }
       await fetchProgressive(url, params, {
@@ -2274,10 +2379,14 @@
       renderProducts(topsLimitN());
     });
     topsFilterSelect?.addEventListener("change", () => {
-      renderProducts(topsLimitN());
+      if (topsNeedsFull()) {
+        loadTopProducts(topsFrom, topsTo, { force: true });
+      } else {
+        refreshTopsUi();
+      }
     });
     topsChannelSelect?.addEventListener("change", () => {
-      loadTopProducts(topsFrom, topsTo, { force: true });
+      refreshTopsUi();
     });
     topsPeriodPresets?.addEventListener("click", (e) => {
       const btn = e.target.closest(".tops-preset");
@@ -2341,7 +2450,7 @@
       if (e.key === "Escape") closeTopsDetail();
     });
     syncTopsHint();
-    loadTopProducts(topsFrom, topsTo, { force: true });
+    loadTopProducts(topsFrom, topsTo, { force: false });
   }
 
   /* —— Kirim qilingan mahsulotlar —— */

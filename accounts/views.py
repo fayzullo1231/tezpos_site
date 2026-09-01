@@ -690,7 +690,6 @@ def cabinet_warm(request):
     today = timezone.localdate().isoformat()
 
     def _warm() -> None:
-        # Fon isitish — web requestni bloklamaydi. Optom uchun list_prices kerak.
         try:
             _memo_get(
                 f"{memo_prefix}|price_lists",
@@ -701,15 +700,7 @@ def cabinet_warm(request):
             pass
         try:
             _memo_get(
-                f"{memo_prefix}|products|4",
-                600.0,
-                lambda: tezpos_api.get_products(token, server, max_pages=4, timeout=12) or [],
-            )
-        except Exception:
-            pass
-        try:
-            _memo_get(
-                f"{memo_prefix}|dayv3|{today}",
+                f"{memo_prefix}|dayv4|{today}",
                 120.0,
                 lambda: tezpos_api.get_sales_for_day(token, server, today),
             )
@@ -784,8 +775,9 @@ def cabinet_day_sales(request):
         )
 
     response_key = f"{memo_prefix}|day_sales_v5|{sale_date.isoformat()}"
+    day_ttl = 900.0 if sale_date < timezone.localdate() else 45.0
     cached_resp = _TEZPOS_MEMO.get(response_key)
-    if cached_resp and time.time() - cached_resp[0] < 45.0:
+    if cached_resp and time.time() - cached_resp[0] < day_ttl:
         return JsonResponse(cached_resp[1])
 
     products_raw = _memo_peek(f"{memo_prefix}|catalog_snap") or []
@@ -4902,7 +4894,8 @@ def cabinet_range_stats(request):
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     stats_cache_key = f"{memo_prefix}|rangestats|{start}|{end}|{'fast' if fast else 'full'}"
     cache_hit = _TEZPOS_MEMO.get(stats_cache_key)
-    if cache_hit and time.time() - cache_hit[0] < (45.0 if fast else 180.0):
+    ttl = _stats_cache_ttl(end, today, fast=fast)
+    if cache_hit and time.time() - cache_hit[0] < ttl:
         cached_payload = cache_hit[1]
         if isinstance(cached_payload, dict) and (
             cached_payload.get("summary") or cached_payload.get("priceLists")
@@ -4938,7 +4931,11 @@ def cabinet_range_stats(request):
 
     try:
         products_by_id, products_by_name, products = _ensure_catalog_maps(
-            token, server, memo_prefix, timeout=18.0 if fast else 22.0
+            token,
+            server,
+            memo_prefix,
+            timeout=12.0 if fast else 22.0,
+            quick=True,
         )
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
@@ -4953,13 +4950,13 @@ def cabinet_range_stats(request):
         if single_day:
             day = start.isoformat()
             return _memo_get(
-                f"{memo_prefix}|dayv3|{day}",
-                90.0,
+                f"{memo_prefix}|dayv4|{day}",
+                _stats_cache_ttl(start, today, fast=fast),
                 lambda: tezpos_api.get_sales_for_day(token, server, day) or [],
             )
         return _memo_get(
             f"{memo_prefix}|salesv3|{start}|{end}|{max_pages}",
-            60.0,
+            _stats_cache_ttl(end, today, fast=False),
             lambda: tezpos_api.get_sales(
                 token,
                 server,
@@ -5132,7 +5129,7 @@ def cabinet_range_stats(request):
 
 
 _TOP_LIMIT_ALL = 50_000
-_TOP_LOOKBACK_DAYS = 90
+_TOP_LOOKBACK_DAYS = 45
 _SKIP_SALE_STATUSES = frozenset(
     {
         "cancelled",
@@ -5163,6 +5160,13 @@ def _is_countable_sale(sale: dict) -> bool:
     if st.startswith("cancel") or st.startswith("void"):
         return False
     return True
+
+
+def _stats_cache_ttl(end: date, today: date, *, fast: bool) -> float:
+    """O‘tgan kunlar uchun uzoqroq kesh — qayta hisoblash kamayadi."""
+    if end < today:
+        return 300.0 if fast else 900.0
+    return 45.0 if fast else 180.0
 
 
 def _new_top_daily_bucket() -> dict:
@@ -5271,6 +5275,7 @@ def _product_sales_stats(
     limit: int = _TOP_LIMIT_ALL,
     seed_last_sale: dict[str, datetime] | None = None,
     channel: str = "all",
+    sold_only: bool = False,
 ) -> tuple[list[dict], dict]:
     """
     Davr bo‘yicha mahsulot statistikasi: sotuv/optom kunlik, foyda/marja.
@@ -5425,7 +5430,11 @@ def _product_sales_stats(
                 "sku": sku or meta.get("sku") or "",
             }
 
-    all_pids: set[str] = set(products_by_id.keys()) | set(product_qty.keys())
+    all_pids: set[str] = (
+        set(product_qty.keys())
+        if sold_only
+        else (set(products_by_id.keys()) | set(product_qty.keys()))
+    )
     out: list[dict] = []
     for pid in all_pids:
         p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
@@ -5911,9 +5920,11 @@ def _build_top_products_pack(
     if channel == "selling":
         channel = "retail"
     mode = "f" if fast else "x"
-    pack_key = f"{memo_prefix}|topspack11|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack12|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
-    if cached and time.time() - cached[0] < (45.0 if fast else 90.0):
+    today = timezone.localdate()
+    cache_ttl = _stats_cache_ttl(end, today, fast=fast)
+    if cached and time.time() - cached[0] < cache_ttl:
         return cached[1]
 
     lookback_days = _TOP_LOOKBACK_DAYS
@@ -5934,9 +5945,9 @@ def _build_top_products_pack(
         hist_pages, hist_timeout = 70, 24
 
     if fast:
-        max_pages = min(max_pages, 60)
-        detail_cap = min(detail_cap, 800)
-        overall = min(overall, 35.0)
+        max_pages = min(max_pages, 50)
+        detail_cap = 0
+        overall = min(overall, 28.0)
 
     hist_end = start - timedelta(days=1)
     need_history = (not fast) and hist_end >= history_start
@@ -5945,19 +5956,19 @@ def _build_top_products_pack(
         if single_day:
             day = start.isoformat()
             return _memo_get(
-                f"{memo_prefix}|topday|{day}",
-                45.0,
+                f"{memo_prefix}|dayv4|{day}",
+                cache_ttl,
                 lambda: tezpos_api.get_sales_for_day(token, server, day) or [],
             )
         return _memo_get(
-            f"{memo_prefix}|topsales7|{start}|{end}|{max_pages}",
-            45.0,
+            f"{memo_prefix}|topsales8|{start}|{end}|{max_pages}",
+            cache_ttl,
             lambda: tezpos_api.get_sales(
                 token,
                 server,
                 date_from=start.isoformat(),
                 date_to=end.isoformat(),
-                timeout=22 if single_day else 28,
+                timeout=20 if single_day else 26,
                 max_pages=max_pages,
             ),
         ) or []
@@ -6059,7 +6070,7 @@ def _build_top_products_pack(
         else:
             need_fetch.append(sid)
 
-    if need_fetch:
+    if need_fetch and detail_cap > 0:
         fetched: dict[str, dict] = {}
         chunk = 200
         for i in range(0, min(len(need_fetch), detail_cap), chunk):
@@ -6088,6 +6099,7 @@ def _build_top_products_pack(
         limit=limit,
         seed_last_sale=seed_last_sale,
         channel=channel,
+        sold_only=fast,
     )
 
     # Agar katalog yuklangan bo‘lsa — to‘liq ro‘yxat (sotilgan + sotilmagan) saqlanadi.
@@ -6128,7 +6140,7 @@ def _build_top_products_pack(
         "details_used": len(details_map),
         "source": source,
         "products_by_id": products_by_id,
-        "partial": bool(fast or not products_by_id),
+        "partial": bool(fast or (need_fetch and detail_cap <= 0)),
     }
     _TEZPOS_MEMO[pack_key] = (time.time(), pack)
     return pack
