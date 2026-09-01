@@ -2252,6 +2252,7 @@ def _aggregate_price_list_stats(
             "checks": set(),
             "revenue": 0.0,
             "cost": 0.0,
+            "profit": 0.0,
             "costed_revenue": 0.0,
         },
     }
@@ -2269,6 +2270,7 @@ def _aggregate_price_list_stats(
             "checks": set(),
             "revenue": 0.0,
             "cost": 0.0,
+            "profit": 0.0,
             "costed_revenue": 0.0,
         }
 
@@ -2289,33 +2291,19 @@ def _aggregate_price_list_stats(
             else (detail.get("price_list") or {}).get("name")
         )
         for item in _sale_items(detail) or []:
-            qty_dec = _item_qty(item)
-            qty = float(qty_dec)
-            unit_price = _item_unit_price(item)
-            line_total_dec = _dec(item.get("total") or item.get("line_total"), str(qty_dec * unit_price))
-            line_total = float(line_total_dec)
-            if unit_price <= 0 and qty_dec > 0 and line_total_dec > 0:
-                unit_price = (line_total_dec / qty_dec).quantize(Decimal("0.01"))
-            pid, name, _nested = _item_product_ref(item)
-            p = _find_product(
-                products_by_id,
-                products_by_name,
-                product_id=pid,
-                product_name=name,
-            )
-            raw_pl = (
-                item.get("price_list_id")
-                or item.get("price_list")
-                or item.get("list_id")
-                or sale_pl
-            )
-            list_id = _classify_line_price_list(
-                raw_pl=raw_pl,
-                unit_price=unit_price,
-                product=p,
+            qty_dec, line_rev, line_cost, line_profit, list_id = _compute_line_financials(
+                item,
+                sale_pl=sale_pl,
+                products_by_id=products_by_id,
+                products_by_name=products_by_name,
                 price_lists=price_lists,
                 selling_list_ids=selling_list_ids,
             )
+            qty = float(qty_dec)
+            line_total = float(line_rev)
+            if qty <= 0 and line_total <= 0:
+                continue
+            pid, name, _nested = _item_product_ref(item)
             if list_id == OTHER_LIST_ID and OTHER_LIST_ID not in buckets:
                 buckets[OTHER_LIST_ID] = {
                     "id": OTHER_LIST_ID,
@@ -2324,6 +2312,7 @@ def _aggregate_price_list_stats(
                     "checks": set(),
                     "revenue": 0.0,
                     "cost": 0.0,
+                    "profit": 0.0,
                     "costed_revenue": 0.0,
                 }
             elif list_id not in buckets and list_id != SELLING_LIST_ID:
@@ -2342,16 +2331,17 @@ def _aggregate_price_list_stats(
                     "checks": set(),
                     "revenue": 0.0,
                     "cost": 0.0,
+                    "profit": 0.0,
                     "costed_revenue": 0.0,
                 }
             if list_id not in buckets:
                 list_id = SELLING_LIST_ID
-            unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
             bucket = buckets[list_id]
             bucket["qty"] += qty
             bucket["revenue"] += line_total
-            if unit_cost > 0:
-                bucket["cost"] += float(unit_cost * qty_dec)
+            bucket["profit"] += float(line_profit)
+            if line_cost > 0:
+                bucket["cost"] += float(line_cost)
                 bucket["costed_revenue"] += line_total
             if sid:
                 bucket["checks"].add(sid)
@@ -2381,23 +2371,18 @@ def _aggregate_price_list_stats(
         if rev <= 0:
             continue
         cost = float(b["cost"])
+        profit = float(b.get("profit") or 0)
+        if profit == 0 and cost > 0:
+            profit = rev - cost
         costed_rev = float(b.get("costed_revenue") or 0)
-        # Foyda: sotib olish narxi bor qatorlar (12000-10000=2000, 11000-10000=1000)
-        if cost > 0 and costed_rev > 0:
-            if costed_rev >= rev * 0.995:
-                profit = rev - cost
-            else:
-                profit = costed_rev - cost
-        else:
-            profit = 0.0
         total_rev += rev
         total_profit += profit
         total_cost += cost
         total_costed += costed_rev
         total_qty += float(b["qty"])
         all_checks |= b["checks"]
-        markup = (profit / cost * 100.0) if cost > 0 else 0.0
-        margin = (profit / costed_rev * 100.0) if costed_rev > 0 else 0.0
+        markup = _markup_on_cost(profit, cost)
+        margin = _margin_on_revenue(profit, rev)
         out.append(
             {
                 "id": b["id"],
@@ -2428,8 +2413,8 @@ def _aggregate_price_list_stats(
                 "cost": total_cost,
                 "costed_revenue": total_costed,
                 "profit": total_profit,
-                "margin": (total_profit / total_costed * 100.0) if total_costed > 0 else 0.0,
-                "markup": (total_profit / total_cost * 100.0) if total_cost > 0 else 0.0,
+                "margin": _margin_on_revenue(total_profit, total_rev),
+                "markup": _markup_on_cost(total_profit, total_cost),
                 "share": 100.0,
                 "is_total": True,
             }
@@ -2491,8 +2476,8 @@ def _scale_price_list_stats(
                 "cost": total_cost,
                 "costed_revenue": total_costed,
                 "profit": total_profit,
-                "margin": (total_profit / total_costed * 100.0) if total_costed else 0.0,
-                "markup": (total_profit / total_cost * 100.0) if total_cost > 0 else 0.0,
+                "margin": _margin_on_revenue(total_profit, target_gross),
+                "markup": _markup_on_cost(total_profit, total_cost),
                 "share": 100.0,
                 "is_total": True,
                 "scaled": False,
@@ -2508,8 +2493,8 @@ def _scale_price_list_stats(
         cost = float(r.get("cost") or 0) * scale
         costed = float(r.get("costed_revenue") or 0) * scale
         profit = float(r.get("profit") or 0) * scale
-        if profit == 0 and costed > 0:
-            profit = costed - cost
+        if profit == 0 and rev > 0:
+            profit = rev - cost
         qty = float(r.get("qty") or 0) * scale
         checks_est = int(round(target_checks * share)) if target_checks and share > 0 else int(r.get("checks") or 0)
         scaled.append(
@@ -2522,8 +2507,8 @@ def _scale_price_list_stats(
                 "cost": cost,
                 "costed_revenue": costed,
                 "profit": profit,
-                "margin": (profit / costed * 100.0) if costed > 0 else 0.0,
-                "markup": (profit / cost * 100.0) if cost > 0 else 0.0,
+                "margin": _margin_on_revenue(profit, rev),
+                "markup": _markup_on_cost(profit, cost),
                 "share": share * 100.0,
                 "is_total": False,
                 "scaled": True,
@@ -2544,8 +2529,8 @@ def _scale_price_list_stats(
             "cost": total_cost,
             "costed_revenue": total_costed,
             "profit": total_profit,
-            "margin": (total_profit / total_costed * 100.0) if total_costed else 0.0,
-            "markup": (total_profit / total_cost * 100.0) if total_cost > 0 else 0.0,
+            "margin": _margin_on_revenue(total_profit, target_gross),
+            "markup": _markup_on_cost(total_profit, total_cost),
             "share": 100.0,
             "is_total": True,
             "scaled": True,
@@ -3109,6 +3094,91 @@ def _item_product_ref(item: dict) -> tuple[str, str, dict]:
     return pid, str(name or "").strip(), nested
 
 
+def _margin_on_revenue(profit: float | Decimal, revenue: float | Decimal) -> float:
+    """Marja = foyda / tushum × 100 (TezPOS Windows)."""
+    rev = float(revenue)
+    if rev <= 0:
+        return 0.0
+    return float(profit) / rev * 100.0
+
+
+def _markup_on_cost(profit: float | Decimal, cost: float | Decimal) -> float:
+    """Ustama = foyda / tannarx × 100 (alohida ko‘rsatkich)."""
+    c = float(cost)
+    if c <= 0:
+        return 0.0
+    return float(profit) / c * 100.0
+
+
+def _compute_line_financials(
+    item: dict,
+    *,
+    sale_pl,
+    products_by_id: dict,
+    products_by_name: dict | None,
+    price_lists: list[dict],
+    selling_list_ids: set[str],
+) -> tuple[Decimal, Decimal, Decimal, Decimal, str]:
+    """
+    Bitta savdo qatori: (qty, tushum, tannarx, foyda, price_list_id).
+    Source-of-truth — barcha dashboard/report hisoblarida shu ishlatiladi.
+    """
+    qty_dec = _item_qty(item)
+    unit_price = _item_unit_price(item)
+    computed = (
+        (qty_dec * unit_price).quantize(Decimal("0.01"))
+        if qty_dec and unit_price
+        else Decimal("0")
+    )
+    raw_line_total = _dec(
+        item.get("total") or item.get("line_total"),
+        str(computed),
+    )
+    if computed > 0 and raw_line_total > computed * Decimal("2") + Decimal("1"):
+        raw_line_total = computed
+    if unit_price <= 0 and qty_dec > 0 and raw_line_total > 0:
+        unit_price = (raw_line_total / qty_dec).quantize(Decimal("0.01"))
+
+    pid, name, _nested = _item_product_ref(item)
+    p = _find_product(
+        products_by_id,
+        products_by_name,
+        product_id=pid,
+        product_name=name,
+    )
+    unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
+    raw_pl = (
+        item.get("price_list_id")
+        or item.get("price_list")
+        or item.get("list_id")
+        or sale_pl
+    )
+    list_id = _classify_line_price_list(
+        raw_pl=raw_pl,
+        unit_price=unit_price,
+        product=p,
+        price_lists=price_lists,
+        selling_list_ids=selling_list_ids,
+    )
+    is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
+
+    line_rev, line_profit = _line_revenue_profit_teZpos(
+        qty=qty_dec,
+        unit_price=unit_price,
+        raw_line_total=raw_line_total,
+        unit_cost=unit_cost,
+        product=p,
+        is_selling=is_selling,
+        selling_list_ids=selling_list_ids,
+    )
+    line_cost = (
+        (unit_cost * qty_dec).quantize(Decimal("0.01"))
+        if unit_cost > 0 and qty_dec > 0
+        else Decimal("0")
+    )
+    return qty_dec, line_rev, line_cost, line_profit, list_id
+
+
 def _product_catalog_prices(
     product: SimpleNamespace | None,
     *,
@@ -3244,32 +3314,54 @@ def _estimate_sale_profit(
     total: Decimal,
     products_by_name: dict[str, SimpleNamespace] | None = None,
     margin_ratio: Decimal | None = None,
+    price_lists: list[dict] | None = None,
 ) -> tuple[Decimal, Decimal]:
     """
     Qaytaradi: (tannarx, foyda).
-    Sotib olish narxi yo'q tovarlar tashlab ketiladi — ularning tushumi foydaga kirmaydi.
+    Manfiy foyda ham hisoblanadi; tannarxi yo‘q qatorlar tashlab ketiladi.
     """
     del margin_ratio
     level = _sale_level_cost_profit(sale_detail, total)
-    if level is not None:
-        return level
     items = _sale_items(sale_detail)
     if not items:
+        if level is not None:
+            return level
         return Decimal("0"), Decimal("0")
 
+    price_lists = price_lists or []
+    selling_list_ids = {
+        str(pl.get("id"))
+        for pl in price_lists
+        if pl.get("id") and _is_api_selling_list(pl)
+    }
+    sale_pl = (
+        sale_detail.get("price_list_id")
+        or sale_detail.get("price_list")
+        or sale_detail.get("list_id")
+    )
+    if isinstance(sale_pl, dict):
+        sale_pl = sale_pl.get("id")
+
     cost = Decimal("0")
-    costed_rev = Decimal("0")
+    profit = Decimal("0")
     for item in items:
-        qty = _item_qty(item)
-        unit_price = _item_unit_price(item)
-        line_total = _dec(item.get("total") or item.get("line_total"), str(qty * unit_price))
-        unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
-        if unit_cost <= 0:
+        _qty, _rev, line_cost, line_profit, _lid = _compute_line_financials(
+            item,
+            sale_pl=sale_pl,
+            products_by_id=products_by_id,
+            products_by_name=products_by_name,
+            price_lists=price_lists,
+            selling_list_ids=selling_list_ids,
+        )
+        if line_cost <= 0:
             continue
-        cost += qty * unit_cost
-        costed_rev += line_total
-    profit = (costed_rev - cost).quantize(Decimal("0.01"))
-    return cost.quantize(Decimal("0.01")), profit
+        cost += line_cost
+        profit += line_profit
+    if cost > 0 or profit != 0:
+        return cost.quantize(Decimal("0.01")), profit.quantize(Decimal("0.01"))
+    if level is not None:
+        return level
+    return Decimal("0"), Decimal("0")
 
 
 def _serialize_sale_payload(
@@ -3282,29 +3374,46 @@ def _serialize_sale_payload(
     del margin_ratio
     items = []
     items_cost = Decimal("0")
-    costed_rev = Decimal("0")
+    profit = Decimal("0")
+    price_lists_list: list[dict] = []
+    selling_list_ids: set[str] = set()
+    sale_pl = (
+        sale_detail.get("price_list_id")
+        or sale_detail.get("price_list")
+        or sale_detail.get("list_id")
+    )
+    if isinstance(sale_pl, dict):
+        sale_pl = sale_pl.get("id")
+
     for item in _sale_items(sale_detail):
-        qty = _item_qty(item)
-        unit_price = _item_unit_price(item)
+        qty, line_rev, line_cost, line_profit, _lid = _compute_line_financials(
+            item,
+            sale_pl=sale_pl,
+            products_by_id=products_by_id,
+            products_by_name=products_by_name,
+            price_lists=price_lists_list,
+            selling_list_ids=selling_list_ids,
+        )
         p = _find_product(
             products_by_id,
             products_by_name,
             product_id=str(item.get("product_id") or item.get("product") or ""),
             product_name=item.get("product_name") or item.get("name") or "",
         )
+        unit_price = _item_unit_price(item)
+        if unit_price <= 0 and qty > 0 and line_rev > 0:
+            unit_price = (line_rev / qty).quantize(Decimal("0.01"))
         unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
-        line_total = _dec(item.get("total") or item.get("line_total"), str(qty * unit_price))
-        line_cost = qty * unit_cost if unit_cost > 0 else Decimal("0")
-        if unit_cost > 0:
+        if line_cost > 0:
             items_cost += line_cost
-            costed_rev += line_total
+            profit += line_profit
         items.append(
             {
                 "name": item.get("product_name") or item.get("name") or (p.name if p else "Mahsulot"),
                 "qty": float(qty),
                 "unit_price": float(unit_price),
                 "unit_cost": float(unit_cost),
-                "line_total": float(line_total),
+                "line_total": float(line_rev),
                 "line_cost": float(line_cost),
             }
         )
@@ -3312,10 +3421,10 @@ def _serialize_sale_payload(
     level = _sale_level_cost_profit(sale_detail, total_amount)
     if level is not None and not items:
         items_cost, profit = level
+    elif items_cost <= 0 and level is not None:
+        items_cost, profit = level
     else:
-        profit = (costed_rev - items_cost).quantize(Decimal("0.01"))
-        if items_cost <= 0 and level is not None:
-            items_cost, profit = level
+        profit = profit.quantize(Decimal("0.01"))
     dt = _parse_dt(sale_detail.get("completed_at") or sale_detail.get("created_at"))
     created_display = timezone.localtime(dt).strftime("%d.%m.%Y, %H:%M") if dt else ""
     method = (
@@ -4973,11 +5082,8 @@ def cabinet_range_stats(request):
                 jami = next((r for r in lists if r.get("is_total")), None)
                 if jami:
                     profit = float(jami.get("profit") or 0)
-                    margin = float(
-                        jami.get("markup")
-                        if jami.get("markup") is not None
-                        else (jami.get("margin") or 0)
-                    )
+                    margin = float(jami.get("margin") or 0)
+                    jami["checks"] = checks
         if not lists:
             lists = _fallback_sotuv_only_lists(gross, checks, margin_ratio, price_lists)
             estimated = True

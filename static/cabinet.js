@@ -766,7 +766,7 @@
         ? mixParts
             .map(
               (r) =>
-                `<span><strong>${r.name}</strong>: tushum ${Number(r.share || 0).toFixed(1)}% · chek ${fmt(r.checks)} · marja ${Number(r.markup != null ? r.markup : r.margin).toFixed(1)}%</span>`
+                `<span><strong>${r.name}</strong>: tushum ${Number(r.share || 0).toFixed(1)}% · chek ${fmt(r.checks)} · marja ${Number(r.margin || 0).toFixed(1)}%</span>`
             )
             .join("")
         : "";
@@ -791,7 +791,7 @@
         one.checks,
         one.revenue,
         one.profit,
-        one.markup != null ? one.markup : one.margin,
+        one.margin,
         `· ${one.name || ""}`
       );
       return;
@@ -851,7 +851,7 @@
       list
       .map((row, i) => {
         const isTotal = Boolean(row.is_total);
-        const marja = Number(row.markup != null ? row.markup : row.margin || 0);
+        const marja = Number(row.margin || 0);
         return `<article class="price-list-stat cab-reveal-item${isTotal ? " is-total" : ""}" data-pl-id="${row.id}" style="animation-delay:${Math.min(i, 6) * 45}ms">
         <h4>${row.name || "Ro‘yxat"}${isTotal ? "" : ` <em>${Number(row.share || 0).toFixed(1)}%</em>`}</h4>
         <dl>
@@ -947,7 +947,7 @@
     if (!count && !gross) return false;
     const profit = Number(pack.profit != null ? pack.profit : 0);
     const cost = Number(pack.cost != null ? pack.cost : 0);
-    const margin = cost > 0 ? (profit / cost) * 100 : 0;
+    const margin = gross > 0 ? (profit / gross) * 100 : 0;
     const key = rangeCacheKey(todayIso, todayIso);
     // Bo‘sh/eskirgan keshni yozib yubormasin
     const existing = (data.salesStats || {})[key];
@@ -5090,7 +5090,7 @@
           <div><dt>Chek</dt><dd>${fmt(row.checks)}</dd></div>
           <div><dt>Tushum</dt><dd>${fmtMoney(row.revenue)}</dd></div>
           <div><dt>Foyda</dt><dd class="is-profit">${fmtMoney(row.profit)}</dd></div>
-          <div><dt>Marja</dt><dd>${Number(row.markup != null ? row.markup : row.margin || 0).toFixed(1)}%</dd></div>
+          <div><dt>Marja</dt><dd>${Number(row.margin || 0).toFixed(1)}%</dd></div>
         </dl>
       </article>`
       )
