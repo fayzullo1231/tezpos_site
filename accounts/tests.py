@@ -417,6 +417,50 @@ class CostedProfitTests(SimpleTestCase):
         self.assertAlmostEqual(retail["revenue"] - retail["cost"], retail["profit"])
         self.assertAlmostEqual(optom["revenue"] - optom["cost"], optom["profit"])
 
+    def test_top_stats_retail_line_at_wholesale_price_uses_selling(self):
+        from decimal import Decimal
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        p = _map_product(
+            {
+                "id": "1",
+                "name": "BON DEBUT",
+                "price": 49000,
+                "cost_price": 48300,
+                "wholesale_price": 48500,
+            }
+        )
+        by_id = {"1": p}
+        sale = {
+            "id": "s1",
+            "completed_at": "2026-09-01T12:00:00+05:00",
+            "price_list_id": "selling",
+            "items": [
+                {
+                    "product_id": "1",
+                    "quantity": 79,
+                    "unit_price": 48500,
+                    "total": 79 * 48500,
+                }
+            ],
+        }
+        rows, summary = _product_sales_stats(
+            {"s1": sale},
+            by_id,
+            {},
+            [],
+            period_start=date(2026, 9, 1),
+            period_end=date(2026, 9, 1),
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertEqual(row["qty_selling"], 79.0)
+        self.assertEqual(row["qty_wholesale"], 0.0)
+        self.assertAlmostEqual(row["revenue"], 79 * 49000)
+        self.assertAlmostEqual(row["profit"], 79 * 700)
+        self.assertAlmostEqual(row["profit_selling"], 79 * 700)
+
 
 class BarcodeExcelTemplateTests(SimpleTestCase):
     def test_all_codes_go_in_one_cell_with_comma_and_newline(self):

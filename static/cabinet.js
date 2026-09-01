@@ -1484,8 +1484,12 @@
             <span><em>Optom</em><b>${wholesale > 0 ? fmtSom(wholesale) : "—"}</b></span>
           </div>
           <div class="tops-row-split">
-            <span><em>Sotuvda</em><b>${fmt(qtySell)} dona</b></span>
-            <span><em>Optomda</em><b>${fmt(qtyOptom)} dona</b></span>
+            <span><em>Sotuvda</em><b>${fmt(qtySell)} dona · ${fmtSom(item.revenue_selling || 0)}</b></span>
+            <span><em>Optomda</em><b>${fmt(qtyOptom)} dona · ${fmtSom(item.revenue_wholesale || 0)}</b></span>
+          </div>
+          <div class="tops-row-split tops-row-split--profit">
+            <span><em>Foyda (sotuv)</em><b>${fmtSom(item.profit_selling || 0)}</b></span>
+            <span><em>Foyda (optom)</em><b>${fmtSom(item.profit_wholesale || 0)}</b></span>
           </div>
           ${idleHtml}
         </div>
@@ -1829,7 +1833,7 @@
     );
     set(
       "tops-kpi-split",
-      `${fmt(summary.qty_selling || 0)} / ${fmt(summary.qty_wholesale || 0)} dona`
+      `${fmt(summary.qty_selling || 0)} / ${fmt(summary.qty_wholesale || 0)} dona · foyda ${fmtSom(summary.profit_selling || 0)} / ${fmtSom(summary.profit_wholesale || 0)}`
     );
     let hint = document.getElementById("tops-partial-hint");
     if (partial) {

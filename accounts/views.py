@@ -3109,6 +3109,90 @@ def _item_product_ref(item: dict) -> tuple[str, str, dict]:
     return pid, str(name or "").strip(), nested
 
 
+def _product_catalog_prices(
+    product: SimpleNamespace | None,
+    *,
+    selling_list_ids: set[str],
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Katalog: sotuv, optom, sotib olish."""
+    if not product:
+        return Decimal("0"), Decimal("0"), Decimal("0")
+    selling = Decimal(str(product.selling_price or 0))
+    wholesale = Decimal(str(product.wholesale_price or 0))
+    if wholesale <= 0:
+        list_prices = getattr(product, "list_prices", None) or {}
+        vals = [
+            Decimal(str(v))
+            for lid, v in list_prices.items()
+            if lid not in selling_list_ids and Decimal(str(v or 0)) > 0
+        ]
+        if vals:
+            wholesale = min(vals)
+    cost = Decimal(str(product.cost_price or 0))
+    return selling, wholesale, cost
+
+
+def _line_revenue_profit_teZpos(
+    *,
+    qty: Decimal,
+    unit_price: Decimal,
+    raw_line_total: Decimal,
+    unit_cost: Decimal,
+    product: SimpleNamespace | None,
+    is_selling: bool,
+    selling_list_ids: set[str],
+) -> tuple[Decimal, Decimal]:
+    """
+    TezPOS Windows: sotuv kanalida sotuv narxi, optomda optom narxi.
+    Chek qatoridagi total ba'zan optom narxda qoladi — sotuv ro'yxatida katalog sotuv.
+    """
+    selling, wholesale, cat_cost = _product_catalog_prices(
+        product, selling_list_ids=selling_list_ids
+    )
+    if unit_cost <= 0:
+        unit_cost = cat_cost
+
+    txn = unit_price
+    if txn <= 0 and raw_line_total > 0 and qty > 0:
+        txn = (raw_line_total / qty).quantize(Decimal("0.01"))
+
+    if is_selling:
+        if selling > 0:
+            if txn <= 0:
+                eff = selling
+            elif (
+                wholesale > 0
+                and wholesale < selling
+                and _price_within(float(txn), float(wholesale), ratio=0.02, floor=2.0)
+            ):
+                # Sotuv kanali — qator optom narxda qolgan (TezPOS desktop)
+                eff = selling
+            elif _price_within(float(txn), float(selling), ratio=0.02, floor=2.0):
+                eff = txn
+            else:
+                eff = txn
+        else:
+            eff = txn
+    else:
+        if wholesale > 0:
+            if txn <= 0:
+                eff = wholesale
+            elif _price_within(float(txn), float(wholesale), ratio=0.02, floor=2.0):
+                eff = txn if txn > 0 else wholesale
+            else:
+                eff = txn
+        else:
+            eff = txn
+
+    if eff <= 0:
+        eff = txn
+    line_rev = (qty * eff).quantize(Decimal("0.01")) if eff > 0 and qty > 0 else Decimal("0")
+    if unit_cost <= 0 or qty <= 0:
+        return line_rev, Decimal("0")
+    profit = (line_rev - qty * unit_cost).quantize(Decimal("0.01"))
+    return line_rev, profit
+
+
 def _resolve_item_unit_cost(
     item: dict,
     products_by_id: dict[str, SimpleNamespace],
@@ -4998,7 +5082,9 @@ def _product_sales_stats(
     product_qty: dict[str, Decimal] = defaultdict(Decimal)
     product_rev: dict[str, Decimal] = defaultdict(Decimal)
     product_cost: dict[str, Decimal] = defaultdict(Decimal)
-    product_costed_rev: dict[str, Decimal] = defaultdict(Decimal)
+    product_profit: dict[str, Decimal] = defaultdict(Decimal)
+    product_profit_sell: dict[str, Decimal] = defaultdict(Decimal)
+    product_profit_optom: dict[str, Decimal] = defaultdict(Decimal)
     product_qty_sell: dict[str, Decimal] = defaultdict(Decimal)
     product_qty_optom: dict[str, Decimal] = defaultdict(Decimal)
     product_rev_sell: dict[str, Decimal] = defaultdict(Decimal)
@@ -5078,17 +5164,33 @@ def _product_sales_stats(
             )
             is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
 
+            raw_line_total = _dec(
+                item.get("total") or item.get("line_total"),
+                str(computed),
+            )
+            line_rev, line_profit = _line_revenue_profit_teZpos(
+                qty=qty,
+                unit_price=unit_price,
+                raw_line_total=raw_line_total,
+                unit_cost=unit_cost,
+                product=p,
+                is_selling=is_selling,
+                selling_list_ids=selling_list_ids,
+            )
+
             product_qty[pid] += qty
             product_rev[pid] += line_rev
             if unit_cost > 0 and qty > 0:
                 product_cost[pid] += unit_cost * qty
-                product_costed_rev[pid] += line_rev
+            product_profit[pid] += line_profit
             if is_selling:
                 product_qty_sell[pid] += qty
                 product_rev_sell[pid] += line_rev
+                product_profit_sell[pid] += line_profit
             else:
                 product_qty_optom[pid] += qty
                 product_rev_optom[pid] += line_rev
+                product_profit_optom[pid] += line_profit
 
             wholesale = Decimal("0")
             selling = Decimal("0")
@@ -5134,8 +5236,9 @@ def _product_sales_stats(
         qty = product_qty.get(pid) or Decimal("0")
         rev = product_rev.get(pid) or Decimal("0")
         cost_total = product_cost.get(pid) or Decimal("0")
-        costed_rev = product_costed_rev.get(pid) or Decimal("0")
-        profit = (costed_rev - cost_total) if cost_total > 0 else Decimal("0")
+        profit = product_profit.get(pid) or Decimal("0")
+        profit_sell = product_profit_sell.get(pid) or Decimal("0")
+        profit_optom = product_profit_optom.get(pid) or Decimal("0")
         cost_unit = float(meta.get("cost") or 0)
         if cost_unit <= 0 and p and (p.cost_price or Decimal("0")) > 0:
             cost_unit = float(p.cost_price)
@@ -5168,6 +5271,8 @@ def _product_sales_stats(
                 "revenue": float(rev),
                 "revenue_selling": float(product_rev_sell.get(pid) or 0),
                 "revenue_wholesale": float(product_rev_optom.get(pid) or 0),
+                "profit_selling": float(profit_sell),
+                "profit_wholesale": float(profit_optom),
                 "cost": cost_unit,
                 "cost_total": float(cost_total),
                 "profit": float(profit),
@@ -5214,6 +5319,8 @@ def _product_sales_stats(
         "avg_days_unsold": round(sum(idle_days) / len(idle_days), 1) if idle_days else 0,
         "qty_selling": round(sum(float(r.get("qty_selling") or 0) for r in sold_rows), 3),
         "qty_wholesale": round(sum(float(r.get("qty_wholesale") or 0) for r in sold_rows), 3),
+        "profit_selling": round(sum(float(r.get("profit_selling") or 0) for r in sold_rows), 2),
+        "profit_wholesale": round(sum(float(r.get("profit_wholesale") or 0) for r in sold_rows), 2),
     }
 
     if limit > 0 and limit < _TOP_LIMIT_ALL:
@@ -5826,6 +5933,8 @@ def cabinet_top_export(request):
             "Tushum",
             "Tushum (sotuv)",
             "Tushum (optom)",
+            "Foyda (sotuv)",
+            "Foyda (optom)",
             "Jami tannarx",
             "Jami foyda",
             "Oxirgi sotuv",
@@ -5854,6 +5963,8 @@ def cabinet_top_export(request):
                 float(row.get("revenue") or 0),
                 float(row.get("revenue_selling") or 0),
                 float(row.get("revenue_wholesale") or 0),
+                float(row.get("profit_selling") or 0),
+                float(row.get("profit_wholesale") or 0),
                 float(row.get("cost_total") or 0),
                 float(row.get("profit") or 0),
                 row.get("last_sale") or "",

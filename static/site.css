@@ -2909,6 +2909,11 @@ html.cabinet-ready .cabinet-content {
 }
 .tops-summary-kpi span { display: block; font-size: .72rem; color: #8b97ab; font-weight: 600; }
 .tops-summary-kpi strong { display: block; margin-top: .15rem; font-size: 1.05rem; color: #002048; }
+.tops-row-split--profit {
+  margin-top: .15rem;
+  font-size: .72rem;
+}
+.tops-row-split--profit b { color: #15803d; }
 .tops-row-rank {
   font-family: "Space Grotesk", Manrope, sans-serif;
   font-weight: 700;
