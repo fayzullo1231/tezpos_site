@@ -787,7 +787,19 @@
       priceListEl.innerHTML = `<p class="cabinet-hint">Bu davr / narxlar ro‘yxati uchun ma’lumot yo‘q.</p>`;
       return;
     }
-    priceListEl.innerHTML = list
+    const profitPending = list.some(
+      (r) =>
+        r.is_total &&
+        Number(r.revenue) > 0 &&
+        Number(r.cost || 0) === 0 &&
+        Number(r.profit || 0) === 0
+    );
+    const pendingNote = profitPending
+      ? `<p class="cabinet-hint" id="price-list-loading-profit">Foyda hisoblanmoqda… (katta davr biroz vaqt oladi)</p>`
+      : "";
+    priceListEl.innerHTML =
+      pendingNote +
+      list
       .map((row, i) => {
         const isTotal = Boolean(row.is_total);
         const marja = Number(row.markup != null ? row.markup : row.margin || 0);
@@ -976,8 +988,12 @@
       const qs = new URLSearchParams({ from: fromIso, to: toIsoVal });
       if (fast) qs.set("fast", "1");
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      // Server hard deadline ~14–20s; brauzer biroz ko‘proq kutadi
-      const timer = ctrl ? setTimeout(() => ctrl.abort(), fast ? 28000 : 45000) : null;
+      const rangeDays = Math.max(
+        1,
+        Math.round((new Date(toIsoVal) - new Date(fromIso)) / 86400000) + 1
+      );
+      const waitMs = fast ? 42000 : rangeDays > 7 ? 95000 : 55000;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), waitMs) : null;
       const res = await fetch(`${url}?${qs}`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
@@ -1008,8 +1024,15 @@
             String(r.id) !== "__selling__" &&
             Number(r.revenue) > 0
         );
-        // Tez rejimdan keyin Optom/detallar uchun to‘liq so‘rov (bir marta)
-        if (payload.estimated || payload.partial || !hasOptom) {
+        const profitZero = Number(payload?.summary?.profit || 0) === 0;
+        const noCatalog = Number(payload?.summary?.products_used || 0) === 0;
+        // Tez rejimdan keyin to‘liq hisob (foyda/optom uchun)
+        if (
+          payload.estimated ||
+          payload.partial ||
+          !hasOptom ||
+          (profitZero && (noCatalog || inGross > 0))
+        ) {
           loadRangeStats(fromIso, toIsoVal, { force: true, fast: false });
         }
       }

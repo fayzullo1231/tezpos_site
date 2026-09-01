@@ -349,6 +349,64 @@ def _memo_peek(key: str):
     return val
 
 
+def _ensure_catalog_maps(
+    token: str,
+    server: str,
+    memo_prefix: str,
+    *,
+    timeout: float = 20.0,
+) -> tuple[dict[str, SimpleNamespace], dict[str, SimpleNamespace], list]:
+    """Katalog (tannarx) — foyda uchun majburiy; avval kesh, keyin snapshot/products."""
+    products_raw: list = []
+    for key in (
+        f"{memo_prefix}|catalog_snap",
+        f"{memo_prefix}|products|4",
+        f"{memo_prefix}|products|3",
+        f"{memo_prefix}|products|2",
+    ):
+        hit = _memo_peek(key)
+        if isinstance(hit, list) and hit:
+            products_raw = hit
+            break
+
+    if len(products_raw) < 200:
+        try:
+            snap = (
+                tezpos_api.get_catalog_snapshot(
+                    token, server, timeout=min(timeout, 18.0)
+                )
+                or []
+            )
+            if len(snap) > len(products_raw):
+                products_raw = snap
+        except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+            pass
+
+    if len(products_raw) < 300:
+        try:
+            chunk = (
+                tezpos_api.get_products(
+                    token,
+                    server,
+                    max_pages=30,
+                    timeout=min(16.0, timeout),
+                )
+                or []
+            )
+            if len(chunk) > len(products_raw):
+                products_raw = chunk
+        except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+            pass
+
+    if products_raw:
+        _TEZPOS_MEMO[f"{memo_prefix}|catalog_snap"] = (time.time(), products_raw)
+
+    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
+    products_by_id = {str(p.id): p for p in products}
+    products_by_name = _products_by_name(products)
+    return products_by_id, products_by_name, products
+
+
 def _products_payload_list(products: list, *, lite: bool = False) -> list[dict]:
     out = []
     for p in products:
@@ -4510,14 +4568,23 @@ def cabinet_range_stats(request):
 
     span = (end - start).days + 1
     fast = (request.GET.get("fast") or "").strip() in ("1", "true", "yes")
-    # fast: faqat jami (tez). To‘liq: Optom uchun chek + katalog namuna (deadline ichida).
     single_day = span <= 1
+    memo_prefix = f"{server}|{(token or '')[-12:]}"
+    stats_cache_key = f"{memo_prefix}|rangestats|{start}|{end}|{'fast' if fast else 'full'}"
+    cache_hit = _TEZPOS_MEMO.get(stats_cache_key)
+    if cache_hit and time.time() - cache_hit[0] < (45.0 if fast else 180.0):
+        cached_payload = cache_hit[1]
+        if isinstance(cached_payload, dict) and (
+            cached_payload.get("summary") or cached_payload.get("priceLists")
+        ):
+            return JsonResponse(cached_payload)
+
+    # fast: tushum tez; foyda uchun inline chek qatorlari + katalog yetarli
     if fast:
-        # Jami to‘liq (barcha cheklar). Foyda — chek qatorlari + katalog tannarxi.
-        max_pages = 120 if single_day else (200 if span <= 31 else 120)
-        sales_timeout = 20 if single_day else 28
+        max_pages = 120 if single_day else (220 if span <= 31 else 150)
+        sales_timeout = 22 if single_day else 32
         detail_cap, detail_each, detail_budget = 0, 0.0, 0.0
-        hard_deadline = 28.0
+        hard_deadline = 38.0 if span <= 31 else 32.0
     elif single_day:
         max_pages, sales_timeout = 120, 20
         detail_cap, detail_each, detail_budget = 2000, 2.0, 35.0
@@ -4527,19 +4594,30 @@ def cabinet_range_stats(request):
         detail_cap, detail_each, detail_budget = 4000, 2.0, 40.0
         hard_deadline = 45.0
     elif span <= 31:
-        max_pages, sales_timeout = 200, 28
-        detail_cap, detail_each, detail_budget = 8000, 2.0, 50.0
-        hard_deadline = 55.0
+        max_pages, sales_timeout = 200, 30
+        detail_cap, detail_each, detail_budget = 12000, 2.0, 55.0
+        hard_deadline = 82.0
     else:
         max_pages, sales_timeout = 250, 28
         detail_cap, detail_each, detail_budget = 10000, 2.0, 60.0
-        hard_deadline = 60.0
+        hard_deadline = 82.0
 
-    memo_prefix = f"{server}|{(token or '')[-12:]}"
     sales: list = []
-    products_raw: list = []
     price_lists: list = []
     api_err = ""
+
+    try:
+        products_by_id, products_by_name, products = _ensure_catalog_maps(
+            token, server, memo_prefix, timeout=18.0 if fast else 22.0
+        )
+    except tezpos_api.TezPosApiError as exc:
+        if getattr(exc, "status", None) in (401, 403):
+            clear_tezpos_session(request)
+            return JsonResponse({"error": "auth"}, status=401)
+        products_by_id, products_by_name, products = {}, {}, []
+        api_err = str(exc)
+
+    margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0")
 
     def _load_sales():
         if single_day:
@@ -4570,19 +4648,10 @@ def cabinet_range_stats(request):
             lambda: tezpos_api.get_price_lists(token, server) or [],
         )
 
-    def _load_products():
-        return _memo_get(
-            f"{memo_prefix}|catalog_snap",
-            120.0,
-            lambda: tezpos_api.get_catalog_snapshot(token, server, timeout=16) or [],
-        )
-
     try:
-        workers = 3
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             fut_s = pool.submit(_load_sales)
             fut_pl = pool.submit(_load_price_lists)
-            fut_p = pool.submit(_load_products)
             remain = max(1.0, hard_deadline - (time.time() - t_start))
             try:
                 sales = fut_s.result(timeout=remain) or []
@@ -4596,12 +4665,6 @@ def cabinet_range_stats(request):
                 price_lists = []
             except Exception:
                 price_lists = []
-            if fut_p is not None:
-                remain = max(0.5, hard_deadline - (time.time() - t_start))
-                try:
-                    products_raw = fut_p.result(timeout=remain) or []
-                except (FuturesTimeoutError, Exception):
-                    products_raw = []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             clear_tezpos_session(request)
@@ -4610,22 +4673,6 @@ def cabinet_range_stats(request):
     except (TimeoutError, OSError) as exc:
         api_err = str(exc)
 
-    if not products_raw:
-        for key in (
-            f"{memo_prefix}|catalog_snap",
-            f"{memo_prefix}|products|4",
-            f"{memo_prefix}|products|3",
-            f"{memo_prefix}|products|2",
-        ):
-            hit = _TEZPOS_MEMO.get(key)
-            if hit and isinstance(hit[1], list) and hit[1]:
-                products_raw = hit[1]
-                break
-
-    products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-    products_by_id = {str(p.id): p for p in products}
-    products_by_name = _products_by_name(products)
-    margin_ratio = _catalog_margin_ratio(products) if products else Decimal("0")
     price_lists = [
         pl for pl in price_lists if isinstance(pl, dict) and pl.get("is_active", True)
     ]
@@ -4747,6 +4794,7 @@ def cabinet_range_stats(request):
     }
     if api_err:
         payload["error"] = api_err
+    _TEZPOS_MEMO[stats_cache_key] = (time.time(), payload)
     _log_slow(
         "range-stats",
         t_start,
