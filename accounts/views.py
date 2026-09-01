@@ -2238,6 +2238,9 @@ def _aggregate_price_list_stats(
         for pl in price_lists
         if pl.get("id") and str(pl.get("id")) in buckets
     ]
+    for lid in buckets:
+        if lid not in order:
+            order.append(lid)
     seen = set()
     total_rev = 0.0
     total_profit = 0.0
@@ -2255,8 +2258,14 @@ def _aggregate_price_list_stats(
             continue
         cost = float(b["cost"])
         costed_rev = float(b.get("costed_revenue") or 0)
-        # Foyda: faqat sotib olish narxi bor qatorlar (1200 - 1000 = 200)
-        profit = costed_rev - cost
+        # Foyda: sotib olish narxi bor qatorlar (12000-10000=2000, 11000-10000=1000)
+        if cost > 0 and costed_rev > 0:
+            if costed_rev >= rev * 0.995:
+                profit = rev - cost
+            else:
+                profit = costed_rev - cost
+        else:
+            profit = 0.0
         total_rev += rev
         total_profit += profit
         total_cost += cost
@@ -2374,7 +2383,9 @@ def _scale_price_list_stats(
         rev = float(r["revenue"]) * scale
         cost = float(r.get("cost") or 0) * scale
         costed = float(r.get("costed_revenue") or 0) * scale
-        profit = costed - cost
+        profit = float(r.get("profit") or 0) * scale
+        if profit == 0 and costed > 0:
+            profit = costed - cost
         qty = float(r.get("qty") or 0) * scale
         checks_est = int(round(target_checks * share)) if target_checks and share > 0 else int(r.get("checks") or 0)
         scaled.append(
@@ -2837,6 +2848,66 @@ def _fetch_sale_details(
             if data:
                 out[sid] = data
     return out
+
+
+def _collect_sale_details_for_stats(
+    token: str,
+    server: str,
+    sales: list[dict],
+    *,
+    detail_cap: int,
+    per_sale_timeout: float,
+    chunk_timeout: float,
+    deadline: float | None = None,
+) -> tuple[dict[str, dict], int, int]:
+    """
+    Barcha chek qatorlari: avvalo ro'yxatdagi items, keyin qolganlari bo'laklab.
+    Qadamli namuna (step) ishlatilmaydi — foyda noto'g'ri masshtablanmasin.
+    """
+    details: dict[str, dict] = {}
+    need_fetch: list[str] = []
+    for s in sales:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id") or "")
+        if not sid:
+            continue
+        if _sale_items(s):
+            details[sid] = s
+        else:
+            need_fetch.append(sid)
+
+    inline = len(details)
+    fetched_n = 0
+    if not need_fetch or detail_cap <= 0:
+        return details, inline, fetched_n
+
+    chunk = 250
+    cap_left = detail_cap
+    for i in range(0, len(need_fetch), chunk):
+        if cap_left <= 0:
+            break
+        if deadline and time.time() >= deadline:
+            break
+        part = need_fetch[i : i + min(chunk, cap_left)]
+        if not part:
+            break
+        remain = (deadline - time.time()) if deadline else chunk_timeout
+        if remain < 1.5:
+            break
+        got = _fetch_sale_details(
+            token,
+            server,
+            part,
+            limit=len(part),
+            per_sale_timeout=per_sale_timeout,
+            overall_timeout=min(chunk_timeout, max(2.0, remain)),
+        )
+        details.update(got)
+        fetched_n += len(got)
+        cap_left -= len(part)
+
+    return details, inline, fetched_n
 
 
 def _fallback_sotuv_only_lists(
@@ -4443,26 +4514,26 @@ def cabinet_range_stats(request):
     single_day = span <= 1
     if fast:
         # Jami to‘liq (barcha cheklar). Foyda — chek qatorlari + katalog tannarxi.
-        max_pages = 80 if single_day else (40 if span <= 7 else 25)
-        sales_timeout = 16 if single_day else 18
+        max_pages = 120 if single_day else (200 if span <= 31 else 120)
+        sales_timeout = 20 if single_day else 28
         detail_cap, detail_each, detail_budget = 0, 0.0, 0.0
-        hard_deadline = 22.0
+        hard_deadline = 28.0
     elif single_day:
-        max_pages, sales_timeout = 80, 16
-        detail_cap, detail_each, detail_budget = 80, 2.2, 10.0
-        hard_deadline = 24.0
+        max_pages, sales_timeout = 120, 20
+        detail_cap, detail_each, detail_budget = 2000, 2.0, 35.0
+        hard_deadline = 40.0
     elif span <= 7:
-        max_pages, sales_timeout = 50, 16
-        detail_cap, detail_each, detail_budget = 40, 2.2, 9.0
-        hard_deadline = 22.0
+        max_pages, sales_timeout = 150, 24
+        detail_cap, detail_each, detail_budget = 4000, 2.0, 40.0
+        hard_deadline = 45.0
     elif span <= 31:
-        max_pages, sales_timeout = 40, 18
-        detail_cap, detail_each, detail_budget = 30, 2.2, 8.0
-        hard_deadline = 22.0
+        max_pages, sales_timeout = 200, 28
+        detail_cap, detail_each, detail_budget = 8000, 2.0, 50.0
+        hard_deadline = 55.0
     else:
-        max_pages, sales_timeout = 30, 18
-        detail_cap, detail_each, detail_budget = 24, 2.0, 8.0
-        hard_deadline = 24.0
+        max_pages, sales_timeout = 250, 28
+        detail_cap, detail_each, detail_budget = 10000, 2.0, 60.0
+        hard_deadline = 60.0
 
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     sales: list = []
@@ -4597,41 +4668,17 @@ def cabinet_range_stats(request):
     lists: list = []
     details_used = 0
     estimated = False
-    remain_budget = hard_deadline - (time.time() - t_start)
+    deadline = t_start + hard_deadline
     if gross > 0:
-        details: dict[str, dict] = {}
-        for s in sales:
-            if not isinstance(s, dict) or not s.get("id"):
-                continue
-            if _sale_items(s):
-                details[str(s.get("id"))] = s
-        if detail_cap > 0 and remain_budget >= 3.0:
-            need_ids = [
-                str(s.get("id"))
-                for s in sales
-                if s.get("id") and str(s.get("id")) not in details
-            ]
-            if len(need_ids) > detail_cap:
-                step = max(1, len(need_ids) // detail_cap)
-                sampled = need_ids[::step][:detail_cap]
-                if len(sampled) < detail_cap:
-                    for sid in need_ids:
-                        if sid not in sampled:
-                            sampled.append(sid)
-                        if len(sampled) >= detail_cap:
-                            break
-                need_ids = sampled
-            sample_n = min(detail_cap, len(need_ids))
-            if sample_n > 0:
-                fetched = _fetch_sale_details(
-                    token,
-                    server,
-                    need_ids[:sample_n],
-                    limit=sample_n,
-                    per_sale_timeout=detail_each,
-                    overall_timeout=min(detail_budget, max(2.0, remain_budget - 1.0)),
-                )
-                details.update(fetched)
+        details, inline_n, fetched_n = _collect_sale_details_for_stats(
+            token,
+            server,
+            sales,
+            detail_cap=detail_cap,
+            per_sale_timeout=detail_each,
+            chunk_timeout=detail_budget,
+            deadline=deadline if detail_cap > 0 else None,
+        )
         details_used = len(details)
         if details:
             refined = _aggregate_price_list_stats(
@@ -4641,11 +4688,20 @@ def cabinet_range_stats(request):
                 price_lists,
             )
             if refined:
-                lists = _scale_price_list_stats(refined, gross, checks)
-                estimated = any(
-                    isinstance(r, dict) and r.get("scaled") and not r.get("is_total")
-                    for r in lists
+                jami_sample = next((r for r in refined if r.get("is_total")), None)
+                sample_rev = float(jami_sample.get("revenue") or 0) if jami_sample else 0.0
+                sample_checks = int(jami_sample.get("checks") or 0) if jami_sample else details_used
+                coverage_ok = (
+                    checks > 0
+                    and sample_checks >= max(1, int(checks * 0.9))
+                    and sample_rev >= gross * 0.92
                 )
+                if coverage_ok or sample_rev <= 0 or gross <= 0:
+                    lists = refined
+                    estimated = False
+                else:
+                    lists = _scale_price_list_stats(refined, gross, checks)
+                    estimated = True
                 jami = next((r for r in lists if r.get("is_total")), None)
                 if jami:
                     profit = float(jami.get("profit") or 0)
@@ -4681,7 +4737,7 @@ def cabinet_range_stats(request):
         "priceLists": lists,
         "partial": bool(
             estimated
-            or (detail_cap > 0 and details_used < max(1, min(checks, detail_cap)))
+            or (checks > 0 and details_used < int(checks * 0.85))
             or bool(api_err)
         ),
         "estimated": estimated,

@@ -366,6 +366,57 @@ class CostedProfitTests(SimpleTestCase):
         self.assertAlmostEqual(jami["profit"], 200)
         self.assertLess(jami["markup"], 50)
 
+    def test_price_list_retail_and_optom_profit_per_unit(self):
+        from accounts.views import (
+            SELLING_LIST_ID,
+            _aggregate_price_list_stats,
+            _map_product,
+            _products_by_name,
+        )
+
+        p = _map_product(
+            {
+                "id": "1",
+                "name": "Test",
+                "price": 12000,
+                "cost_price": 10000,
+                "wholesale_price": 11000,
+            }
+        )
+        by_id = {"1": p}
+        by_name = _products_by_name([p])
+        sales = [
+            {
+                "id": "r1",
+                "items": [
+                    {
+                        "product_id": "1",
+                        "quantity": 1,
+                        "unit_price": 12000,
+                        "total": 12000,
+                    }
+                ],
+            },
+            {
+                "id": "o1",
+                "items": [
+                    {
+                        "product_id": "1",
+                        "quantity": 1,
+                        "unit_price": 11000,
+                        "total": 11000,
+                    }
+                ],
+            },
+        ]
+        rows = _aggregate_price_list_stats(sales, by_id, by_name, [])
+        retail = next(r for r in rows if r.get("id") == SELLING_LIST_ID)
+        optom = next(r for r in rows if r.get("id") != SELLING_LIST_ID and not r.get("is_total"))
+        self.assertAlmostEqual(retail["profit"], 2000)
+        self.assertAlmostEqual(optom["profit"], 1000)
+        self.assertAlmostEqual(retail["revenue"] - retail["cost"], retail["profit"])
+        self.assertAlmostEqual(optom["revenue"] - optom["cost"], optom["profit"])
+
 
 class BarcodeExcelTemplateTests(SimpleTestCase):
     def test_all_codes_go_in_one_cell_with_comma_and_newline(self):
