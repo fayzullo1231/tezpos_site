@@ -753,6 +753,93 @@ class CostedProfitTests(SimpleTestCase):
         self.assertTrue(_sale_needs_detail({"id": "s1", "items": []}))
 
 
+    def test_discounted_optom_below_catalog_wholesale(self):
+        """Optom katalogdan past chegirma ham optom (3750 vs 4000)."""
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        p = _map_product(
+            {
+                "id": "p1",
+                "name": "FKUSNYASHA",
+                "price": 4200,
+                "cost_price": 3000,
+                "wholesale_price": 4000,
+                "list_prices": {"optom-uuid": 4000},
+            }
+        )
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-08-15T12:00:00+05:00",
+                "price_list_id": "",
+                "items": [
+                    {
+                        "product_id": "p1",
+                        "quantity": 81,
+                        "unit_price": 3750,
+                        "total": 3750 * 81,
+                    }
+                ],
+            }
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            {"p1": p},
+            {},
+            [{"id": "optom-uuid", "name": "optom", "is_selling": False, "is_active": True}],
+            period_start=date(2026, 8, 1),
+            period_end=date(2026, 8, 31),
+            prefer_txn_total=True,
+        )
+        self.assertAlmostEqual(rows[0]["qty_wholesale"], 81)
+        self.assertAlmostEqual(rows[0]["qty_selling"], 0)
+        self.assertEqual(summary["checks_wholesale"], 1)
+
+    def test_small_retail_discount_stays_selling(self):
+        """Sotuvga yaqin kichik chegirma — sotuv qoladi."""
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        p = _map_product(
+            {
+                "id": "p1",
+                "name": "X",
+                "price": 10000,
+                "cost_price": 7000,
+                "wholesale_price": 9000,
+            }
+        )
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-08-15T12:00:00+05:00",
+                "price_list_id": "",
+                "items": [
+                    {
+                        "product_id": "p1",
+                        "quantity": 2,
+                        "unit_price": 9900,
+                        "total": 19800,
+                    }
+                ],
+            }
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            {"p1": p},
+            {},
+            [{"id": "o", "name": "optom", "is_selling": False}],
+            period_start=date(2026, 8, 1),
+            period_end=date(2026, 8, 31),
+            prefer_txn_total=True,
+        )
+        self.assertAlmostEqual(rows[0]["qty_selling"], 2)
+        self.assertAlmostEqual(rows[0]["qty_wholesale"], 0)
+
+
 class ProfitMarginRegressionTests(SimpleTestCase):
     """Foyda/marja: profit = tushum - tannarx; marja = foyda / tushum × 100."""
 

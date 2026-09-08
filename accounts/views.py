@@ -2205,8 +2205,7 @@ def _match_price_list_id(
 ) -> str:
     """
     Birlik narxini Sotuv yoki Optom ga biriktiradi.
-    Eng yaqin moslik g‘olib — yaqin narxlarda optom “yutib ketmasin” deb
-    majburan Sotuvga o‘tkazilmaydi.
+    Aniq moslik + sotuvdan past chegirmali optom (katalog optomdan past).
     """
     if not product:
         return SELLING_LIST_ID
@@ -2252,6 +2251,13 @@ def _match_price_list_id(
     ):
         optom_candidates.append(("__wholesale_field__", wh))
 
+    # Optom ro‘yxat narxi sotuv bilan bir xil bo‘lsa — optom emas
+    optom_candidates = [
+        (lid, lp)
+        for lid, lp in optom_candidates
+        if selling <= 0 or lp < selling - 0.5
+    ]
+
     best_sell_dist = (
         min(abs(up - sp) for sp in sell_prices) if sell_prices else None
     )
@@ -2262,13 +2268,15 @@ def _match_price_list_id(
 
     best_optom: tuple[float, str] | None = None
     for lid, lp in optom_candidates:
-        if selling > 0 and lp >= selling - 0.5:
-            continue
         dist = abs(up - lp)
-        if not _price_within(up, lp, ratio=0.01, floor=1.0):
+        # Aniq moslik: 2.5% yoki kamida 50 so'm (kichik narxlarda 1% juda tor)
+        if not _price_within(up, lp, ratio=0.025, floor=50.0):
             continue
         if best_optom is None or dist < best_optom[0]:
             best_optom = (dist, lid)
+
+    def _as_list_id(oid: str) -> str:
+        return OTHER_LIST_ID if oid == "__wholesale_field__" else oid
 
     if best_optom is not None:
         odist, oid = best_optom
@@ -2277,10 +2285,23 @@ def _match_price_list_id(
             return SELLING_LIST_ID
         # Optom aniq mos (sotuvdan yaqinroq yoki sotuv mos emas)
         if not sell_hit or (best_sell_dist is not None and odist + 0.01 < best_sell_dist):
-            if oid == "__wholesale_field__":
-                return OTHER_LIST_ID
-            return oid
+            return _as_list_id(oid)
         return SELLING_LIST_ID
+
+    # Chegirmali optom: birlik narx sotuvdan past va optomga yaqinroq / optom atrofida
+    if selling > 0 and up + 0.5 < selling and optom_candidates:
+        oid, ref = min(optom_candidates, key=lambda t: abs(up - t[1]))
+        odist = abs(up - ref)
+        sdist = abs(up - selling)
+        near_optom = up <= ref + max(50.0, abs(ref) * 0.08)
+        below_optom = up <= ref + 0.5  # optom yoki undan past chegirma
+        closer_optom = odist + 0.01 < sdist
+        if closer_optom or near_optom or below_optom:
+            # Juda past "sotuv chegirmasi" emas — tannarxdan past bo‘lsa e'tiborsiz
+            cost = float(getattr(product, "cost_price", 0) or 0)
+            if cost > 0 and up + 0.5 < cost * 0.5:
+                return SELLING_LIST_ID
+            return _as_list_id(oid)
 
     return SELLING_LIST_ID
 
@@ -6444,7 +6465,7 @@ def _build_top_products_pack(
     if include_unsold:
         fast = False
     mode = "f" if fast else ("u" if include_unsold else "x")
-    pack_key = f"{memo_prefix}|topspack18|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack19|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)
