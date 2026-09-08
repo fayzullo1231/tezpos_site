@@ -1550,7 +1550,7 @@
           <div class="tops-row-metric tops-row-metric--profit">
             <em>Foyda</em>
             <strong>${Number.isFinite(profit) ? fmtSom(profit) : "—"}</strong>
-            ${soldInPeriod ? `<span class="tops-row-margin">Ulush ${sharePct.toFixed(1)}%</span>` : ""}
+            ${soldInPeriod ? `<span class="tops-row-margin" title="Jami mahsulot savdosidagi ulush">Ulush ${sharePct.toFixed(1)}%</span>` : ""}
           </div>
         </div>
       </article>`;
@@ -2108,17 +2108,31 @@
     const filtered = filterTopRows(topsDisplayRows());
     const sorted = sortTopRows(filtered, topsSortSelect?.value || "qty_desc");
     const backend = data.topsProductSummary || {};
-    let shareBase =
-      Number(backend.tezpos_total || backend.expected_gross || backend.total_revenue || 0) || 0;
-    if (shareBase <= 0) {
-      shareBase = sorted
+    // Ulush asosi: barcha sotilgan mahsulotlar tushumi (foizlar yig‘indisi ≈ 100%)
+    const allSold = (topsRawProducts.length ? topsRawProducts : data.topProducts || []).filter(
+      (r) => r && r.sold_in_period
+    );
+    let productsSum = allSold.reduce((s, r) => s + Number(r.revenue || 0), 0);
+    if (productsSum <= 0) {
+      productsSum = sorted
         .filter((r) => r.sold_in_period)
         .reduce((s, r) => s + Number(r.revenue || 0), 0);
     }
+    const tezpos = Number(
+      backend.tezpos_total || backend.expected_gross || backend.total_revenue || 0
+    );
+    let shareBase = productsSum;
+    if (tezpos > 0 && productsSum > 0) {
+      const ratio = productsSum / tezpos;
+      if (ratio >= 0.85 && ratio <= 1.15) shareBase = tezpos;
+    } else if (productsSum <= 0 && tezpos > 0) {
+      shareBase = tezpos;
+    }
     const withShare = sorted.map((r) => {
       const rev = Number(r.revenue || 0);
-      const share =
+      let share =
         shareBase > 0 && rev > 0 && r.sold_in_period ? (rev / shareBase) * 100 : 0;
+      if (share > 100) share = 100;
       return {
         ...r,
         share,

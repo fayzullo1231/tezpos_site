@@ -3071,11 +3071,15 @@ def _fetch_sale_details(
     memo_prefix = f"{server}|{(token or '')[-12:]}"
 
     def one(sid: str):
-        cache_key = f"{memo_prefix}|sale|{sid}"
+        cache_key = f"{memo_prefix}|sale3|{sid}"
         hit = _TEZPOS_MEMO.get(cache_key)
         if hit and time.time() - hit[0] < _SALE_DETAIL_MEMO_TTL:
             data = hit[1]
-            return sid, data if isinstance(data, dict) else None
+            # Eski keshda price_list_id bo‘lmasa — qayta so‘rash
+            if isinstance(data, dict) and (
+                "price_list_id" in data or "price_list" in data or not _sale_items(data)
+            ):
+                return sid, data if isinstance(data, dict) else None
         try:
             with _TEZPOS_UPSTREAM_SEM:
                 data = tezpos_api.api_request(
@@ -3110,6 +3114,18 @@ def _fetch_sale_details(
     return out
 
 
+def _sale_needs_detail(sale: dict) -> bool:
+    """Items yo‘q yoki price_list_id yo‘q — optom/sotuv uchun detail kerak."""
+    if not isinstance(sale, dict):
+        return True
+    if not _sale_items(sale):
+        return True
+    # Ro‘yxat API ba'zan items beradi, lekin price_list_id bermaydi
+    if "price_list_id" not in sale and "price_list" not in sale:
+        return True
+    return False
+
+
 def _collect_sale_details_for_stats(
     token: str,
     server: str,
@@ -3132,9 +3148,11 @@ def _collect_sale_details_for_stats(
         sid = str(s.get("id") or "")
         if not sid:
             continue
-        if _sale_items(s):
+        if _sale_items(s) and not _sale_needs_detail(s):
             details[sid] = s
         else:
+            if _sale_items(s):
+                details[sid] = s
             need_fetch.append(sid)
 
     inline = len(details)
@@ -6422,7 +6440,7 @@ def _build_top_products_pack(
     if include_unsold:
         fast = False
     mode = "f" if fast else ("u" if include_unsold else "x")
-    pack_key = f"{memo_prefix}|topspack15|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack16|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)
@@ -6567,9 +6585,12 @@ def _build_top_products_pack(
         sid = str(s.get("id") or "")
         if not sid:
             continue
-        if _sale_items(s):
+        if _sale_items(s) and not _sale_needs_detail(s):
             details_map[sid] = s
         else:
+            # Items bo‘lsa ham price_list_id yo‘q — detaildan optom/sotuvni olish
+            if _sale_items(s):
+                details_map[sid] = s
             need_fetch.append(sid)
 
     missing_after_fetch = 0
@@ -6588,7 +6609,14 @@ def _build_top_products_pack(
                 overall_timeout=min(overall, 70.0),
             )
             fetched.update(got)
-        details_map.update(fetched)
+        # Detail ustun — price_list_id bilan
+        for sid, detail in fetched.items():
+            if not isinstance(detail, dict):
+                continue
+            prev = details_map.get(sid) or {}
+            if "price_list_id" not in detail and "price_list_id" in prev:
+                detail = {**detail, "price_list_id": prev.get("price_list_id")}
+            details_map[sid] = detail
         missing_after_fetch = max(0, fetch_limit - len(fetched))
         if len(need_fetch) > detail_cap:
             missing_after_fetch += len(need_fetch) - detail_cap
@@ -6732,18 +6760,25 @@ def _build_top_products_pack(
         product_summary["total_revenue"] = round(expected_gross, 2)
         product_summary["total_amount"] = round(expected_gross, 2)
 
-    # Ulush: mahsulot tushumi / TezPOS jami savdo (yoki mahsulotlar yig‘indisi)
-    share_base = float(expected_gross or 0)
-    if share_base <= 0:
-        share_base = float(
-            sum(float(r.get("revenue") or 0) for r in top_products if r.get("sold_in_period"))
-        )
+    # Ulush: mahsulot tushumi / BARCHA mahsulotlar tushumi (yig‘indi = 100%)
+    # TezPOS jami farq qilsa ham foizlar 100% dan oshmasin
+    products_rev_sum = float(
+        sum(float(r.get("revenue") or 0) for r in top_products if r.get("sold_in_period"))
+    )
+    share_base = products_rev_sum
+    tezpos_base = float(expected_gross or 0)
+    if (
+        tezpos_base > 0
+        and products_rev_sum > 0
+        and 0.85 <= (products_rev_sum / tezpos_base) <= 1.15
+    ):
+        share_base = tezpos_base
     if share_base > 0:
         for r in top_products:
             if not isinstance(r, dict):
                 continue
             rev_f = float(r.get("revenue") or 0)
-            share = round(rev_f / share_base * 100.0, 2) if rev_f > 0 else 0.0
+            share = round(rev_f / share_base * 100.0, 2) if rev_f > 0 and r.get("sold_in_period") else 0.0
             r["share"] = share
             r["sales_share"] = share
             r["margin_percent"] = share

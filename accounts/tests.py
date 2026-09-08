@@ -1107,6 +1107,38 @@ class SalesShareTests(SimpleTestCase):
         self.assertAlmostEqual(by_id["b"]["share"], 75.0, places=1)
         self.assertAlmostEqual(by_id["b"]["margin_percent"], 75.0, places=1)
 
+    def test_share_uses_products_sum_not_smaller_tezpos_total(self):
+        """Ulush 100% dan oshmasin — asos mahsulotlar yig‘indisi."""
+        from accounts.views import _map_product, _product_sales_stats
+        from datetime import date
+
+        a = _map_product({"id": "a", "name": "A", "price": 100, "cost_price": 50})
+        b = _map_product({"id": "b", "name": "B", "price": 100, "cost_price": 50})
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-08-01T10:00:00+05:00",
+                "price_list_id": "",
+                "total": 400,
+                "items": [
+                    {"product_id": "a", "quantity": 1, "unit_price": 100, "total": 100},
+                    {"product_id": "b", "quantity": 3, "unit_price": 100, "total": 300},
+                ],
+            }
+        }
+        rows, _ = _product_sales_stats(
+            sales,
+            {"a": a, "b": b},
+            {},
+            [],
+            period_start=date(2026, 8, 1),
+            period_end=date(2026, 8, 31),
+            prefer_txn_total=True,
+        )
+        shares = [r["share"] for r in rows if r.get("sold_in_period")]
+        self.assertAlmostEqual(sum(shares), 100.0, places=1)
+        self.assertTrue(all(s <= 100.0 for s in shares))
+
 
 class CatalogEnrichTopsTests(SimpleTestCase):
     def test_api_top_items_get_name_and_prices_from_catalog(self):
