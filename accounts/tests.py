@@ -695,6 +695,63 @@ class CostedProfitTests(SimpleTestCase):
         self.assertAlmostEqual(row["revenue_wholesale"], 36000)
         self.assertEqual(summary["checks_wholesale"], 1)
 
+    def test_empty_price_list_id_optom_by_unit_price(self):
+        """Contabo: price_list_id bo‘sh — birlik narxi optom bo‘lsa optom."""
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats, _sale_needs_detail
+
+        p = _map_product(
+            {
+                "id": "p1",
+                "name": "YOGURT",
+                "price": 4000,
+                "cost_price": 3000,
+                "wholesale_price": 3900,
+                "list_prices": {"optom-uuid": 3900},
+            }
+        )
+        sale = {
+            "id": "s1",
+            "completed_at": "2026-08-15T12:00:00+05:00",
+            "price_list_id": "",
+            "total": 39000,
+            "items": [
+                {
+                    "product_id": "p1",
+                    "quantity": 10,
+                    "unit_price": 3900,
+                    "total": 39000,
+                }
+            ],
+        }
+        self.assertFalse(_sale_needs_detail(sale))
+        rows, summary = _product_sales_stats(
+            {"s1": sale},
+            {"p1": p},
+            {},
+            [
+                {
+                    "id": "optom-uuid",
+                    "name": "optom",
+                    "is_selling": False,
+                    "is_active": True,
+                }
+            ],
+            period_start=date(2026, 8, 1),
+            period_end=date(2026, 8, 31),
+            prefer_txn_total=True,
+        )
+        self.assertAlmostEqual(rows[0]["qty_wholesale"], 10)
+        self.assertAlmostEqual(summary["qty_wholesale"], 10)
+        self.assertEqual(summary["checks_wholesale"], 1)
+
+    def test_sale_without_items_needs_detail(self):
+        from accounts.views import _sale_needs_detail
+
+        self.assertTrue(_sale_needs_detail({"id": "s1", "total": 100}))
+        self.assertTrue(_sale_needs_detail({"id": "s1", "items": []}))
+
 
 class ProfitMarginRegressionTests(SimpleTestCase):
     """Foyda/marja: profit = tushum - tannarx; marja = foyda / tushum × 100."""

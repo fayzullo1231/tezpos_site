@@ -2477,11 +2477,23 @@
       }
       await fetchProgressive(url, params, {
         onData: apply,
-        needsFull: (j) =>
-          Boolean(j?.partial) ||
-          topsRowsNeedCatalog(j?.topProducts) ||
-          (Number(j?.checks || 0) > 0 &&
-            Number(j?.details_used || 0) < Number(j?.checks || 0)),
+        needsFull: (j) => {
+          if (!j || j.error) return true;
+          if (j.partial || topsRowsNeedCatalog(j.topProducts)) return true;
+          const checks = Number(j.checks || 0);
+          const details = Number(j.details_used || 0);
+          if (checks > 0 && details < checks) return true;
+          // Fast/API yo‘lida optom doim 0 — to‘liq hisob kerak
+          const ps = j.productSummary || {};
+          if (
+            checks > 0 &&
+            String(j.source || "") === "api" &&
+            Number(ps.qty_wholesale || 0) === 0
+          ) {
+            return true;
+          }
+          return false;
+        },
       });
     } catch (_err) {
       if (reqId !== topsReq) return;

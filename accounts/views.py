@@ -401,8 +401,10 @@ def _fill_list_prices_from_catalog(
 # TezPOS javoblarini qisqa muddat xotirada saqlash (SSR/AJAX tezligi)
 _TEZPOS_MEMO: dict[str, tuple[float, object]] = {}
 # TezPOS backendni bosib yubormaslik — bir vaqtda cheklangan parallel so‘rov
-_TEZPOS_UPSTREAM_SEM = threading.BoundedSemaphore(4)
+# Chek detail / ro‘yxat — Contabo parallel (4 juda sekin → optom 0 qolardi)
+_TEZPOS_UPSTREAM_SEM = threading.BoundedSemaphore(16)
 _SALE_DETAIL_MEMO_TTL = 120.0
+_SALE_DETAIL_WORKERS = 16
 
 
 def _memo_get(key: str, ttl: float, loader, *, skip_empty: bool = False):
@@ -3098,7 +3100,7 @@ def _fetch_sale_details(
             return sid, None
         return sid, None
 
-    workers = min(8, max(1, len(ids)))
+    workers = min(_SALE_DETAIL_WORKERS, max(1, len(ids)))
     deadline = time.time() + overall_timeout if overall_timeout else None
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(one, sid) for sid in ids]
@@ -3115,15 +3117,10 @@ def _fetch_sale_details(
 
 
 def _sale_needs_detail(sale: dict) -> bool:
-    """Items yo‘q yoki price_list_id yo‘q — optom/sotuv uchun detail kerak."""
+    """Items yo‘q bo‘lsa detail kerak. Optom — birlik narxi vs katalog (price_list_id bo‘sh bo‘lishi mumkin)."""
     if not isinstance(sale, dict):
         return True
-    if not _sale_items(sale):
-        return True
-    # Ro‘yxat API ba'zan items beradi, lekin price_list_id bermaydi
-    if "price_list_id" not in sale and "price_list" not in sale:
-        return True
-    return False
+    return not _sale_items(sale)
 
 
 def _collect_sale_details_for_stats(
@@ -3160,7 +3157,7 @@ def _collect_sale_details_for_stats(
     if not need_fetch or detail_cap <= 0:
         return details, inline, fetched_n
 
-    chunk = 60
+    chunk = 120
     cap_left = detail_cap
     for i in range(0, len(need_fetch), chunk):
         if cap_left <= 0:
@@ -3181,7 +3178,14 @@ def _collect_sale_details_for_stats(
             per_sale_timeout=per_sale_timeout,
             overall_timeout=min(chunk_timeout, max(2.0, remain)),
         )
-        details.update(got)
+        # Detail ustun (items + ixtiyoriy price_list_id)
+        for sid, detail in got.items():
+            if not isinstance(detail, dict):
+                continue
+            prev = details.get(sid) or {}
+            if "price_list_id" not in detail and "price_list_id" in prev:
+                detail = {**detail, "price_list_id": prev.get("price_list_id")}
+            details[sid] = detail
         fetched_n += len(got)
         cap_left -= len(part)
 
@@ -6440,7 +6444,7 @@ def _build_top_products_pack(
     if include_unsold:
         fast = False
     mode = "f" if fast else ("u" if include_unsold else "x")
-    pack_key = f"{memo_prefix}|topspack16|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack17|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)
@@ -6477,12 +6481,12 @@ def _build_top_products_pack(
         if single_day:
             day = start.isoformat()
             return _memo_get(
-                f"{memo_prefix}|dayv4|{day}",
+                f"{memo_prefix}|dayv5|{day}",
                 cache_ttl,
                 lambda: tezpos_api.get_sales_for_day(token, server, day) or [],
             )
         return _memo_get(
-            f"{memo_prefix}|topsales8|{start}|{end}|{max_pages}",
+            f"{memo_prefix}|topsales9|{start}|{end}|{max_pages}",
             cache_ttl,
             lambda: tezpos_api.get_sales(
                 token,
@@ -6579,47 +6583,25 @@ def _build_top_products_pack(
         except Exception:
             pass
 
-    details_map: dict[str, dict] = {}
-    need_fetch: list[str] = []
-    for s in period_sales:
-        sid = str(s.get("id") or "")
-        if not sid:
-            continue
-        if _sale_items(s) and not _sale_needs_detail(s):
-            details_map[sid] = s
-        else:
-            # Items bo‘lsa ham price_list_id yo‘q — detaildan optom/sotuvni olish
-            if _sale_items(s):
-                details_map[sid] = s
-            need_fetch.append(sid)
-
-    missing_after_fetch = 0
-    if need_fetch and detail_cap > 0:
-        fetch_limit = min(len(need_fetch), detail_cap)
-        fetched: dict[str, dict] = {}
-        chunk = 80
-        for i in range(0, fetch_limit, chunk):
-            part = need_fetch[i : i + chunk]
-            got = _fetch_sale_details(
-                token,
-                server,
-                part,
-                limit=len(part),
-                per_sale_timeout=3.5,
-                overall_timeout=min(overall, 70.0),
-            )
-            fetched.update(got)
-        # Detail ustun — price_list_id bilan
-        for sid, detail in fetched.items():
-            if not isinstance(detail, dict):
-                continue
-            prev = details_map.get(sid) or {}
-            if "price_list_id" not in detail and "price_list_id" in prev:
-                detail = {**detail, "price_list_id": prev.get("price_list_id")}
-            details_map[sid] = detail
-        missing_after_fetch = max(0, fetch_limit - len(fetched))
-        if len(need_fetch) > detail_cap:
-            missing_after_fetch += len(need_fetch) - detail_cap
+    # Ro‘yxatda items bo‘lsa — darhol; yo‘q bo‘lsa deadline ichida parallel detail
+    deadline = time.time() + max(14.0, overall - 6.0)
+    details_map, _inline_n, fetched_n = _collect_sale_details_for_stats(
+        token,
+        server,
+        period_sales,
+        detail_cap=detail_cap,
+        per_sale_timeout=2.6 if single_day else 2.0,
+        chunk_timeout=min(32.0, max(10.0, overall / 3.5)),
+        deadline=deadline if detail_cap > 0 else None,
+    )
+    need_fetch_n = sum(
+        1
+        for s in period_sales
+        if isinstance(s, dict) and str(s.get("id") or "") and _sale_needs_detail(s)
+    )
+    missing_after_fetch = max(0, need_fetch_n - fetched_n)
+    if detail_cap > 0 and need_fetch_n > detail_cap:
+        missing_after_fetch = max(missing_after_fetch, need_fetch_n - detail_cap)
 
     # Chek/top product_id lar katalogda yo‘q bo‘lsa — ID bo‘yicha boyitish
     detail_pids: set[str] = set()
