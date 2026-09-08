@@ -6444,7 +6444,7 @@ def _build_top_products_pack(
     if include_unsold:
         fast = False
     mode = "f" if fast else ("u" if include_unsold else "x")
-    pack_key = f"{memo_prefix}|topspack17|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack18|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)
@@ -6470,9 +6470,9 @@ def _build_top_products_pack(
 
     if fast:
         max_pages = min(max_pages, 80)
-        # Fast: faqat inline items — to‘liq emas, partial=true
-        detail_cap = 0
-        overall = min(overall, 28.0)
+        # Contabo ro‘yxatida items yo‘q — optom uchun namuna detail (API tops optomni 0 qiladi)
+        detail_cap = 200 if single_day else 160
+        overall = min(overall, 42.0)
 
     hist_end = start - timedelta(days=1)
     need_history = (not fast) and hist_end >= history_start
@@ -6714,7 +6714,7 @@ def _build_top_products_pack(
     incomplete = bool(
         fast
         or (source == "api" and (placeholder_n > 0 or missing_prices > 0 or expected_gross > 0))
-        or (need_fetch and detail_cap <= 0)
+        or (need_fetch_n > 0 and detail_cap <= 0)
         or missing_after_fetch > 0
         or (checks_n > 0 and details_used < checks_n)
         or (expected_gross > 0 and source == "sales" and products_rev + 1 < expected_gross * 0.97)
