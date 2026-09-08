@@ -603,6 +603,98 @@ class CostedProfitTests(SimpleTestCase):
         self.assertAlmostEqual(summary["qty_selling"], 5)
         self.assertAlmostEqual(summary["qty_wholesale"], 13)
 
+    def test_optom_uuid_sale_counts_wholesale_even_when_prices_close(self):
+        """TezPOS: price_list_id UUID = optom; yaqin sotuv/optom narxda ham optom."""
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        p = _map_product(
+            {
+                "id": "p1",
+                "name": "FELEX",
+                "price": 49000,
+                "cost_price": 40000,
+                "wholesale_price": 48500,
+            }
+        )
+        optom_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-08-15T12:00:00+05:00",
+                "price_list_id": optom_id,
+                "total": 48500 * 10,
+                "items": [
+                    {
+                        "product_id": "p1",
+                        "quantity": 10,
+                        "unit_price": 48500,
+                        "total": 485000,
+                    }
+                ],
+            }
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            {p.id: p},
+            {},
+            [{"id": optom_id, "name": "Optom", "is_active": True}],
+            period_start=date(2026, 8, 1),
+            period_end=date(2026, 8, 31),
+            prefer_txn_total=True,
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertAlmostEqual(row["qty_wholesale"], 10)
+        self.assertAlmostEqual(row["qty_selling"], 0)
+        self.assertAlmostEqual(row["revenue_wholesale"], 485000)
+        self.assertEqual(summary["checks_wholesale"], 1)
+        self.assertEqual(summary["checks_selling"], 0)
+
+    def test_optom_uuid_without_price_lists_still_wholesale(self):
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        p = _map_product(
+            {
+                "id": "p1",
+                "name": "FELEX",
+                "price": 10000,
+                "cost_price": 7000,
+                "wholesale_price": 9000,
+            }
+        )
+        optom_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-08-10T12:00:00+05:00",
+                "price_list_id": optom_id,
+                "items": [
+                    {
+                        "product_id": "p1",
+                        "quantity": 4,
+                        "unit_price": 9000,
+                        "total": 36000,
+                    }
+                ],
+            }
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            {p.id: p},
+            {},
+            [],  # price_lists yuklanmagan
+            period_start=date(2026, 8, 1),
+            period_end=date(2026, 8, 31),
+            prefer_txn_total=True,
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertAlmostEqual(row["qty_wholesale"], 4)
+        self.assertAlmostEqual(row["revenue_wholesale"], 36000)
+        self.assertEqual(summary["checks_wholesale"], 1)
+
 
 class ProfitMarginRegressionTests(SimpleTestCase):
     """Foyda/marja: profit = tushum - tannarx; marja = foyda / tushum × 100."""

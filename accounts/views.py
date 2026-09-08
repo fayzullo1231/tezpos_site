@@ -2203,7 +2203,8 @@ def _match_price_list_id(
 ) -> str:
     """
     Birlik narxini Sotuv yoki Optom ga biriktiradi.
-    Qoida: shubhada Sotuv. Optom faqat narx optomga aniq mos kelganda.
+    Eng yaqin moslik g‘olib — yaqin narxlarda optom “yutib ketmasin” deb
+    majburan Sotuvga o‘tkazilmaydi.
     """
     if not product:
         return SELLING_LIST_ID
@@ -2241,7 +2242,6 @@ def _match_price_list_id(
         if lp > 0:
             optom_candidates.append((lid, lp))
 
-    # wholesale_price maydoni ham (list_prices bo'sh bo'lsa) — sotuvdan past bo'lsagina
     wh = float(getattr(product, "wholesale_price", 0) or 0)
     if (
         wh > 0
@@ -2253,14 +2253,16 @@ def _match_price_list_id(
     best_sell_dist = (
         min(abs(up - sp) for sp in sell_prices) if sell_prices else None
     )
+    sell_hit = bool(
+        sell_prices
+        and any(_price_within(up, sp, ratio=0.01, floor=1.0) for sp in sell_prices)
+    )
 
     best_optom: tuple[float, str] | None = None
     for lid, lp in optom_candidates:
-        # Optom sotuvdan past bo'lishi kerak (barobar bo'lsa — Sotuv)
         if selling > 0 and lp >= selling - 0.5:
             continue
         dist = abs(up - lp)
-        # Optom faqat qattiq moslik (±1% yoki 1 so'm)
         if not _price_within(up, lp, ratio=0.01, floor=1.0):
             continue
         if best_optom is None or dist < best_optom[0]:
@@ -2268,19 +2270,15 @@ def _match_price_list_id(
 
     if best_optom is not None:
         odist, oid = best_optom
-        # Sotuv bir xil yoki yaqinroq — Sotuv
-        if best_sell_dist is not None and best_sell_dist <= odist + 0.5:
+        # Sotuv aniq yaqinroq yoki teng — Sotuv
+        if sell_hit and best_sell_dist is not None and best_sell_dist <= odist + 0.01:
             return SELLING_LIST_ID
-        # Sotuv ham diapazonda — Sotuv ustun
-        if sell_prices and any(
-            _price_within(up, sp, ratio=0.015, floor=2.0) for sp in sell_prices
-        ):
-            return SELLING_LIST_ID
-        # Optom aniq yaqinroq
-        if best_sell_dist is None or odist * 1.25 < best_sell_dist:
+        # Optom aniq mos (sotuvdan yaqinroq yoki sotuv mos emas)
+        if not sell_hit or (best_sell_dist is not None and odist + 0.01 < best_sell_dist):
             if oid == "__wholesale_field__":
                 return OTHER_LIST_ID
             return oid
+        return SELLING_LIST_ID
 
     return SELLING_LIST_ID
 
@@ -2297,8 +2295,8 @@ def _line_is_retail_sale(
     selling_list_ids: set[str],
 ) -> bool:
     """
-    Sotuv vs optom dona/summa — haqiqiy sotilgan narx (tushum ÷ miqdor) bo‘yicha.
-    Chek ro‘yxati optom bo‘lsa ham, qator sotuv narxida sotilsa — sotuv hisoblanadi.
+    Sotuv vs optom — TezPOS price_list_id + haqiqiy birlik narxi.
+    Bo'sh price_list_id = sotuv; UUID = optom (qator aniq sotuv narxida bo'lmasa).
     """
     if qty > 0 and line_rev > 0:
         eff = (line_rev / qty).quantize(Decimal("0.01"))
@@ -2313,29 +2311,14 @@ def _line_is_retail_sale(
         or item.get("list_id")
         or sale_pl
     )
-    if isinstance(raw_pl, dict):
-        raw_pl = raw_pl.get("id")
-    pl_str = str(raw_pl or "").strip()
-
-    if pl_str in ("selling", "retail", SELLING_LIST_ID) or pl_str in selling_list_ids:
-        return True
-
-    pl = None
-    if pl_str:
-        pl = next((x for x in price_lists if str(x.get("id") or "") == pl_str), None)
-        if pl and _is_api_selling_list(pl):
-            return True
-
-    matched = _match_price_list_id(eff, product, price_lists)
-    is_retail = matched == SELLING_LIST_ID or matched in selling_list_ids
-
-    if pl_str and pl and _is_api_optom_list(pl):
-        # Optom chek — lekin qator narxi sotuvga mos bo‘lsa sotuv
-        if is_retail:
-            return True
-        return False
-
-    return is_retail
+    list_id = _classify_line_price_list(
+        raw_pl=raw_pl,
+        unit_price=eff if eff > 0 else unit_price,
+        product=product,
+        price_lists=price_lists,
+        selling_list_ids=selling_list_ids,
+    )
+    return list_id == SELLING_LIST_ID or list_id in selling_list_ids
 
 
 def _classify_line_price_list(
@@ -2352,31 +2335,48 @@ def _classify_line_price_list(
         raw_pl = raw_pl.get("id")
     if raw_pl not in (None, ""):
         list_id = str(raw_pl).strip()
+    if list_id in ("null", "None", "none"):
+        list_id = ""
 
+    matched = _match_price_list_id(unit_price, product, price_lists)
+
+    # Aniq sotuv kanali (POS «Sotuv»)
     if list_id in ("selling", "retail", SELLING_LIST_ID) or list_id in selling_list_ids:
         return SELLING_LIST_ID
 
-    pl = None
-    if list_id:
-        pl = next((x for x in price_lists if str(x.get("id") or "") == list_id), None)
-        if pl and _is_api_selling_list(pl):
-            return SELLING_LIST_ID
-
-    # Aniq optom ro'yxati tanlangan — lekin narx sotuvga mos bo'lsa Sotuv
-    matched = _match_price_list_id(unit_price, product, price_lists)
-    if list_id and pl and _is_api_optom_list(pl):
-        if matched == SELLING_LIST_ID:
-            return SELLING_LIST_ID
-        return list_id
-
-    # Ro'yxat yo'q yoki noma'lum — narx bo'yicha (default Sotuv)
-    if not list_id or not pl:
+    # TezPOS: bo'sh = default sotuv, lekin birlik narxi aniq optom bo'lsa — optom
+    if not list_id:
         return matched
 
-    # Boshqa ma'lum ro'yxat
-    if matched == SELLING_LIST_ID:
+    pl = next((x for x in price_lists if str(x.get("id") or "") == list_id), None)
+    if pl and _is_api_selling_list(pl):
+        return SELLING_LIST_ID
+
+    selling = float(getattr(product, "selling_price", 0) or 0) if product else 0.0
+    wholesale = float(getattr(product, "wholesale_price", 0) or 0) if product else 0.0
+    up = float(unit_price or 0)
+
+    def _clearly_selling_only() -> bool:
+        if selling <= 0 or up <= 0:
+            return False
+        if not _price_within(up, selling, ratio=0.01, floor=1.0):
+            return False
+        if wholesale > 0 and _price_within(up, wholesale, ratio=0.01, floor=1.0):
+            return False
+        return True
+
+    # Optom/boshqa ro'yxat (yoki price_lists yuklanmagan UUID)
+    if (pl and _is_api_optom_list(pl)) or (list_id and not pl):
+        if _clearly_selling_only():
+            return SELLING_LIST_ID
+        if matched != SELLING_LIST_ID and matched not in selling_list_ids:
+            return matched if matched != OTHER_LIST_ID else list_id
+        return list_id
+
+    if matched == SELLING_LIST_ID or matched in selling_list_ids:
         return SELLING_LIST_ID
     return list_id
+
 
 def _aggregate_price_list_stats(
     sale_details: list[dict],
@@ -5678,16 +5678,8 @@ def _product_sales_stats(
             p_lookup = products_by_id.get(pid) if not str(pid).startswith("name:") else None
             if not p_lookup and name:
                 p_lookup = _find_product(products_by_id, products_by_name, product_name=name)
-            is_selling = _line_is_retail_sale(
-                qty=qty,
-                line_rev=line_rev,
-                unit_price=unit_price,
-                item=item,
-                sale_pl=sale_pl,
-                product=p_lookup,
-                price_lists=price_lists,
-                selling_list_ids=selling_list_ids,
-            )
+            # _compute_line_financials dagi TezPOS price_list_id + narx klassifikatsiyasi
+            is_selling = list_id == SELLING_LIST_ID or str(list_id) in selling_list_ids
 
             if channel == "wholesale" and is_selling:
                 continue
@@ -6430,7 +6422,7 @@ def _build_top_products_pack(
     if include_unsold:
         fast = False
     mode = "f" if fast else ("u" if include_unsold else "x")
-    pack_key = f"{memo_prefix}|topspack14|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack15|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)
