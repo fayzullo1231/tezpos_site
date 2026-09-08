@@ -1590,7 +1590,11 @@ def _parse_dt(raw) -> datetime | None:
 
 
 def _sale_day(sale: dict) -> date | None:
-    dt = _parse_dt(sale.get("completed_at") or sale.get("created_at"))
+    dt = _parse_dt(
+        sale.get("completed_at")
+        or sale.get("created_at")
+        or sale.get("sold_at")
+    )
     if not dt:
         return None
     return timezone.localtime(dt).date()
@@ -3090,7 +3094,7 @@ def _fetch_sale_details(
             return sid, None
         return sid, None
 
-    workers = min(3, max(1, len(ids)))
+    workers = min(8, max(1, len(ids)))
     deadline = time.time() + overall_timeout if overall_timeout else None
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(one, sid) for sid in ids]
@@ -3255,10 +3259,11 @@ def _compute_line_financials(
     products_by_name: dict | None,
     price_lists: list[dict],
     selling_list_ids: set[str],
+    prefer_txn_total: bool = False,
 ) -> tuple[Decimal, Decimal, Decimal, Decimal, str]:
     """
     Bitta savdo qatori: (qty, tushum, tannarx, foyda, price_list_id).
-    Source-of-truth — barcha dashboard/report hisoblarida shu ishlatiladi.
+    prefer_txn_total=True — TezPOS chekdagi haqiqiy total (analitika = kun jami).
     """
     qty_dec = _item_qty(item)
     unit_price = _item_unit_price(item)
@@ -3299,15 +3304,22 @@ def _compute_line_financials(
     )
     is_selling = list_id == SELLING_LIST_ID or list_id in selling_list_ids
 
-    line_rev, line_profit = _line_revenue_profit_teZpos(
-        qty=qty_dec,
-        unit_price=unit_price,
-        raw_line_total=raw_line_total,
-        unit_cost=unit_cost,
-        product=p,
-        is_selling=is_selling,
-        selling_list_ids=selling_list_ids,
-    )
+    if prefer_txn_total:
+        line_rev = raw_line_total if raw_line_total > 0 else computed
+        if unit_cost > 0 and qty_dec > 0:
+            line_profit = (line_rev - unit_cost * qty_dec).quantize(Decimal("0.01"))
+        else:
+            line_profit = Decimal("0")
+    else:
+        line_rev, line_profit = _line_revenue_profit_teZpos(
+            qty=qty_dec,
+            unit_price=unit_price,
+            raw_line_total=raw_line_total,
+            unit_cost=unit_cost,
+            product=p,
+            is_selling=is_selling,
+            selling_list_ids=selling_list_ids,
+        )
     line_cost = (
         (unit_cost * qty_dec).quantize(Decimal("0.01"))
         if unit_cost > 0 and qty_dec > 0
@@ -3405,7 +3417,22 @@ def _resolve_item_unit_cost(
     products_by_id: dict[str, SimpleNamespace],
     products_by_name: dict[str, SimpleNamespace] | None = None,
 ) -> Decimal:
-    """Sotib olish narxi; kiritilmagan bo'lsa 0 (foydaga qo'shilmaydi)."""
+    """Sotib olish narxi; FIFO batch_allocations > qator > katalog."""
+    batches = item.get("batch_allocations") or item.get("batches") or []
+    if isinstance(batches, list) and batches:
+        cost_sum = Decimal("0")
+        qty_sum = Decimal("0")
+        for row in batches:
+            if not isinstance(row, dict):
+                continue
+            bq = _dec(row.get("quantity") or row.get("qty"))
+            bc = _dec(row.get("unit_cost") or row.get("cost_price") or row.get("cost"))
+            if bq > 0 and bc > 0:
+                cost_sum += bq * bc
+                qty_sum += bq
+        if qty_sum > 0 and cost_sum > 0:
+            return (cost_sum / qty_sum).quantize(Decimal("0.01"))
+
     pid, name, nested = _item_product_ref(item)
     unit_cost = _dec(
         item.get("unit_cost")
@@ -5470,10 +5497,12 @@ def _product_sales_stats(
     seed_last_sale: dict[str, datetime] | None = None,
     channel: str = "all",
     sold_only: bool = False,
+    prefer_txn_total: bool = True,
 ) -> tuple[list[dict], dict]:
     """
     Davr bo‘yicha mahsulot statistikasi: sotuv/optom kunlik, foyda/marja.
     channel: all | wholesale | retail
+    prefer_txn_total: chekdagi haqiqiy total (kun jami bilan mos).
     """
     price_lists = price_lists or []
     channel = (channel or "all").strip().lower()
@@ -5530,6 +5559,7 @@ def _product_sales_stats(
                 products_by_name=products_by_name,
                 price_lists=price_lists,
                 selling_list_ids=selling_list_ids,
+                prefer_txn_total=prefer_txn_total,
             )
             qty = qty_dec
             if qty == 0 and line_rev == 0:
@@ -6156,20 +6186,21 @@ def _build_top_products_pack(
     single_day = span <= 1
 
     if single_day:
-        max_pages, detail_cap, overall = 80, 500, 35.0
+        max_pages, detail_cap, overall = 120, 10000, 90.0
         hist_pages, hist_timeout = 50, 18
     elif span <= 7:
-        max_pages, detail_cap, overall = 100, 2000, 75.0
+        max_pages, detail_cap, overall = 140, 10000, 120.0
         hist_pages, hist_timeout = 55, 20
     elif span <= 31:
-        max_pages, detail_cap, overall = 130, 3500, 100.0
+        max_pages, detail_cap, overall = 160, 12000, 150.0
         hist_pages, hist_timeout = 60, 22
     else:
-        max_pages, detail_cap, overall = 160, 5000, 120.0
+        max_pages, detail_cap, overall = 200, 15000, 180.0
         hist_pages, hist_timeout = 70, 24
 
     if fast:
-        max_pages = min(max_pages, 50)
+        max_pages = min(max_pages, 80)
+        # Fast: faqat inline items — to‘liq emas, partial=true
         detail_cap = 0
         overall = min(overall, 28.0)
 
@@ -6283,6 +6314,24 @@ def _build_top_products_pack(
 
     period_sales = [s for s in period_sales if isinstance(s, dict) and _is_countable_sale(s)]
 
+    # TezPOS chek jami (sale.total) — mahsulot yig‘indisi shunga moslashishi kerak
+    expected_gross = float(
+        sum(
+            _dec(s.get("total") or s.get("total_amount") or s.get("paid_amount"))
+            for s in period_sales
+        )
+    )
+    api_daily_checks = None
+    if single_day and start == timezone.localdate():
+        try:
+            daily = tezpos_api.get_daily_stats(token, server) or {}
+            if daily.get("total_revenue") is not None:
+                expected_gross = float(_dec(daily.get("total_revenue")))
+            if daily.get("sales_count") is not None:
+                api_daily_checks = int(daily.get("sales_count") or 0)
+        except Exception:
+            pass
+
     details_map: dict[str, dict] = {}
     need_fetch: list[str] = []
     for s in period_sales:
@@ -6294,23 +6343,26 @@ def _build_top_products_pack(
         else:
             need_fetch.append(sid)
 
+    missing_after_fetch = 0
     if need_fetch and detail_cap > 0:
+        fetch_limit = min(len(need_fetch), detail_cap)
         fetched: dict[str, dict] = {}
-        chunk = 200
-        for i in range(0, min(len(need_fetch), detail_cap), chunk):
+        chunk = 80
+        for i in range(0, fetch_limit, chunk):
             part = need_fetch[i : i + chunk]
             got = _fetch_sale_details(
                 token,
                 server,
                 part,
                 limit=len(part),
-                per_sale_timeout=2.0,
-                overall_timeout=min(overall, 50.0),
+                per_sale_timeout=3.5,
+                overall_timeout=min(overall, 70.0),
             )
             fetched.update(got)
-            if len(fetched) >= detail_cap:
-                break
         details_map.update(fetched)
+        missing_after_fetch = max(0, fetch_limit - len(fetched))
+        if len(need_fetch) > detail_cap:
+            missing_after_fetch += len(need_fetch) - detail_cap
 
     product_summary: dict = {}
     top_products, product_summary = _product_sales_stats(
@@ -6324,6 +6376,7 @@ def _build_top_products_pack(
         seed_last_sale=seed_last_sale,
         channel=channel,
         sold_only=fast,
+        prefer_txn_total=True,
     )
 
     # Agar katalog yuklangan bo‘lsa — to‘liq ro‘yxat (sotilgan + sotilmagan) saqlanadi.
@@ -6357,14 +6410,46 @@ def _build_top_products_pack(
     else:
         source = "sales"
 
+    checks_n = len(period_sales)
+    if api_daily_checks and api_daily_checks > checks_n:
+        checks_n = api_daily_checks
+    details_used = len(details_map)
+    products_rev = float(product_summary.get("total_revenue") or 0)
+    coverage = (details_used / checks_n) if checks_n > 0 else 1.0
+    incomplete = bool(
+        fast
+        or (need_fetch and detail_cap <= 0)
+        or missing_after_fetch > 0
+        or (checks_n > 0 and details_used < checks_n)
+        or (expected_gross > 0 and products_rev + 1 < expected_gross * 0.97)
+    )
+
+    product_summary = dict(product_summary or {})
+    product_summary.update(
+        {
+            "expected_gross": round(expected_gross, 2),
+            "tezpos_total": round(expected_gross, 2),
+            "products_revenue": round(products_rev, 2),
+            "checks": checks_n,
+            "checks_count": checks_n,
+            "details_used": details_used,
+            "coverage": round(coverage, 4),
+            "gap": round(max(0.0, expected_gross - products_rev), 2),
+        }
+    )
+    if expected_gross > 0:
+        product_summary["total_revenue"] = round(expected_gross, 2)
+        product_summary["total_amount"] = round(expected_gross, 2)
+
     pack = {
         "topProducts": top_products,
         "productSummary": product_summary,
-        "checks": len(period_sales),
-        "details_used": len(details_map),
+        "checks": checks_n,
+        "details_used": details_used,
+        "expected_gross": expected_gross,
         "source": source,
         "products_by_id": products_by_id,
-        "partial": bool(fast or (need_fetch and detail_cap <= 0)),
+        "partial": incomplete,
     }
     _TEZPOS_MEMO[pack_key] = (time.time(), pack)
     return pack

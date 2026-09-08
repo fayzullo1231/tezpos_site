@@ -494,6 +494,7 @@ class CostedProfitTests(SimpleTestCase):
             [],
             period_start=date(2026, 9, 1),
             period_end=date(2026, 9, 1),
+            prefer_txn_total=False,
         )
         row = next(r for r in rows if r.get("sold_in_period"))
         self.assertEqual(row["qty_selling"], 79.0)
@@ -501,6 +502,54 @@ class CostedProfitTests(SimpleTestCase):
         self.assertAlmostEqual(row["revenue"], 79 * 49000)
         self.assertAlmostEqual(row["profit"], 79 * 700)
         self.assertAlmostEqual(row["profit_selling"], 79 * 700)
+
+    def test_top_stats_txn_total_matches_sale_line_total(self):
+        """Analitika: mahsulot yig‘indisi = chekdagi haqiqiy total."""
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        p = _map_product(
+            {
+                "id": "1",
+                "name": "BON DEBUT",
+                "price": 49000,
+                "cost_price": 48300,
+                "wholesale_price": 48500,
+            }
+        )
+        by_id = {"1": p}
+        sale = {
+            "id": "s1",
+            "completed_at": "2026-09-08T12:00:00+05:00",
+            "total": 79 * 48500,
+            "price_list_id": "selling",
+            "items": [
+                {
+                    "product_id": "1",
+                    "quantity": 79,
+                    "unit_price": 48500,
+                    "total": 79 * 48500,
+                    "batch_allocations": [
+                        {"quantity": 79, "unit_cost": 48300},
+                    ],
+                }
+            ],
+        }
+        rows, summary = _product_sales_stats(
+            {"s1": sale},
+            by_id,
+            {},
+            [],
+            period_start=date(2026, 9, 8),
+            period_end=date(2026, 9, 8),
+            prefer_txn_total=True,
+        )
+        row = next(r for r in rows if r.get("sold_in_period"))
+        self.assertAlmostEqual(row["revenue"], 79 * 48500)
+        self.assertAlmostEqual(summary["total_revenue"], 79 * 48500)
+        self.assertEqual(summary["checks"], 1)
+        self.assertAlmostEqual(row["profit"], 79 * 200)
 
     def test_top_stats_wholesale_list_retail_price_counts_as_selling(self):
         from datetime import date

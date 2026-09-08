@@ -387,7 +387,12 @@
     if (warmTops && data.topStatsUrl) {
       const tc = cacheGet("tops") || {};
       const tkey = `all_${iso}_${iso}`;
-      if (!tc[tkey]) {
+      const cached = tc[tkey];
+      const cachedPartial =
+        cached && typeof cached === "object" && !Array.isArray(cached)
+          ? Boolean(cached.partial)
+          : true;
+      if (!cached || cachedPartial) {
         const qs = new URLSearchParams({ from: iso, to: iso, limit: "all", fast: "1" });
         fetch(`${data.topStatsUrl}?${qs}`, {
           credentials: "same-origin",
@@ -397,7 +402,12 @@
           .then((json) => {
             if (!json || json.error) return;
             const next = cacheGet("tops") || {};
-            next[tkey] = json.topProducts || [];
+            next[tkey] = {
+              products: json.topProducts || [],
+              partial: true,
+              productSummary: json.productSummary || {},
+              ts: Date.now(),
+            };
             cacheSet("tops", next);
           })
           .catch(() => {});
@@ -1868,11 +1878,24 @@
     data.topProducts = rows;
     const fromRows = summarizeTopsFromRows(rows);
     const backend = data.topsProductSummary || {};
+    const tezposTotal = Number(
+      backend.tezpos_total ?? backend.expected_gross ?? backend.total_revenue ?? 0
+    );
     const merged =
       topsChannelParam() === "all" && backend && Object.keys(backend).length
         ? {
             ...backend,
             ...fromRows,
+            // Hero — TezPOS chek jami (aniq)
+            total_revenue: tezposTotal > 0 ? tezposTotal : fromRows.total_revenue,
+            total_amount: tezposTotal > 0 ? tezposTotal : fromRows.total_revenue,
+            expected_gross: tezposTotal || backend.expected_gross,
+            tezpos_total: tezposTotal || backend.tezpos_total,
+            products_revenue: fromRows.total_revenue,
+            gap:
+              tezposTotal > 0
+                ? Math.max(0, tezposTotal - Number(fromRows.total_revenue || 0))
+                : backend.gap,
             checks: backend.checks ?? backend.checks_count ?? fromRows.checks,
             checks_count: backend.checks_count ?? backend.checks ?? fromRows.checks_count,
             checks_selling: backend.checks_selling ?? fromRows.checks_selling,
@@ -1880,6 +1903,8 @@
             profit_selling: fromRows.profit_selling ?? backend.profit_selling,
             profit_wholesale: fromRows.profit_wholesale ?? backend.profit_wholesale,
             cost_amount: fromRows.cost_amount ?? backend.cost_amount ?? backend.total_cost,
+            details_used: backend.details_used,
+            coverage: backend.coverage,
           }
         : fromRows;
     paintTopsSummary(merged, { partial: topsPartial });
@@ -1974,6 +1999,14 @@
 
     set("sa-kpi-revenue", summary.total_revenue != null ? fmtSom(summary.total_revenue) : "0");
     set("sa-kpi-period", periodText);
+    const prodRev = Number(summary.products_revenue ?? 0);
+    const gap = Number(summary.gap ?? 0);
+    if (prodRev > 0 && Math.abs(Number(summary.total_revenue || 0) - prodRev) > 1) {
+      set(
+        "sa-kpi-period",
+        `${periodText} · mahsulotlar ${fmtSom(prodRev)}${gap > 1 ? ` · farq ${fmtSom(gap)}` : ""}`
+      );
+    }
     set("sa-kpi-checks", `${fmt(checks)} ta`);
     set("sa-kpi-qty", `${fmt(soldQty)} dona`);
     set("sa-kpi-profit", summary.total_profit != null ? fmtSom(summary.total_profit) : "0");
@@ -2043,8 +2076,10 @@
         hint.className = "cabinet-hint";
         (channelGrid || hero || box)?.after(hint);
       }
-      hint.textContent = "To‘liq statistika hisoblanmoqda… (TezPOS cheklari tekshirilmoqda)";
-      hint.hidden = false;
+      hint.textContent = partial
+        ? "To‘liq cheklar yuklanmoqda… (TezPOS API — mahsulotlar to‘liq bo‘lguncha kuting)"
+        : "";
+      hint.hidden = !partial;
     } else if (hint) {
       hint.hidden = true;
     }
@@ -2267,12 +2302,21 @@
   const applyTopsPayload = (payload, isFast) => {
     const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
     const key = topsCacheKey(topsFrom, topsTo);
-    topsCache[key] = rows;
+    const partial = Boolean(payload.partial || isFast);
+    topsCache[key] = {
+      products: rows,
+      partial,
+      productSummary: payload.productSummary || {},
+      expected_gross: payload.expected_gross,
+      details_used: payload.details_used,
+      checks: payload.checks,
+      ts: Date.now(),
+    };
     topsRawProducts = rows;
-    topsPartial = Boolean(payload.partial || isFast);
+    topsPartial = partial;
     data._topsCache = topsCache;
     if (window.tezposCacheSet) window.tezposCacheSet("tops", topsCache);
-    if (payload.productSummary && topsChannelParam() === "all") {
+    if (payload.productSummary) {
       data.topsProductSummary = payload.productSummary;
     }
     syncTopsExport();
@@ -2288,15 +2332,34 @@
       });
     }
     syncTopsExport();
-    if (!force && topsCache[key]) {
-      topsRawProducts = topsCache[key];
+    const cached = topsCache[key];
+    const cachedRows = Array.isArray(cached)
+      ? cached
+      : cached && Array.isArray(cached.products)
+        ? cached.products
+        : null;
+    const cachedPartial = Array.isArray(cached)
+      ? true
+      : cached
+        ? Boolean(cached.partial)
+        : true;
+    if (!force && cachedRows && !cachedPartial) {
+      topsRawProducts = cachedRows;
+      if (cached.productSummary) data.topsProductSummary = cached.productSummary;
+      topsPartial = false;
       refreshTopsUi();
       return;
+    }
+    if (!force && cachedRows && cachedPartial) {
+      topsRawProducts = cachedRows;
+      if (cached.productSummary) data.topsProductSummary = cached.productSummary;
+      topsPartial = true;
+      refreshTopsUi();
     }
     const url = data.topStatsUrl;
     if (!url || !productsGrid) return;
     const reqId = ++topsReq;
-    const hasCache = Boolean(topsCache[key]);
+    const hasCache = Boolean(cachedRows);
     if (!hasCache) {
       productsGrid.className = "tops-list";
       productsGrid.innerHTML = skelHtml("lines", 8);
@@ -2319,7 +2382,11 @@
       }
       await fetchProgressive(url, params, {
         onData: apply,
-        needsFull: (j) => Boolean(j?.partial) || topsNeedsFull(),
+        needsFull: (j) =>
+          Boolean(j?.partial) ||
+          topsNeedsFull() ||
+          (Number(j?.checks || 0) > 0 &&
+            Number(j?.details_used || 0) < Number(j?.checks || 0)),
       });
     } catch (_err) {
       if (reqId !== topsReq) return;

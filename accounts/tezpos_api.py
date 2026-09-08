@@ -957,6 +957,24 @@ def get_sales_for_day(token: str, server_name: str, day: str) -> list:
     )
 
 
+def get_daily_stats(token: str, server_name: str) -> dict:
+    """
+    TezPOS: GET /api/sales/stats/daily/
+    Bugungi jami: { date, sales_count, total_revenue }
+    """
+    try:
+        data = api_request(
+            "GET",
+            "/api/sales/stats/daily/",
+            token=token,
+            server_name=server_name,
+            timeout=10,
+        )
+    except TezPosApiError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def get_sale(token: str, server_name: str, sale_id: str) -> dict:
     return api_request(
         "GET",
