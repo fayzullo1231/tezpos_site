@@ -5902,6 +5902,25 @@ def _product_sales_stats(
             str(r.get("name") or ""),
         ),
     )
+    # Savdo ulushi: mahsulot tushumi / davr jami tushumi × 100
+    period_rev = sum(float(r.get("revenue") or 0) for r in sold_rows)
+    for r in sold_rows:
+        rev_f = float(r.get("revenue") or 0)
+        share = (rev_f / period_rev * 100.0) if period_rev > 0 and rev_f > 0 else 0.0
+        r["share"] = round(share, 2)
+        r["sales_share"] = r["share"]
+        # UI «Marja» — jami savdodagi ulush (foyda/tushum emas)
+        r["margin_percent"] = r["share"]
+        r["margin"] = r["share"]
+        r["profit_margin"] = _margin_on_revenue(
+            float(r.get("profit") or 0), rev_f
+        )
+    for r in unsold_rows:
+        r["share"] = 0.0
+        r["sales_share"] = 0.0
+        r["margin_percent"] = 0.0
+        r["margin"] = 0.0
+        r["profit_margin"] = 0.0
     out = sold_rows + unsold_rows
 
     never_count = sum(1 for r in unsold_rows if r.get("status") == "never")
@@ -6221,6 +6240,103 @@ def _parse_top_limit(raw, default: int = 100) -> int:
     return max(1, min(_TOP_LIMIT_ALL, n))
 
 
+def _project_top_row_channel(row: dict, channel: str) -> dict:
+    """Frontend projectRowChannel bilan bir xil."""
+    if not row or channel in ("", "all"):
+        return dict(row or {})
+    if channel == "wholesale":
+        qty = float(row.get("qty_wholesale") or 0)
+        revenue = float(row.get("revenue_wholesale") or 0)
+        profit = float(row.get("profit_wholesale") or 0)
+    else:
+        qty = float(row.get("qty_selling") or 0)
+        revenue = float(row.get("revenue_selling") or 0)
+        profit = float(row.get("profit_selling") or 0)
+    out = dict(row)
+    out["qty"] = qty
+    out["revenue"] = revenue
+    out["profit"] = profit
+    out["cost_total"] = revenue - profit
+    out["sold_in_period"] = qty > 0
+    out["margin_percent"] = (profit / revenue * 100.0) if revenue > 0 else 0.0
+    out["margin"] = out["margin_percent"]
+    return out
+
+
+def _filter_top_rows(rows: list[dict], status_filter: str) -> list[dict]:
+    f = (status_filter or "all").strip().lower()
+    if f in ("", "all", "hammasi"):
+        return list(rows or [])
+    if f == "sold":
+        return [r for r in rows if r.get("sold_in_period")]
+    if f == "unsold":
+        return [r for r in rows if not r.get("sold_in_period")]
+    if f == "never":
+        return [r for r in rows if str(r.get("status") or "") == "never"]
+    return list(rows or [])
+
+
+def _sort_top_rows(rows: list[dict], mode: str) -> list[dict]:
+    key = (mode or "qty_desc").strip().lower()
+    list_rows = list(rows or [])
+
+    def qty(r):
+        return float(r.get("qty") or 0)
+
+    def rev(r):
+        return float(r.get("revenue") or 0)
+
+    def idle(r):
+        d = r.get("days_unsold")
+        return -1 if d is None else int(d)
+
+    if key == "idle_desc":
+        list_rows.sort(
+            key=lambda r: (
+                0 if not r.get("sold_in_period") else 1,
+                0 if r.get("days_unsold") is None else 1,
+                -(idle(r) if r.get("days_unsold") is not None else 0),
+                str(r.get("name") or ""),
+            )
+        )
+    elif key == "qty_asc":
+        list_rows.sort(key=lambda r: (qty(r), rev(r)))
+    elif key == "rev_asc":
+        list_rows.sort(key=lambda r: (rev(r), qty(r)))
+    elif key == "rev_desc":
+        list_rows.sort(key=lambda r: (-rev(r), -qty(r)))
+    else:
+        list_rows.sort(key=lambda r: (-qty(r), -rev(r)))
+    return list_rows
+
+
+def _prepare_top_rows_for_view(
+    rows: list[dict],
+    *,
+    channel: str = "all",
+    status_filter: str = "all",
+    sort: str = "qty_desc",
+    limit: int = _TOP_LIMIT_ALL,
+) -> list[dict]:
+    """UI dagi filter/sort/limit bilan bir xil natija (Excel uchun)."""
+    channel = (channel or "all").strip().lower()
+    if channel == "selling":
+        channel = "retail"
+    projected = [_project_top_row_channel(r, channel) for r in (rows or [])]
+    if channel != "all":
+        projected = [
+            r
+            for r in projected
+            if r.get("sold_in_period")
+            or str(r.get("status") or "") in ("never", "idle")
+        ]
+    filtered = _filter_top_rows(projected, status_filter)
+    sorted_rows = _sort_top_rows(filtered, sort)
+    if limit > 0 and limit < _TOP_LIMIT_ALL:
+        return sorted_rows[:limit]
+    return sorted_rows
+
+
 @login_required
 @require_GET
 def cabinet_top_stats(request):
@@ -6239,9 +6355,28 @@ def cabinet_top_stats(request):
     channel = (request.GET.get("channel") or "all").strip().lower()
     if channel == "selling":
         channel = "retail"
+    include_unsold = (request.GET.get("include_unsold") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "all",
+    )
+    status_filter = (request.GET.get("filter") or "all").strip().lower()
+    if status_filter in ("unsold", "never"):
+        include_unsold = True
+    sort_mode = (request.GET.get("sort") or "").strip().lower()
+    if sort_mode == "idle_desc":
+        include_unsold = True
 
     pack = _build_top_products_pack(
-        token, server, start=start, end=end, limit=limit, fast=fast, channel=channel
+        token,
+        server,
+        start=start,
+        end=end,
+        limit=limit,
+        fast=fast,
+        channel=channel,
+        include_unsold=include_unsold,
     )
     if pack.get("error") == "auth":
         clear_tezpos_session(request)
@@ -6264,6 +6399,8 @@ def cabinet_top_stats(request):
             "span_days": span,
             "partial": bool(pack.get("partial")),
             "fast": fast,
+            "include_unsold": include_unsold,
+            "catalog_count": (pack.get("productSummary") or {}).get("catalog_count"),
         }
     )
 
@@ -6277,18 +6414,23 @@ def _build_top_products_pack(
     limit: int = 100,
     fast: bool = False,
     channel: str = "all",
+    include_unsold: bool = False,
 ) -> dict:
     """
     Belgilangan kun(lar)dagi barcha cheklar bo‘yicha mahsulot yig‘indisi.
     fast=True: davr sotuvlari (aniq) — katalog/tarix fonida to‘ldiriladi.
+    include_unsold=True: katalogdagi sotilmaganlar ham (Barchasi).
     """
     span = (end - start).days + 1
     memo_prefix = f"{server}|{(token or '')[-12:]}"
     channel = (channel or "all").strip().lower()
     if channel == "selling":
         channel = "retail"
-    mode = "f" if fast else "x"
-    pack_key = f"{memo_prefix}|topspack13|{start}|{end}|{limit}|{mode}|{channel}"
+    # Barchasi / sotilmagan — tezkor rejimda ham katalog kerak
+    if include_unsold:
+        fast = False
+    mode = "f" if fast else ("u" if include_unsold else "x")
+    pack_key = f"{memo_prefix}|topspack14|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)
@@ -6487,7 +6629,7 @@ def _build_top_products_pack(
         limit=limit,
         seed_last_sale=seed_last_sale,
         channel=channel,
-        sold_only=fast,
+        sold_only=bool(fast and not include_unsold),
         prefer_txn_total=True,
     )
 
@@ -6576,7 +6718,7 @@ def _build_top_products_pack(
         or (expected_gross > 0 and source == "sales" and products_rev + 1 < expected_gross * 0.97)
         or placeholder_n > 0
         or missing_prices > 0
-        or (not fast and not products_by_id and expected_gross > 0)
+        or (include_unsold and not products_by_id)
     )
 
     product_summary = dict(product_summary or {})
@@ -6598,6 +6740,23 @@ def _build_top_products_pack(
         product_summary["total_revenue"] = round(expected_gross, 2)
         product_summary["total_amount"] = round(expected_gross, 2)
 
+    # Ulush: mahsulot tushumi / TezPOS jami savdo (yoki mahsulotlar yig‘indisi)
+    share_base = float(expected_gross or 0)
+    if share_base <= 0:
+        share_base = float(
+            sum(float(r.get("revenue") or 0) for r in top_products if r.get("sold_in_period"))
+        )
+    if share_base > 0:
+        for r in top_products:
+            if not isinstance(r, dict):
+                continue
+            rev_f = float(r.get("revenue") or 0)
+            share = round(rev_f / share_base * 100.0, 2) if rev_f > 0 else 0.0
+            r["share"] = share
+            r["sales_share"] = share
+            r["margin_percent"] = share
+            r["margin"] = share
+
     pack = {
         "topProducts": top_products,
         "productSummary": product_summary,
@@ -6615,7 +6774,7 @@ def _build_top_products_pack(
 @login_required
 @require_GET
 def cabinet_top_export(request):
-    """Top reyting — tanlangan sana oralig‘i Excel."""
+    """Top reyting — tanlangan sana oralig‘i Excel (UI filter/sort/limit bilan)."""
     if not session_has_tezpos(request):
         return redirect("login")
 
@@ -6636,14 +6795,29 @@ def cabinet_top_export(request):
     channel = (request.GET.get("channel") or "all").strip().lower()
     if channel == "selling":
         channel = "retail"
+    status_filter = (request.GET.get("filter") or "all").strip().lower()
+    sort_mode = (request.GET.get("sort") or "qty_desc").strip().lower()
 
     try:
         limit = _parse_top_limit(request.GET.get("limit"))
     except (TypeError, ValueError):
         limit = 100
 
+    include_unsold = (
+        limit >= _TOP_LIMIT_ALL
+        or status_filter in ("unsold", "never")
+        or sort_mode == "idle_desc"
+    )
+
     pack = _build_top_products_pack(
-        token, server, start=start, end=end, limit=limit, channel=channel
+        token,
+        server,
+        start=start,
+        end=end,
+        limit=_TOP_LIMIT_ALL,
+        channel="all",
+        include_unsold=include_unsold,
+        fast=False,
     )
     if pack.get("error") == "auth":
         clear_tezpos_session(request)
@@ -6653,14 +6827,20 @@ def cabinet_top_export(request):
             pack["error"], status=502, content_type="text/plain; charset=utf-8"
         )
 
-    rows = pack.get("topProducts") or []
+    rows = _prepare_top_rows_for_view(
+        pack.get("topProducts") or [],
+        channel=channel,
+        status_filter=status_filter,
+        sort=sort_mode,
+        limit=limit,
+    )
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
     from openpyxl.utils import get_column_letter
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "Top reyting"
+    ws.title = "Sotuv analitikasi"
     ws.append(
         [
             "#",
@@ -6680,7 +6860,7 @@ def cabinet_top_export(request):
             "Foyda (optom)",
             "Jami tannarx",
             "Jami foyda",
-            "Marja %",
+            "Ulush %",
             "Oxirgi sotuv",
             "Kun sotilmagan",
             "Sana dan",
@@ -6712,7 +6892,7 @@ def cabinet_top_export(request):
                 float(row.get("profit_wholesale") or 0),
                 float(row.get("cost_total") or 0),
                 float(row.get("profit") or 0),
-                float(row.get("margin_percent") or row.get("margin") or 0),
+                float(row.get("share") or row.get("margin_percent") or row.get("margin") or 0),
                 row.get("last_sale") or "",
                 row.get("days_unsold") if row.get("days_unsold") is not None else "",
                 start.isoformat(),
@@ -6736,7 +6916,8 @@ def cabinet_top_export(request):
     bio = BytesIO()
     wb.save(bio)
     bio.seek(0)
-    fname = f"top_reyting_{start.isoformat()}_{end.isoformat()}.xlsx"
+    limit_tag = "barchasi" if limit >= _TOP_LIMIT_ALL else str(limit)
+    fname = f"sotuv_analitikasi_{start.isoformat()}_{end.isoformat()}_{limit_tag}.xlsx"
     response = HttpResponse(
         bio.getvalue(),
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

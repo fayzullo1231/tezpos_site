@@ -1486,7 +1486,15 @@
       const qtySell = Number(item.qty_selling || 0);
       const qtyOptom = Number(item.qty_wholesale || 0);
       const profit = Number(item.profit || 0);
-      const marginPct = Number(item.margin_percent != null ? item.margin_percent : item.margin || 0);
+      const sharePct = Number(
+        item.share != null
+          ? item.share
+          : item.sales_share != null
+            ? item.sales_share
+            : item.margin_percent != null
+              ? item.margin_percent
+              : item.margin || 0
+      );
       const soldInPeriod = Boolean(item.sold_in_period);
       const status = String(item.status || (soldInPeriod ? "sold" : "idle"));
       const barcode = String(item.barcode || item.sku || "").trim();
@@ -1542,7 +1550,7 @@
           <div class="tops-row-metric tops-row-metric--profit">
             <em>Foyda</em>
             <strong>${Number.isFinite(profit) ? fmtSom(profit) : "—"}</strong>
-            ${soldInPeriod ? `<span class="tops-row-margin">Marja ${marginPct.toFixed(1)}%</span>` : ""}
+            ${soldInPeriod ? `<span class="tops-row-margin">Ulush ${sharePct.toFixed(1)}%</span>` : ""}
           </div>
         </div>
       </article>`;
@@ -1917,11 +1925,20 @@
   };
   const topsApiLimit = () => "all";
   const topsChannelParam = () => String(topsChannelSelect?.value || "all").trim();
+  const topsFilterParam = () => String(topsFilterSelect?.value || "all").trim();
+  const topsSortParam = () => String(topsSortSelect?.value || "qty_desc").trim();
   const topsLimitN = () => {
     const v = topsLimitParam();
     if (v === "all") return 0;
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? n : 20;
+  };
+  const topsWantsUnsold = () => {
+    const lim = topsLimitParam();
+    const f = topsFilterParam();
+    const sort = topsSortParam();
+    // Barchasi (son) yoki sotilmagan filtrlari / sotilmagan saralash
+    return lim === "all" || f === "unsold" || f === "never" || sort === "idle_desc";
   };
 
   const syncTopsExport = () => {
@@ -1929,8 +1946,10 @@
     const qs = new URLSearchParams({
       from: topsFrom,
       to: topsTo,
-      limit: "all",
+      limit: topsLimitParam(),
       channel: topsChannelParam(),
+      filter: topsFilterParam(),
+      sort: topsSortParam(),
     });
     topsExportBtn.href = `${data.topExportUrl}?${qs}`;
   };
@@ -2088,14 +2107,40 @@
   const renderProducts = (limit) => {
     const filtered = filterTopRows(topsDisplayRows());
     const sorted = sortTopRows(filtered, topsSortSelect?.value || "qty_desc");
+    const backend = data.topsProductSummary || {};
+    let shareBase =
+      Number(backend.tezpos_total || backend.expected_gross || backend.total_revenue || 0) || 0;
+    if (shareBase <= 0) {
+      shareBase = sorted
+        .filter((r) => r.sold_in_period)
+        .reduce((s, r) => s + Number(r.revenue || 0), 0);
+    }
+    const withShare = sorted.map((r) => {
+      const rev = Number(r.revenue || 0);
+      const share =
+        shareBase > 0 && rev > 0 && r.sold_in_period ? (rev / shareBase) * 100 : 0;
+      return {
+        ...r,
+        share,
+        sales_share: share,
+        margin_percent: share,
+        margin: share,
+      };
+    });
     const n = Number(limit);
-    const rows = Number.isFinite(n) && n > 0 ? sorted.slice(0, n) : sorted;
+    const rows = Number.isFinite(n) && n > 0 ? withShare.slice(0, n) : withShare;
     if (!productsGrid) return;
     productsGrid.className = "tops-list";
     if (!rows.length) {
       const emptyHint = document.getElementById("tops-empty-hint");
       if (emptyHint) emptyHint.hidden = false;
-      productsGrid.innerHTML = `<p class="cabinet-hint">Bu davrda sotuvlar mavjud emas.</p>`;
+      const f = topsFilterParam();
+      let msg = "Bu davrda ko‘rsatiladigan mahsulot yo‘q.";
+      if (f === "sold") msg = "Bu davrda sotilgan mahsulot yo‘q.";
+      else if (f === "unsold") msg = "Bu davrda sotilmagan mahsulot yo‘q (yoki katalog hali yuklanmoqda).";
+      else if (f === "never") msg = "Hech qachon sotilmagan mahsulot yo‘q.";
+      else if (topsPartial) msg = "Mahsulotlar yuklanmoqda…";
+      productsGrid.innerHTML = `<p class="cabinet-hint">${msg}</p>`;
       return;
     }
     const emptyHint = document.getElementById("tops-empty-hint");
@@ -2237,9 +2282,8 @@
   };
 
   const topsNeedsFull = () => {
-    const f = topsFilterSelect?.value || "all";
-    // Barchasi / sotilmagan — katalog bilan to‘liq yuklash kerak
-    return f === "all" || f === "unsold" || f === "never";
+    // Barchasi (mahsulot soni) yoki sotilmagan filtrlari — katalog bilan to‘liq
+    return topsWantsUnsold();
   };
 
   const topsRowsNeedCatalog = (rows) => {
@@ -2280,7 +2324,16 @@
       sub.textContent = code ? `Kod: ${code}` : "Kunlik sotuv tafsilotlari";
     }
     if (summaryEl) {
-      const margin = Number(item.margin_percent != null ? item.margin_percent : item.margin || 0);
+      const share = Number(
+        item.share != null
+          ? item.share
+          : item.sales_share != null
+            ? item.sales_share
+            : item.margin_percent != null
+              ? item.margin_percent
+              : 0
+      );
+      const profitMargin = Number(item.profit_margin != null ? item.profit_margin : 0);
       summaryEl.innerHTML = `
         <div><span>Jami sotildi</span><strong>${fmt(item.qty || 0)} dona</strong></div>
         <div><span>Optom</span><strong>${fmt(item.qty_wholesale || 0)} dona · ${fmtSom(item.revenue_wholesale || 0)}</strong></div>
@@ -2288,7 +2341,8 @@
         <div><span>Jami savdo</span><strong>${fmtSom(item.revenue || 0)}</strong></div>
         <div><span>Tannarx</span><strong>${fmtSom(item.cost_total || 0)}</strong></div>
         <div><span>Foyda</span><strong class="is-profit">${fmtSom(item.profit || 0)}</strong></div>
-        <div><span>Marja</span><strong>${margin.toFixed(2)}%</strong></div>
+        <div><span>Savdo ulushi</span><strong>${share.toFixed(2)}%</strong></div>
+        <div><span>Sof marja</span><strong>${profitMargin.toFixed(2)}%</strong></div>
       `;
     }
     const daily = Array.isArray(item.daily) ? item.daily : [];
@@ -2386,13 +2440,19 @@
       productsGrid.innerHTML = skelHtml("lines", 8);
     }
     try {
-      const params = { from: fromIso, to: toIsoVal, limit: apiLimit, channel: "all" };
+      const params = {
+        from: fromIso,
+        to: toIsoVal,
+        limit: apiLimit,
+        channel: "all",
+      };
       const apply = (payload, isFast) => {
         if (reqId !== topsReq) return;
         applyTopsPayload(payload, isFast);
       };
-      if (force && topsNeedsFull()) {
-        const qs = new URLSearchParams(params);
+      // Barchasi / sotilmagan — to‘g‘ridan-to‘g‘ri to‘liq katalog
+      if (topsWantsUnsold()) {
+        const qs = new URLSearchParams({ ...params, include_unsold: "1" });
         const res = await fetch(`${url}?${qs}`, {
           headers: { Accept: "application/json" },
           credentials: "same-origin",
@@ -2405,7 +2465,6 @@
         onData: apply,
         needsFull: (j) =>
           Boolean(j?.partial) ||
-          topsNeedsFull() ||
           topsRowsNeedCatalog(j?.topProducts) ||
           (Number(j?.checks || 0) > 0 &&
             Number(j?.details_used || 0) < Number(j?.checks || 0)),
@@ -2535,12 +2594,18 @@
     }
     productsSelect?.addEventListener("change", () => {
       syncTopsExport();
-      renderProducts(topsLimitN());
+      if (topsLimitParam() === "all" || topsWantsUnsold()) {
+        loadTopProducts(topsFrom, topsTo, { force: true });
+      } else {
+        renderProducts(topsLimitN());
+      }
     });
     topsSortSelect?.addEventListener("change", () => {
+      syncTopsExport();
       renderProducts(topsLimitN());
     });
     topsFilterSelect?.addEventListener("change", () => {
+      syncTopsExport();
       if (topsNeedsFull()) {
         loadTopProducts(topsFrom, topsTo, { force: true });
       } else {
@@ -2548,6 +2613,7 @@
       }
     });
     topsChannelSelect?.addEventListener("change", () => {
+      syncTopsExport();
       refreshTopsUi();
     });
     topsPeriodPresets?.addEventListener("click", (e) => {

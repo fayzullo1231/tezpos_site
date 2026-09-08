@@ -913,6 +913,109 @@ class TopStatsDailyTests(SimpleTestCase):
         self.assertAlmostEqual(row["qty"], 10)
 
 
+class TopRowsViewPrepareTests(SimpleTestCase):
+    def test_prepare_respects_limit_filter_and_sort(self):
+        from accounts.views import _prepare_top_rows_for_view
+
+        rows = [
+            {
+                "id": "a",
+                "name": "A",
+                "qty": 5,
+                "revenue": 50,
+                "qty_selling": 5,
+                "qty_wholesale": 0,
+                "revenue_selling": 50,
+                "revenue_wholesale": 0,
+                "profit_selling": 10,
+                "profit_wholesale": 0,
+                "sold_in_period": True,
+                "status": "sold",
+            },
+            {
+                "id": "b",
+                "name": "B",
+                "qty": 0,
+                "revenue": 0,
+                "qty_selling": 0,
+                "qty_wholesale": 0,
+                "revenue_selling": 0,
+                "revenue_wholesale": 0,
+                "profit_selling": 0,
+                "profit_wholesale": 0,
+                "sold_in_period": False,
+                "status": "never",
+            },
+            {
+                "id": "c",
+                "name": "C",
+                "qty": 9,
+                "revenue": 90,
+                "qty_selling": 9,
+                "qty_wholesale": 0,
+                "revenue_selling": 90,
+                "revenue_wholesale": 0,
+                "profit_selling": 20,
+                "profit_wholesale": 0,
+                "sold_in_period": True,
+                "status": "sold",
+            },
+        ]
+        top2 = _prepare_top_rows_for_view(rows, limit=2, sort="qty_desc")
+        self.assertEqual([r["id"] for r in top2], ["c", "a"])
+        unsold = _prepare_top_rows_for_view(rows, status_filter="unsold", limit=50)
+        self.assertEqual([r["id"] for r in unsold], ["b"])
+        all_rows = _prepare_top_rows_for_view(rows, status_filter="all", limit=50000)
+        self.assertEqual(len(all_rows), 3)
+
+
+class SalesShareTests(SimpleTestCase):
+    def test_product_share_of_period_revenue(self):
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        a = _map_product(
+            {"id": "a", "name": "A", "price": 1000, "cost_price": 500}
+        )
+        b = _map_product(
+            {"id": "b", "name": "B", "price": 1000, "cost_price": 500}
+        )
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-09-08T10:00:00+05:00",
+                "items": [
+                    {
+                        "product_id": a.id,
+                        "quantity": 1,
+                        "unit_price": 1000,
+                        "total": 1000,
+                    },
+                    {
+                        "product_id": b.id,
+                        "quantity": 3,
+                        "unit_price": 1000,
+                        "total": 3000,
+                    },
+                ],
+            }
+        }
+        rows, _summary = _product_sales_stats(
+            sales,
+            {a.id: a, b.id: b},
+            {},
+            [],
+            period_start=date(2026, 9, 8),
+            period_end=date(2026, 9, 8),
+            sold_only=True,
+        )
+        by_id = {r["id"]: r for r in rows}
+        self.assertAlmostEqual(by_id["a"]["share"], 25.0, places=1)
+        self.assertAlmostEqual(by_id["b"]["share"], 75.0, places=1)
+        self.assertAlmostEqual(by_id["b"]["margin_percent"], 75.0, places=1)
+
+
 class CatalogEnrichTopsTests(SimpleTestCase):
     def test_api_top_items_get_name_and_prices_from_catalog(self):
         from accounts.views import _map_product, _top_products_from_api_items
