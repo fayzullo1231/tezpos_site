@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
 from urllib.parse import urlparse
@@ -472,17 +473,23 @@ def get_catalog_snapshot(token: str, server_name: str, timeout: float = 22) -> l
     count = get_product_count(token, server_name, timeout=min(8.0, timeout)) or 0
 
     def _ok(rows: list) -> bool:
+        """Kichik do‘kon (≤200) ham to‘liq snapshot hisoblanadi."""
         n = len(rows or [])
-        if n <= 200:
+        if n <= 0:
             return False
-        if count and n >= max(1, int(count * 0.85)):
-            return True
-        return n >= 400
+        if count:
+            return n >= max(1, int(count * 0.85))
+        # count yo‘q: 100/200 — ehtimol bitta sahifa (pagination); aks holda to‘liq dump
+        if n in (100, 200):
+            return False
+        return True
 
     def _save(rows: list) -> list:
         with _CATALOG_SNAP_LOCK:
             _CATALOG_SNAP[key] = (time.time(), rows)
         return rows
+
+    best: list = []
 
     slug = _server_slug(server_name)
     if slug:
@@ -495,6 +502,8 @@ def get_catalog_snapshot(token: str, server_name: str, timeout: float = 22) -> l
                 timeout=timeout,
             )
             rows = data if isinstance(data, list) else _product_rows(data)
+            if len(rows) > len(best):
+                best = rows
             if _ok(rows):
                 return _save(rows)
         except TezPosApiError as exc:
@@ -511,11 +520,16 @@ def get_catalog_snapshot(token: str, server_name: str, timeout: float = 22) -> l
             timeout=timeout,
         )
         rows = data if isinstance(data, list) else _product_rows(data)
+        if len(rows) > len(best):
+            best = rows
         if _ok(rows):
             return _save(rows)
     except TezPosApiError as exc:
         if exc.status in (401, 403):
             raise
+    # Kichik katalog yoki count mos kelmasa ham eng yaxshi natijani saqlaymiz
+    if best:
+        return _save(best)
     return []
 
 
@@ -1665,6 +1679,57 @@ def create_product(token: str, server_name: str, payload: dict) -> dict:
         body=payload,
         timeout=60,
     )
+
+
+def get_product(token: str, server_name: str, product_id: str, timeout: float = 8) -> dict:
+    """Bitta mahsulot — GET /api/catalog/products/{id}/"""
+    pid = str(product_id or "").strip()
+    if not pid:
+        return {}
+    data = api_request(
+        "GET",
+        f"/api/catalog/products/{pid}/",
+        token=token,
+        server_name=server_name,
+        timeout=timeout,
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def get_products_by_ids(
+    token: str,
+    server_name: str,
+    product_ids: list[str],
+    *,
+    timeout: float = 12.0,
+    max_workers: int = 12,
+) -> list[dict]:
+    """Yetishmayotgan mahsulotlarni ID bo‘yicha parallel yuklash."""
+    ids = []
+    seen: set[str] = set()
+    for raw in product_ids or []:
+        pid = str(raw or "").strip()
+        if not pid or pid.startswith("name:") or pid in seen:
+            continue
+        seen.add(pid)
+        ids.append(pid)
+    if not ids:
+        return []
+    out: list[dict] = []
+    workers = max(1, min(int(max_workers or 1), len(ids), 16))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {
+            pool.submit(get_product, token, server_name, pid, min(8.0, timeout)): pid
+            for pid in ids
+        }
+        for fut in as_completed(futs):
+            try:
+                row = fut.result()
+            except Exception:
+                continue
+            if isinstance(row, dict) and (row.get("id") or row.get("name")):
+                out.append(row)
+    return out
 
 
 def update_product(token: str, server_name: str, product_id: str, payload: dict) -> dict:

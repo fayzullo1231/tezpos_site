@@ -3343,12 +3343,114 @@ def _product_catalog_prices(
         vals = [
             Decimal(str(v))
             for lid, v in list_prices.items()
-            if lid not in selling_list_ids and Decimal(str(v or 0)) > 0
+            if str(lid) not in selling_list_ids and Decimal(str(v or 0)) > 0
         ]
         if vals:
             wholesale = min(vals)
+        elif list_prices:
+            # Sotuv listidan past bo‘lgan eng kichik narx
+            below = [
+                Decimal(str(v))
+                for v in list_prices.values()
+                if Decimal(str(v or 0)) > 0
+                and (selling <= 0 or Decimal(str(v)) < selling - Decimal("0.5"))
+            ]
+            if below:
+                wholesale = min(below)
     cost = Decimal(str(product.cost_price or 0))
     return selling, wholesale, cost
+
+
+def _product_row_catalog_meta(
+    product: SimpleNamespace | None,
+    *,
+    selling_list_ids: set[str] | None = None,
+    fallback_name: str = "",
+    fallback_pid: str = "",
+) -> dict:
+    """Analitika kartochkasi uchun nom + sotib olish/sotuv/optom."""
+    selling_list_ids = selling_list_ids or set()
+    selling, wholesale, cost = _product_catalog_prices(
+        product, selling_list_ids=selling_list_ids
+    )
+    name = ""
+    if product and getattr(product, "name", None):
+        name = str(product.name or "").strip()
+    if not name:
+        name = (fallback_name or "").strip()
+    if not name or name == "Mahsulot":
+        pid = str(fallback_pid or getattr(product, "id", "") or "").strip()
+        if pid and not pid.startswith("name:"):
+            name = f"Mahsulot {pid[:8]}"
+        else:
+            name = name or "Mahsulot"
+    return {
+        "name": name,
+        "image": (getattr(product, "display_image", "") or "") if product else "",
+        "stock": float(getattr(product, "stock_qty", 0) or 0) if product else 0.0,
+        "wholesale": float(wholesale or 0),
+        "selling": float(selling or 0),
+        "cost": float(cost or 0),
+        "barcode": str(getattr(product, "barcode", "") or "") if product else "",
+        "sku": str(
+            getattr(product, "sku", "") or getattr(product, "article", "") or ""
+        )
+        if product
+        else "",
+    }
+
+
+def _merge_product_into_maps(
+    raw: dict,
+    products_by_id: dict,
+    products_by_name: dict,
+) -> SimpleNamespace | None:
+    if not isinstance(raw, dict):
+        return None
+    p = _map_product(raw)
+    if not p or not p.id:
+        return None
+    products_by_id[str(p.id)] = p
+    if products_by_name is not None and p.name:
+        key = str(p.name).casefold().strip()
+        if key and key not in products_by_name:
+            products_by_name[key] = p
+    return p
+
+
+def _ensure_products_for_ids(
+    token: str,
+    server: str,
+    products_by_id: dict,
+    products_by_name: dict,
+    product_ids: list[str] | set[str],
+    *,
+    timeout: float = 14.0,
+) -> None:
+    """Top/chek dagi product_id lar katalogda bo‘lmasa — ID bo‘yicha yuklash."""
+    missing = []
+    for raw in product_ids or []:
+        pid = str(raw or "").strip()
+        if not pid or pid.startswith("name:") or pid in products_by_id:
+            continue
+        missing.append(pid)
+    if not missing:
+        return
+    try:
+        rows = tezpos_api.get_products_by_ids(
+            token, server, missing, timeout=timeout
+        ) or []
+    except (tezpos_api.TezPosApiError, TimeoutError, OSError):
+        return
+    for row in rows:
+        _merge_product_into_maps(row, products_by_id, products_by_name)
+
+
+def _is_placeholder_product_name(name: str) -> bool:
+    text = (name or "").strip()
+    if not text or text == "Mahsulot":
+        return True
+    return bool(re.match(r"^Mahsulot\s+[0-9a-fA-F]{6,}$", text))
 
 
 def _line_revenue_profit_teZpos(
@@ -5646,37 +5748,30 @@ def _product_sales_stats(
             if unit_price <= 0 and qty > 0 and line_rev > 0:
                 unit_price = (line_rev / qty).quantize(Decimal("0.01"))
             unit_cost = _resolve_item_unit_cost(item, products_by_id, products_by_name)
-            wholesale = Decimal("0")
-            selling = Decimal("0")
-            cost_show = unit_cost
-            barcode = ""
-            sku = ""
-            if p:
-                selling = Decimal(str(p.selling_price or 0))
-                wholesale = Decimal(str(p.wholesale_price or 0))
-                barcode = str(getattr(p, "barcode", "") or "")
-                sku = str(getattr(p, "sku", "") or getattr(p, "article", "") or "")
-                if wholesale <= 0:
-                    list_prices = getattr(p, "list_prices", None) or {}
-                    vals = [
-                        Decimal(str(v))
-                        for lid, v in list_prices.items()
-                        if lid not in selling_list_ids and Decimal(str(v or 0)) > 0
-                    ]
-                    if vals:
-                        wholesale = min(vals)
-                if cost_show <= 0 and (p.cost_price or Decimal("0")) > 0:
-                    cost_show = p.cost_price
+            cat_meta = _product_row_catalog_meta(
+                p,
+                selling_list_ids=selling_list_ids,
+                fallback_name=name,
+                fallback_pid=str(pid),
+            )
+            if unit_cost > 0 and float(cat_meta.get("cost") or 0) <= 0:
+                cat_meta["cost"] = float(unit_cost)
+            if float(cat_meta.get("selling") or 0) <= 0 and unit_price > 0:
+                cat_meta["selling"] = float(unit_price)
             meta = product_meta.get(pid) or {}
             product_meta[pid] = {
-                "name": name or meta.get("name") or (p.name if p else "Mahsulot"),
-                "image": (p.display_image if p else "") or meta.get("image") or "",
-                "stock": float(p.stock_qty) if p else float(meta.get("stock") or 0),
-                "wholesale": float(wholesale or meta.get("wholesale") or 0),
-                "selling": float(selling or meta.get("selling") or unit_price),
-                "cost": float(cost_show or meta.get("cost") or 0),
-                "barcode": barcode or meta.get("barcode") or "",
-                "sku": sku or meta.get("sku") or "",
+                "name": cat_meta["name"]
+                if not _is_placeholder_product_name(cat_meta.get("name") or "")
+                else (name or meta.get("name") or cat_meta["name"]),
+                "image": cat_meta["image"] or meta.get("image") or "",
+                "stock": cat_meta["stock"] or float(meta.get("stock") or 0),
+                "wholesale": float(cat_meta["wholesale"] or meta.get("wholesale") or 0),
+                "selling": float(
+                    cat_meta["selling"] or meta.get("selling") or unit_price or 0
+                ),
+                "cost": float(cat_meta["cost"] or meta.get("cost") or unit_cost or 0),
+                "barcode": cat_meta["barcode"] or meta.get("barcode") or "",
+                "sku": cat_meta["sku"] or meta.get("sku") or "",
             }
 
     all_pids: set[str] = (
@@ -5688,16 +5783,27 @@ def _product_sales_stats(
     for pid in all_pids:
         p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
         meta = product_meta.get(pid) or {}
-        if p and pid not in product_meta:
+        if p:
+            cat_meta = _product_row_catalog_meta(
+                p,
+                selling_list_ids=selling_list_ids,
+                fallback_name=str(meta.get("name") or ""),
+                fallback_pid=str(pid),
+            )
+            # Katalog narxlari ustuvor (sotilmaganlar ham)
             meta = {
-                "name": p.name,
-                "image": p.display_image or "",
-                "stock": float(p.stock_qty or 0),
-                "wholesale": float(p.wholesale_price or 0),
-                "selling": float(p.selling_price or 0),
-                "cost": float(p.cost_price or 0),
-                "barcode": str(getattr(p, "barcode", "") or ""),
-                "sku": str(getattr(p, "sku", "") or getattr(p, "article", "") or ""),
+                "name": cat_meta["name"]
+                if not _is_placeholder_product_name(cat_meta.get("name") or "")
+                else (meta.get("name") or cat_meta["name"]),
+                "image": cat_meta["image"] or meta.get("image") or "",
+                "stock": cat_meta["stock"]
+                if cat_meta["stock"]
+                else float(meta.get("stock") or 0),
+                "wholesale": float(cat_meta["wholesale"] or meta.get("wholesale") or 0),
+                "selling": float(cat_meta["selling"] or meta.get("selling") or 0),
+                "cost": float(cat_meta["cost"] or meta.get("cost") or 0),
+                "barcode": cat_meta["barcode"] or meta.get("barcode") or "",
+                "sku": cat_meta["sku"] or meta.get("sku") or "",
             }
         qty = product_qty.get(pid) or Decimal("0")
         rev = product_rev.get(pid) or Decimal("0")
@@ -5706,8 +5812,8 @@ def _product_sales_stats(
         profit_sell = product_profit_sell.get(pid) or Decimal("0")
         profit_optom = product_profit_optom.get(pid) or Decimal("0")
         cost_unit = float(meta.get("cost") or 0)
-        if cost_unit <= 0 and p and (p.cost_price or Decimal("0")) > 0:
-            cost_unit = float(p.cost_price)
+        selling_show = float(meta.get("selling") or 0)
+        wholesale_show = float(meta.get("wholesale") or 0)
 
         daily_list = [
             _top_daily_row(day_iso, bucket)
@@ -5731,16 +5837,19 @@ def _product_sales_stats(
         else:
             status = "never"
 
+        display_name = (meta.get("name") or "").strip() or "Mahsulot"
+        if p and getattr(p, "name", None) and not _is_placeholder_product_name(p.name):
+            display_name = str(p.name).strip()
         margin_pct = _margin_on_revenue(profit, rev)
         out.append(
             {
                 "id": str(pid),
                 "product_id": str(pid),
-                "name": (p.name if p else "") or meta.get("name") or "Mahsulot",
-                "product_name": (p.name if p else "") or meta.get("name") or "Mahsulot",
-                "barcode": (getattr(p, "barcode", "") if p else "") or meta.get("barcode") or "",
-                "sku": (getattr(p, "sku", "") if p else "") or meta.get("sku") or "",
-                "image": (p.display_image if p else "") or meta.get("image") or "",
+                "name": display_name,
+                "product_name": display_name,
+                "barcode": meta.get("barcode") or "",
+                "sku": meta.get("sku") or "",
+                "image": meta.get("image") or "",
                 "qty": float(qty),
                 "total_quantity": float(qty),
                 "qty_selling": float(product_qty_sell.get(pid) or 0),
@@ -5757,19 +5866,11 @@ def _product_sales_stats(
                 "profit": float(profit),
                 "margin_percent": margin_pct,
                 "margin": margin_pct,
-                "stock": float(p.stock_qty) if p else float(meta.get("stock") or 0),
-                "wholesale_price": float(p.wholesale_price or 0)
-                if p and (p.wholesale_price or 0)
-                else float(meta.get("wholesale") or 0),
-                "selling_price": float(p.selling_price)
-                if p
-                else float(meta.get("selling") or 0),
-                "wholesale": float(p.wholesale_price or 0)
-                if p and (p.wholesale_price or 0)
-                else float(meta.get("wholesale") or 0),
-                "selling": float(p.selling_price)
-                if p
-                else float(meta.get("selling") or 0),
+                "stock": float(meta.get("stock") or 0),
+                "wholesale_price": wholesale_show,
+                "selling_price": selling_show,
+                "wholesale": wholesale_show,
+                "selling": selling_show,
                 "retail": {
                     "quantity": float(product_qty_sell.get(pid) or 0),
                     "amount": float(product_rev_sell.get(pid) or 0),
@@ -6028,7 +6129,13 @@ def _top_products_from_api_items(
     items: list,
     products_by_id: dict,
     limit: int = 100,
+    price_lists: list[dict] | None = None,
 ) -> list[dict]:
+    selling_list_ids = {
+        str(pl.get("id"))
+        for pl in (price_lists or [])
+        if isinstance(pl, dict) and pl.get("id") and _is_api_selling_list(pl)
+    }
     out = []
     for row in items or []:
         if not isinstance(row, dict):
@@ -6040,48 +6147,55 @@ def _top_products_from_api_items(
             or row.get("total")
             or row.get("amount")
             or row.get("sum")
+            or row.get("total_amount")
         )
         p = products_by_id.get(pid) if pid else None
+        cat = _product_row_catalog_meta(
+            p,
+            selling_list_ids=selling_list_ids,
+            fallback_name=str(row.get("product_name") or row.get("name") or ""),
+            fallback_pid=pid,
+        )
         if rev <= 0 and qty > 0:
             unit = _dec(row.get("unit_price") or row.get("price"))
-            if unit <= 0 and p:
-                unit = p.selling_price
+            if unit <= 0:
+                unit = Decimal(str(cat.get("selling") or 0))
             rev = qty * unit if unit > 0 else Decimal("0")
-        if rev <= 0 and p and qty > 0:
-            rev = qty * p.selling_price
         if rev <= 0 and qty <= 0:
             continue
-        name = (
-            (row.get("product_name") or row.get("name") or "")
-            or (p.name if p else "")
-            or (f"Mahsulot {pid[:8]}" if pid else "Mahsulot")
-        )
-        cost_unit = float(p.cost_price) if p and (p.cost_price or 0) else 0.0
+        cost_unit = float(cat.get("cost") or 0)
         cost_total = float(qty) * cost_unit if cost_unit > 0 else 0.0
         profit = float(rev) - cost_total if cost_total > 0 else 0.0
-        wholesale = float(p.wholesale_price or 0) if p else float(_dec(row.get("wholesale_price")))
-        selling = (
-            float(p.selling_price)
-            if p
-            else float(_dec(row.get("selling_price") or row.get("unit_price")))
-        )
+        wholesale = float(cat.get("wholesale") or 0)
+        selling = float(cat.get("selling") or 0)
+        name = cat.get("name") or (f"Mahsulot {pid[:8]}" if pid else "Mahsulot")
         out.append(
             {
                 "id": pid,
+                "product_id": pid,
                 "name": name,
-                "image": (p.display_image if p else "") or str(row.get("image") or ""),
+                "product_name": name,
+                "image": cat.get("image") or str(row.get("image") or ""),
+                "barcode": cat.get("barcode") or "",
+                "sku": cat.get("sku") or "",
                 "qty": float(qty),
                 "qty_selling": float(qty),
                 "qty_wholesale": 0.0,
                 "revenue": float(rev),
                 "revenue_selling": float(rev),
                 "revenue_wholesale": 0.0,
+                "profit_selling": profit,
+                "profit_wholesale": 0.0,
                 "cost": cost_unit,
                 "cost_total": cost_total,
                 "profit": profit,
-                "stock": float(p.stock_qty) if p else float(_dec(row.get("stock"))),
+                "stock": float(cat.get("stock") or 0),
                 "wholesale": wholesale,
                 "selling": selling,
+                "wholesale_price": wholesale,
+                "selling_price": selling,
+                "sold_in_period": float(qty) > 0,
+                "status": "sold" if float(qty) > 0 else "never",
             }
         )
         if len(out) >= limit:
@@ -6174,7 +6288,7 @@ def _build_top_products_pack(
     if channel == "selling":
         channel = "retail"
     mode = "f" if fast else "x"
-    pack_key = f"{memo_prefix}|topspack12|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack13|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)
@@ -6245,50 +6359,41 @@ def _build_top_products_pack(
             ),
         ) or []
 
+    products_by_id: dict = {}
+    products_by_name: dict = {}
+    products: list = []
+    price_lists: list[dict] = []
     try:
-        if fast:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_period = pool.submit(_load_period_sales)
-                fut_pl = pool.submit(
-                    lambda: _memo_get(
-                        f"{memo_prefix}|price_lists",
-                        120.0,
-                        lambda: tezpos_api.get_price_lists(token, server) or [],
-                    )
+        with ThreadPoolExecutor(max_workers=4 if not fast else 3) as pool:
+            fut_period = pool.submit(_load_period_sales)
+            fut_pl = pool.submit(
+                lambda: _memo_get(
+                    f"{memo_prefix}|price_lists",
+                    120.0,
+                    lambda: tezpos_api.get_price_lists(token, server) or [],
                 )
-                period_sales = fut_period.result()
-                try:
-                    price_lists = fut_pl.result() or []
-                except Exception:
-                    price_lists = []
-            history_sales = []
-            products_raw = _memo_peek(f"{memo_prefix}|catalog_snap") or []
-            if not isinstance(products_raw, list):
-                products_raw = []
-            products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-            products_by_id = {str(p.id): p for p in products}
-            products_by_name = _products_by_name(products)
-        else:
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                fut_period = pool.submit(_load_period_sales)
-                fut_hist = pool.submit(_load_history_sales)
-                fut_catalog = pool.submit(
-                    _ensure_catalog_maps,
-                    token,
-                    server,
-                    memo_prefix,
-                    timeout=14.0,
-                    quick=True,
-                )
-                period_sales = fut_period.result()
-                history_sales = fut_hist.result()
-                try:
-                    products_by_id, products_by_name, products = fut_catalog.result()
-                except tezpos_api.TezPosApiError as exc:
-                    if getattr(exc, "status", None) in (401, 403):
-                        return {"error": "auth"}
-                    products_by_id, products_by_name, products = {}, {}, []
-            price_lists = []
+            )
+            fut_catalog = pool.submit(
+                _ensure_catalog_maps,
+                token,
+                server,
+                memo_prefix,
+                timeout=10.0 if fast else 18.0,
+                quick=bool(fast),
+            )
+            fut_hist = pool.submit(_load_history_sales) if need_history else None
+            period_sales = fut_period.result()
+            try:
+                price_lists = fut_pl.result() or []
+            except Exception:
+                price_lists = []
+            try:
+                products_by_id, products_by_name, products = fut_catalog.result()
+            except tezpos_api.TezPosApiError as exc:
+                if getattr(exc, "status", None) in (401, 403):
+                    return {"error": "auth"}
+                products_by_id, products_by_name, products = {}, {}, []
+            history_sales = fut_hist.result() if fut_hist else []
     except tezpos_api.TezPosApiError as exc:
         if getattr(exc, "status", None) in (401, 403):
             return {"error": "auth"}
@@ -6298,16 +6403,6 @@ def _build_top_products_pack(
 
     seed_last_sale = _scan_product_last_sales(history_sales)
 
-    if not fast:
-        price_lists: list[dict] = []
-        try:
-            price_lists = _memo_get(
-                f"{memo_prefix}|price_lists",
-                120.0,
-                lambda: tezpos_api.get_price_lists(token, server) or [],
-            ) or []
-        except (tezpos_api.TezPosApiError, TimeoutError, OSError, Exception):
-            price_lists = []
     price_lists = [
         pl for pl in (price_lists or []) if isinstance(pl, dict) and pl.get("is_active", True)
     ]
@@ -6364,6 +6459,23 @@ def _build_top_products_pack(
         if len(need_fetch) > detail_cap:
             missing_after_fetch += len(need_fetch) - detail_cap
 
+    # Chek/top product_id lar katalogda yo‘q bo‘lsa — ID bo‘yicha boyitish
+    detail_pids: set[str] = set()
+    for detail in details_map.values():
+        for item in _sale_items(detail):
+            pid, _name, _nested = _item_product_ref(item)
+            if pid and not str(pid).startswith("name:"):
+                detail_pids.add(str(pid))
+    if detail_pids:
+        _ensure_products_for_ids(
+            token,
+            server,
+            products_by_id,
+            products_by_name,
+            detail_pids,
+            timeout=12.0 if fast else 16.0,
+        )
+
     product_summary: dict = {}
     top_products, product_summary = _product_sales_stats(
         details_map,
@@ -6379,49 +6491,92 @@ def _build_top_products_pack(
         prefer_txn_total=True,
     )
 
-    # Agar katalog yuklangan bo‘lsa — to‘liq ro‘yxat (sotilgan + sotilmagan) saqlanadi.
-    # API faqat katalog yo‘q va chek tafsilotlari yetarli bo‘lmaganda.
-    if (
-        not products_by_id
-        and (
-            not top_products
-            or not any(r.get("sold_in_period") for r in top_products)
-        )
-    ):
+    source = "sales"
+    # Chek tafsiloti yo‘q — top-products + katalog boyitish (nom/narx)
+    if not top_products or not any(r.get("sold_in_period") for r in top_products):
         try:
             top_payload = tezpos_api.get_top_products(
                 token,
                 server,
                 days=span,
-                limit=limit,
+                limit=min(limit if limit > 0 else 100, 100),
                 date_from=start.isoformat(),
                 date_to=end.isoformat(),
             ) or {"items": []}
         except (tezpos_api.TezPosApiError, TimeoutError, OSError):
             top_payload = {"items": []}
-        top_products = _top_products_from_api_items(
-            top_payload.get("items") or [], products_by_id, limit=limit
-        )
-        top_products.sort(
-            key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)),
-            reverse=True,
-        )
-        source = "api"
-    else:
-        source = "sales"
+        api_items = top_payload.get("items") or []
+        api_pids = [
+            str(row.get("product_id") or row.get("id") or "")
+            for row in api_items
+            if isinstance(row, dict)
+        ]
+        if api_pids and (not products_by_id or any(pid and pid not in products_by_id for pid in api_pids)):
+            _ensure_products_for_ids(
+                token,
+                server,
+                products_by_id,
+                products_by_name,
+                api_pids,
+                timeout=14.0,
+            )
+            # Katalog hali ham bo‘sh — to‘liq snapshot qayta
+            if not products_by_id:
+                try:
+                    products_by_id, products_by_name, products = _ensure_catalog_maps(
+                        token, server, memo_prefix, timeout=16.0, quick=False
+                    )
+                except Exception:
+                    pass
+        if api_items:
+            top_products = _top_products_from_api_items(
+                api_items,
+                products_by_id,
+                limit=limit,
+                price_lists=price_lists,
+            )
+            top_products.sort(
+                key=lambda r: (float(r.get("qty") or 0), float(r.get("revenue") or 0)),
+                reverse=True,
+            )
+            source = "api"
 
     checks_n = len(period_sales)
     if api_daily_checks and api_daily_checks > checks_n:
         checks_n = api_daily_checks
     details_used = len(details_map)
     products_rev = float(product_summary.get("total_revenue") or 0)
+    if source == "api":
+        products_rev = float(
+            sum(float(r.get("revenue") or 0) for r in top_products)
+        )
+        product_summary = dict(product_summary or {})
+        product_summary["total_revenue"] = round(products_rev, 2)
+        product_summary["total_amount"] = round(products_rev, 2)
+        product_summary["sold"] = sum(1 for r in top_products if r.get("sold_in_period"))
+        product_summary["total"] = len(top_products)
+
     coverage = (details_used / checks_n) if checks_n > 0 else 1.0
+    placeholder_n = sum(
+        1 for r in top_products if _is_placeholder_product_name(str(r.get("name") or ""))
+    )
+    missing_prices = sum(
+        1
+        for r in top_products
+        if float(r.get("qty") or 0) > 0
+        and float(r.get("selling") or r.get("selling_price") or 0) <= 0
+        and float(r.get("cost") or 0) <= 0
+    )
     incomplete = bool(
         fast
+        or (source == "api" and (placeholder_n > 0 or missing_prices > 0 or expected_gross > 0))
         or (need_fetch and detail_cap <= 0)
         or missing_after_fetch > 0
         or (checks_n > 0 and details_used < checks_n)
-        or (expected_gross > 0 and products_rev + 1 < expected_gross * 0.97)
+        or (expected_gross > 0 and source == "sales" and products_rev + 1 < expected_gross * 0.97)
+        or placeholder_n > 0
+        or missing_prices > 0
+        or (not fast and not products_by_id and expected_gross > 0)
     )
 
     product_summary = dict(product_summary or {})
@@ -6435,9 +6590,11 @@ def _build_top_products_pack(
             "details_used": details_used,
             "coverage": round(coverage, 4),
             "gap": round(max(0.0, expected_gross - products_rev), 2),
+            "catalog_count": len(products_by_id),
+            "placeholder_names": placeholder_n,
         }
     )
-    if expected_gross > 0:
+    if expected_gross > 0 and source != "api":
         product_summary["total_revenue"] = round(expected_gross, 2)
         product_summary["total_amount"] = round(expected_gross, 2)
 

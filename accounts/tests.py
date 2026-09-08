@@ -913,6 +913,96 @@ class TopStatsDailyTests(SimpleTestCase):
         self.assertAlmostEqual(row["qty"], 10)
 
 
+class CatalogEnrichTopsTests(SimpleTestCase):
+    def test_api_top_items_get_name_and_prices_from_catalog(self):
+        from accounts.views import _map_product, _top_products_from_api_items
+
+        p = _map_product(
+            {
+                "id": "ef2d2718-aaaa-bbbb-cccc-ddddeeee0011",
+                "name": "Pepsi 1L",
+                "price": 12000,
+                "cost_price": 9000,
+                "wholesale_price": 10000,
+                "list_prices": {"optom-list": 10000},
+            }
+        )
+        rows = _top_products_from_api_items(
+            [{"product_id": p.id, "quantity": 10}],
+            {p.id: p},
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "Pepsi 1L")
+        self.assertAlmostEqual(rows[0]["selling"], 12000)
+        self.assertAlmostEqual(rows[0]["wholesale"], 10000)
+        self.assertAlmostEqual(rows[0]["cost"], 9000)
+        self.assertAlmostEqual(rows[0]["revenue"], 120000)
+
+    def test_unsold_product_keeps_catalog_prices(self):
+        from datetime import date
+
+        from accounts.views import _map_product, _product_sales_stats
+
+        sold = _map_product(
+            {
+                "id": "sold1",
+                "name": "Sold Drink",
+                "price": 11000,
+                "cost_price": 8000,
+                "wholesale_price": 9500,
+            }
+        )
+        idle = _map_product(
+            {
+                "id": "idle1",
+                "name": "Idle Snack",
+                "price": 5000,
+                "cost_price": 3000,
+                "wholesale_price": 4000,
+                "list_prices": {"optom": 4000},
+            }
+        )
+        by_id = {sold.id: sold, idle.id: idle}
+        sales = {
+            "s1": {
+                "id": "s1",
+                "completed_at": "2026-09-08T12:00:00+05:00",
+                "items": [
+                    {
+                        "product_id": sold.id,
+                        "product_name": sold.name,
+                        "quantity": 2,
+                        "unit_price": 11000,
+                        "total": 22000,
+                    }
+                ],
+            }
+        }
+        rows, summary = _product_sales_stats(
+            sales,
+            by_id,
+            {},
+            [{"id": "optom", "name": "Optom", "is_active": True}],
+            period_start=date(2026, 9, 8),
+            period_end=date(2026, 9, 8),
+            sold_only=False,
+        )
+        idle_row = next(r for r in rows if r["id"] == idle.id)
+        self.assertFalse(idle_row["sold_in_period"])
+        self.assertEqual(idle_row["name"], "Idle Snack")
+        self.assertAlmostEqual(idle_row["selling"], 5000)
+        self.assertAlmostEqual(idle_row["wholesale"], 4000)
+        self.assertAlmostEqual(idle_row["cost"], 3000)
+        self.assertGreaterEqual(summary["unsold"], 1)
+
+    def test_placeholder_name_detection(self):
+        from accounts.views import _is_placeholder_product_name
+
+        self.assertTrue(_is_placeholder_product_name("Mahsulot ef2d2718"))
+        self.assertTrue(_is_placeholder_product_name("Mahsulot"))
+        self.assertFalse(_is_placeholder_product_name("Pepsi 1L"))
+
+
 class BarcodeExcelTemplateTests(SimpleTestCase):
     def test_all_codes_go_in_one_cell_with_comma_and_newline(self):
         from accounts.views import (

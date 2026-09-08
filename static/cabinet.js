@@ -2238,7 +2238,27 @@
 
   const topsNeedsFull = () => {
     const f = topsFilterSelect?.value || "all";
-    return f === "unsold" || f === "never";
+    // Barchasi / sotilmagan — katalog bilan to‘liq yuklash kerak
+    return f === "all" || f === "unsold" || f === "never";
+  };
+
+  const topsRowsNeedCatalog = (rows) => {
+    if (!Array.isArray(rows) || !rows.length) return true;
+    const sample = rows.slice(0, 12);
+    let badName = 0;
+    let badPrice = 0;
+    sample.forEach((r) => {
+      const name = String(r?.name || "").trim();
+      if (!name || name === "Mahsulot" || /^Mahsulot\s+[0-9a-fA-F]{6,}$/i.test(name)) {
+        badName += 1;
+      }
+      const qty = Number(r?.qty || 0);
+      const selling = Number(r?.selling || r?.selling_price || 0);
+      const cost = Number(r?.cost || 0);
+      const wholesale = Number(r?.wholesale || r?.wholesale_price || 0);
+      if (qty > 0 && selling <= 0 && cost <= 0 && wholesale <= 0) badPrice += 1;
+    });
+    return badName >= Math.min(3, sample.length) || badPrice >= Math.min(3, sample.length);
   };
 
   const formatTopDay = (iso) => {
@@ -2302,7 +2322,8 @@
   const applyTopsPayload = (payload, isFast) => {
     const rows = Array.isArray(payload.topProducts) ? payload.topProducts : [];
     const key = topsCacheKey(topsFrom, topsTo);
-    const partial = Boolean(payload.partial || isFast);
+    const partial =
+      Boolean(payload.partial || isFast) || topsRowsNeedCatalog(rows);
     topsCache[key] = {
       products: rows,
       partial,
@@ -2385,6 +2406,7 @@
         needsFull: (j) =>
           Boolean(j?.partial) ||
           topsNeedsFull() ||
+          topsRowsNeedCatalog(j?.topProducts) ||
           (Number(j?.checks || 0) > 0 &&
             Number(j?.details_used || 0) < Number(j?.checks || 0)),
       });
