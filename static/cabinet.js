@@ -1635,24 +1635,24 @@
     if (hasChart && reportEl) {
       if (!reportChartRef) {
         reportChartRef = new Chart(reportEl, {
-          type: "line",
-          data: {
+      type: "line",
+      data: {
             labels: pack.labels || [],
-            datasets: [
-              {
-                label: "Tushum",
+        datasets: [
+          {
+            label: "Tushum",
                 data: pack.totals || [],
-                borderColor: "#12b3a1",
-                backgroundColor: "rgba(18,179,161,0.14)",
-                fill: true,
-                tension: 0.35,
-                pointRadius: 4,
-                pointBackgroundColor: "#12b3a1",
-              },
-            ],
+            borderColor: "#12b3a1",
+            backgroundColor: "rgba(18,179,161,0.14)",
+            fill: true,
+            tension: 0.35,
+            pointRadius: 4,
+            pointBackgroundColor: "#12b3a1",
           },
-          options: lineOptions,
-        });
+        ],
+      },
+      options: lineOptions,
+    });
       } else {
         reportChartRef.data.labels = pack.labels || [];
         reportChartRef.data.datasets[0].data = pack.totals || [];
@@ -1831,11 +1831,15 @@
     const totalQty = sold.reduce((s, r) => s + Number(r.qty || 0), 0);
     const totalRev = sold.reduce((s, r) => s + Number(r.revenue || 0), 0);
     const totalProfit = sold.reduce((s, r) => s + Number(r.profit || 0), 0);
+    const totalCost = sold.reduce((s, r) => s + Number(r.cost_total || r.cost_amount || 0), 0);
     const qtySell = sold.reduce((s, r) => s + Number(r.qty_selling || 0), 0);
     const qtyWh = sold.reduce((s, r) => s + Number(r.qty_wholesale || 0), 0);
     const revSell = sold.reduce((s, r) => s + Number(r.revenue_selling || 0), 0);
     const revWh = sold.reduce((s, r) => s + Number(r.revenue_wholesale || 0), 0);
+    const profitSell = sold.reduce((s, r) => s + Number(r.profit_selling || 0), 0);
+    const profitWh = sold.reduce((s, r) => s + Number(r.profit_wholesale || 0), 0);
     const top = sold[0];
+    const backend = data.topsProductSummary || {};
     return {
       sold: sold.length,
       unsold: (rows || []).length - sold.length,
@@ -1845,16 +1849,40 @@
       revenue_wholesale: revWh,
       qty_selling: qtySell,
       qty_wholesale: qtyWh,
+      profit_selling: profitSell,
+      profit_wholesale: profitWh,
       total_profit: totalProfit,
+      cost_amount: totalCost,
+      total_cost: totalCost,
       margin_percent: totalRev > 0 ? (totalProfit / totalRev) * 100 : 0,
       top_product: top ? top.name : "",
+      checks: backend.checks != null ? backend.checks : backend.checks_count,
+      checks_count: backend.checks_count != null ? backend.checks_count : backend.checks,
+      checks_selling: backend.checks_selling,
+      checks_wholesale: backend.checks_wholesale,
     };
   };
 
   const refreshTopsUi = () => {
     const rows = topsDisplayRows();
     data.topProducts = rows;
-    paintTopsSummary(summarizeTopsFromRows(rows), { partial: topsPartial });
+    const fromRows = summarizeTopsFromRows(rows);
+    const backend = data.topsProductSummary || {};
+    const merged =
+      topsChannelParam() === "all" && backend && Object.keys(backend).length
+        ? {
+            ...backend,
+            ...fromRows,
+            checks: backend.checks ?? backend.checks_count ?? fromRows.checks,
+            checks_count: backend.checks_count ?? backend.checks ?? fromRows.checks_count,
+            checks_selling: backend.checks_selling ?? fromRows.checks_selling,
+            checks_wholesale: backend.checks_wholesale ?? fromRows.checks_wholesale,
+            profit_selling: fromRows.profit_selling ?? backend.profit_selling,
+            profit_wholesale: fromRows.profit_wholesale ?? backend.profit_wholesale,
+            cost_amount: fromRows.cost_amount ?? backend.cost_amount ?? backend.total_cost,
+          }
+        : fromRows;
+    paintTopsSummary(merged, { partial: topsPartial });
     renderProducts(topsLimitN());
   };
 
@@ -1919,20 +1947,69 @@
 
   const paintTopsSummary = (summary, { partial = false } = {}) => {
     const box = document.getElementById("tops-summary-kpis");
+    const hero = document.getElementById("tops-analytics-hero");
+    const channelGrid = document.getElementById("tops-channel-grid");
     const emptyHint = document.getElementById("tops-empty-hint");
-    if (!box || !summary || !Object.keys(summary).length) {
+    if (!summary || !Object.keys(summary).length) {
       if (box) box.hidden = true;
+      if (hero) hero.hidden = true;
+      if (channelGrid) channelGrid.hidden = true;
       return;
     }
     const soldQty =
       Number(summary.total_quantity || 0) ||
       Number(summary.qty_selling || 0) + Number(summary.qty_wholesale || 0);
-    box.hidden = soldQty <= 0 && Number(summary.sold || 0) <= 0;
-    if (emptyHint) emptyHint.hidden = soldQty > 0 || Number(summary.sold || 0) > 0;
+    const hasSales = soldQty > 0 || Number(summary.sold || 0) > 0 || Number(summary.total_revenue || 0) > 0;
+    if (box) box.hidden = true;
+    if (hero) hero.hidden = !hasSales;
+    if (channelGrid) channelGrid.hidden = !hasSales;
+    if (emptyHint) emptyHint.hidden = hasSales;
+
     const set = (id, val) => {
       const el = document.getElementById(id);
       if (el) el.textContent = val;
     };
+    const checks = Number(summary.checks ?? summary.checks_count ?? 0);
+    const periodText = formatRangeLabel(topsFrom, topsTo);
+
+    set("sa-kpi-revenue", summary.total_revenue != null ? fmtSom(summary.total_revenue) : "0");
+    set("sa-kpi-period", periodText);
+    set("sa-kpi-checks", `${fmt(checks)} ta`);
+    set("sa-kpi-qty", `${fmt(soldQty)} dona`);
+    set("sa-kpi-profit", summary.total_profit != null ? fmtSom(summary.total_profit) : "0");
+    set(
+      "sa-kpi-margin",
+      summary.margin_percent != null ? `${Number(summary.margin_percent).toFixed(2)}%` : "—"
+    );
+
+    set("sa-retail-revenue", fmtSom(summary.revenue_selling || 0));
+    set("sa-retail-qty", `${fmt(summary.qty_selling || 0)} dona`);
+    set("sa-retail-profit", fmtSom(summary.profit_selling || 0));
+    set(
+      "sa-retail-checks",
+      summary.checks_selling != null ? `${fmt(summary.checks_selling)} chek` : "Sotuv narxi"
+    );
+
+    set("sa-wholesale-revenue", fmtSom(summary.revenue_wholesale || 0));
+    set("sa-wholesale-qty", `${fmt(summary.qty_wholesale || 0)} dona`);
+    set("sa-wholesale-profit", fmtSom(summary.profit_wholesale || 0));
+    set(
+      "sa-wholesale-checks",
+      summary.checks_wholesale != null ? `${fmt(summary.checks_wholesale)} chek` : "Optom narxi"
+    );
+
+    set(
+      "sa-kpi-cost",
+      summary.cost_amount != null || summary.total_cost != null
+        ? fmtSom(summary.cost_amount ?? summary.total_cost)
+        : "—"
+    );
+    set("sa-kpi-top", summary.top_product || "—");
+    set(
+      "sa-kpi-meta",
+      `${fmt(summary.sold || 0)} sotilgan · ${fmt(summary.unsold || 0)} sotilmagan`
+    );
+
     set("tops-kpi-top-name", summary.top_product || "—");
     set("tops-kpi-qty", soldQty > 0 ? `${fmt(soldQty)} dona` : "—");
     set("tops-kpi-revenue", summary.total_revenue ? fmtSom(summary.total_revenue) : "—");
@@ -1957,15 +2034,16 @@
       "tops-kpi-meta",
       `${fmt(summary.sold || 0)} sotilgan · ${fmt(summary.unsold || 0)} sotilmagan`
     );
+
     let hint = document.getElementById("tops-partial-hint");
     if (partial) {
       if (!hint) {
         hint = document.createElement("p");
         hint.id = "tops-partial-hint";
         hint.className = "cabinet-hint";
-        box.after(hint);
+        (channelGrid || hero || box)?.after(hint);
       }
-      hint.textContent = "To‘liq statistika hisoblanmoqda…";
+      hint.textContent = "To‘liq statistika hisoblanmoqda… (TezPOS cheklari tekshirilmoqda)";
       hint.hidden = false;
     } else if (hint) {
       hint.hidden = true;
@@ -2162,7 +2240,7 @@
     if (dailyBody) {
       dailyBody.innerHTML = daily.length
         ? daily
-            .map(
+          .map(
               (row) => `<tr>
               <td>${formatTopDay(row.date)}</td>
               <td>${fmt(row.wholesale_quantity || 0)}</td>
@@ -2172,8 +2250,8 @@
               <td>${fmtSom(row.cost_amount || 0)}</td>
               <td class="is-profit">${fmtSom(row.profit || 0)}</td>
             </tr>`
-            )
-            .join("")
+          )
+          .join("")
         : `<tr><td colspan="7" class="cabinet-hint">Kunlik ma’lumot yo‘q</td></tr>`;
     }
     modal.hidden = false;
@@ -3145,8 +3223,8 @@
               `<div class="ld-el-body" style="${elBodyStyle(st)};justify-content:${justify}">` +
               `<div class="ld-el-text">${escHtml(text)}</div></div></div>`
             );
-          })
-          .join("");
+        })
+        .join("");
         miniPreview.innerHTML = `<div class="ld-mini-card" style="aspect-ratio:${state.widthMm}/${state.heightMm}">${miniParts}</div>`;
       }
       const title = document.getElementById("ld-tpl-title");
@@ -4101,41 +4179,46 @@
     const runBtn = document.getElementById("pi-run");
     if (!importModal || !fieldsEl) return;
 
-    const priceLists = Array.isArray(data.priceLists) ? data.priceLists : [];
     const BASE_FIELDS = [
       { key: "name", label: "Mahsulot nomi", def: true },
       { key: "barcode", label: "Shtrixkod (barkod)", def: true },
       { key: "brand", label: "Brend", def: true },
       { key: "category", label: "Bo‘lim", def: true },
       { key: "selling_price", label: "Sotuv narxi", def: true },
+      { key: "wholesale_price", label: "Optom narxi", def: true },
       { key: "cost_price", label: "Sotib olish narxi", def: true },
       { key: "stock_qty", label: "Omborda qoldiq", def: true },
       { key: "unit", label: "O‘lchov birligi", def: true },
       { key: "min_stock", label: "Minimal qoldiq", def: false },
     ];
-    const PL_FIELDS = priceLists
-      .filter((pl) => pl && pl.id && !pl.is_selling)
-      .map((pl) => ({
-        key: `pl_${pl.id}`,
-        label: `Narxlar: ${pl.name || pl.id}`,
-        def: true,
-        priceListId: String(pl.id),
-      }));
-    // Sotuv ro‘yxati bo‘lsa ham alohida ko‘rsatish (is_selling)
-    const SELLING_PL = priceLists
-      .filter((pl) => pl && pl.id && pl.is_selling)
-      .map((pl) => ({
-        key: `pl_${pl.id}`,
-        label: `Narxlar: ${pl.name || "Sotuv"}`,
-        def: true,
-        priceListId: String(pl.id),
-      }));
-    const ALL_FIELDS = [...BASE_FIELDS, ...SELLING_PL, ...PL_FIELDS];
+
+    const getPriceListFields = () => {
+      const priceLists = Array.isArray(data.priceLists) ? data.priceLists : [];
+      const selling = priceLists
+        .filter((pl) => pl && pl.id && pl.is_selling)
+        .map((pl) => ({
+          key: `pl_${pl.id}`,
+          label: `Narxlar: ${pl.name || "Sotuv"}`,
+          def: true,
+          priceListId: String(pl.id),
+        }));
+      const other = priceLists
+        .filter((pl) => pl && pl.id && !pl.is_selling)
+        .map((pl) => ({
+          key: `pl_${pl.id}`,
+          label: `Narxlar: ${pl.name || pl.id}`,
+          def: true,
+          priceListId: String(pl.id),
+        }));
+      return { selling, other, all: [...selling, ...other] };
+    };
+
+    const getAllFields = () => [...BASE_FIELDS, ...getPriceListFields().all];
 
     let parsedRows = [];
     let rawCsvRows = [];
-    // Dastlab hammasi tanlangan (nom, brend, narxlar ro‘yxati…)
-    let selectedKeys = new Set(ALL_FIELDS.map((f) => f.key));
+    let selectedKeys = new Set(BASE_FIELDS.filter((f) => f.def).map((f) => f.key));
+    let knownPlKeys = new Set();
 
     const csrfToken = () => {
       const m = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
@@ -4144,6 +4227,7 @@
     };
 
     const renderFields = () => {
+      const pl = getPriceListFields();
       const parts = [];
       parts.push(`<div class="pi-field is-group-title">Asosiy maydonlar</div>`);
       BASE_FIELDS.forEach((f) => {
@@ -4153,20 +4237,35 @@
           }><span>${esc(f.label)}</span></label>`
         );
       });
-      if (SELLING_PL.length || PL_FIELDS.length) {
+      if (pl.all.length) {
         parts.push(`<div class="pi-field is-group-title">Narxlar ro‘yxati</div>`);
-        [...SELLING_PL, ...PL_FIELDS].forEach((f) => {
+        pl.all.forEach((f) => {
           parts.push(
             `<label class="pi-field"><input type="checkbox" data-pi-key="${esc(f.key)}" ${
               selectedKeys.has(f.key) ? "checked" : ""
             }><span>${esc(f.label)}</span></label>`
           );
         });
+      } else {
+        parts.push(
+          `<p class="cabinet-hint" style="grid-column:1/-1;margin:0">Narxlar ro‘yxatlari yuklanmoqda yoki hali yo‘q. Optom narxi asosiy maydonlarda bor.</p>`
+        );
       }
       fieldsEl.innerHTML = parts.join("");
     };
 
-    const activeFields = () => ALL_FIELDS.filter((f) => selectedKeys.has(f.key));
+    const activeFields = () => getAllFields().filter((f) => selectedKeys.has(f.key));
+
+    const selectDefaultFields = () => {
+      const keys = new Set();
+      BASE_FIELDS.forEach((f) => {
+        if (f.def) keys.add(f.key);
+      });
+      const pl = getPriceListFields().all;
+      knownPlKeys = new Set(pl.map((f) => f.key));
+      pl.forEach((f) => keys.add(f.key));
+      selectedKeys = keys;
+    };
 
     const setStatus = (text, kind = "") => {
       if (!statusEl) return;
@@ -4187,8 +4286,7 @@
       if (fileInput) fileInput.value = "";
       if (fileNameEl) fileNameEl.textContent = "Fayl tanlanmagan";
       if (previewWrap) previewWrap.hidden = true;
-      // Har ochilganda barcha maydonlar tanlangan (foydalanuvchi o‘chirishi mumkin)
-      selectedKeys = new Set(ALL_FIELDS.map((f) => f.key));
+      selectDefaultFields();
       if (runBtn) {
         runBtn.disabled = false;
         runBtn.textContent = "Excelga yuklash";
@@ -4197,11 +4295,25 @@
       renderFields();
       importModal.hidden = false;
       document.body.style.overflow = "hidden";
+      if (typeof window.tezposEnsureCatalog === "function") {
+        window.tezposEnsureCatalog({ force: false }).catch(() => {});
+      }
     };
     const closeImport = () => {
       importModal.hidden = true;
       document.body.style.overflow = "";
     };
+
+    document.addEventListener("tezpos:catalog", () => {
+      if (!importModal || importModal.hidden) return;
+      getPriceListFields().all.forEach((f) => {
+        if (!knownPlKeys.has(f.key)) {
+          knownPlKeys.add(f.key);
+          selectedKeys.add(f.key);
+        }
+      });
+      renderFields();
+    });
 
     const collectBarcodes = (p) => {
       const out = [];
@@ -4265,6 +4377,8 @@
           return formatBarcodesCell(collectBarcodes(p));
         case "selling_price":
           return Number(p.selling_price || 0);
+        case "wholesale_price":
+          return Number(p.wholesale_price || 0);
         case "cost_price":
           return Number(p.cost_price || 0);
         case "stock_qty":
@@ -4280,7 +4394,15 @@
         default:
           if (field.key.startsWith("pl_")) {
             const id = field.priceListId || field.key.slice(3);
-            return Number(listPrices[id] ?? listPrices[String(id)] ?? 0);
+            let v = Number(listPrices[id] ?? listPrices[String(id)] ?? 0);
+            if (v > 0) return v;
+            const pl = (Array.isArray(data.priceLists) ? data.priceLists : []).find(
+              (x) => String(x.id) === String(id)
+            );
+            if (pl && pl.is_selling) return Number(p.selling_price || 0);
+            const wh = Number(p.wholesale_price || 0);
+            if (wh > 0) return wh;
+            return 0;
           }
           return "";
       }
@@ -4355,7 +4477,7 @@
       const writeLocal = () => {
         const pack = buildExportSheet();
         if (!pack) return;
-        XLSX.writeFile(pack.wb, "barcha_mahsulotlar.xlsx");
+        XLSX.writeFile(pack.wb, "narxlar_royxati.xlsx");
         setStatus(`${pack.count} ta mahsulot Excelga yozildi.`, "");
       };
       if (!exportUrl) {
@@ -4374,9 +4496,22 @@
         runBtn.textContent = "Yuklanmoqda…";
       }
       try {
+        // Katalog bo‘sh bo‘lsa — avval to‘ldirishga urinib ko‘ramiz (local fallback uchun)
+        if (!(Array.isArray(data.products) && data.products.length) && typeof window.tezposEnsureCatalog === "function") {
+          try {
+            await window.tezposEnsureCatalog({ force: false });
+          } catch (_e) {
+            /* server eksporti ishlashi mumkin */
+          }
+        }
         const qs = new URLSearchParams({
           fields: fields.map((f) => f.key).join(","),
         });
+        const plLabels = fields
+          .filter((f) => f.key.startsWith("pl_"))
+          .map((f) => `${f.key.slice(3)}=${f.label || ""}`)
+          .join("|");
+        if (plLabels) qs.set("pl_labels", plLabels);
         const res = await fetch(`${exportUrl}?${qs}`, {
           credentials: "same-origin",
           headers: { Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
@@ -4393,12 +4528,12 @@
         const objUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = objUrl;
-        a.download = "barcha_mahsulotlar.xlsx";
+        a.download = "narxlar_royxati.xlsx";
         document.body.appendChild(a);
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(objUrl), 2000);
-        setStatus("Excel yuklab olindi.", "");
+        setStatus("Narxlar ro‘yxati yuklab olindi.", "");
       } catch (err) {
         try {
           writeLocal();
@@ -4433,6 +4568,7 @@
         "ean",
       ],
       selling_price: ["selling_price", "price", "sotuv narxi", "sotuv", "narx", "цена", "sale price"],
+      wholesale_price: ["wholesale_price", "optom narxi", "optom", "wholesale", "опт"],
       cost_price: ["cost_price", "cost", "sotib olish narxi", "tannarx", "закуп", "purchase"],
       stock_qty: ["stock_qty", "quantity", "stock", "qoldiq", "ombor", "остаток", "qty"],
       unit: ["unit", "o‘lchov", "olchov", "birlik", "ед"],
@@ -4443,7 +4579,7 @@
 
     const resolveKeyFromHeader = (header) => {
       const n = normalizeHeader(header);
-      for (const f of ALL_FIELDS) {
+      for (const f of getAllFields()) {
         if (normalizeHeader(f.key) === n || normalizeHeader(f.label) === n) return f.key;
         if (f.priceListId && (n === `pl_${f.priceListId}` || n.includes(normalizeHeader(f.label)))) {
           return f.key;
@@ -4614,7 +4750,7 @@
     });
 
     document.getElementById("pi-select-all")?.addEventListener("click", () => {
-      selectedKeys = new Set(ALL_FIELDS.map((f) => f.key));
+      selectedKeys = new Set(getAllFields().map((f) => f.key));
       renderFields();
       if (rawCsvRows.length) parsedRows = mapRows(rawCsvRows);
       renderPreview();

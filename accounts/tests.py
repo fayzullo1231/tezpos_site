@@ -183,6 +183,47 @@ class WarehouseProductMapTests(SimpleTestCase):
         self.assertEqual(_parse_list_prices([{"price_list_id": "optom", "price": 800}])["optom"], p.list_prices["optom"])
         self.assertEqual(float(p.stock_qty) * float(p.list_prices["optom"]), 2400)
 
+    def test_export_fills_optom_list_from_wholesale(self):
+        from accounts.views import (
+            _export_cell_value,
+            _fill_list_prices_from_catalog,
+            _map_product,
+        )
+
+        p = _map_product(
+            {
+                "id": "mayo",
+                "name": "CHIMBOY",
+                "price": 17000,
+                "wholesale_price": 16400,
+                "unit": "4 шт",
+            }
+        )
+        pl_id = "1ebc3771-a015-4917-9454-53efdef82d01"
+        price_lists = [{"id": pl_id, "name": "Optom", "is_selling": False}]
+        _fill_list_prices_from_catalog(p, price_lists)
+        by_id = {pl_id: price_lists[0]}
+        self.assertAlmostEqual(
+            float(_export_cell_value(p, f"pl_{pl_id}", by_id)),
+            16400,
+        )
+        self.assertEqual(_export_cell_value(p, "unit", by_id), "шт")
+        self.assertAlmostEqual(float(_export_cell_value(p, "wholesale_price", by_id)), 16400)
+
+    def test_export_fills_selling_list_from_price(self):
+        from accounts.views import (
+            _export_cell_value,
+            _fill_list_prices_from_catalog,
+            _map_product,
+        )
+
+        p = _map_product({"id": "1", "name": "A", "price": 12000})
+        pl_id = "sell-uuid"
+        price_lists = [{"id": pl_id, "name": "Sotuv", "is_selling": True}]
+        _fill_list_prices_from_catalog(p, price_lists)
+        by_id = {pl_id: price_lists[0]}
+        self.assertAlmostEqual(float(_export_cell_value(p, f"pl_{pl_id}", by_id)), 12000)
+
 
 class CatalogPagingTests(SimpleTestCase):
     def test_twenty_item_page_is_not_the_end(self):
@@ -727,6 +768,13 @@ class TopStatsDailyTests(SimpleTestCase):
         self.assertAlmostEqual(d1["retail_quantity"], 15)
         self.assertAlmostEqual(d1["total_quantity"], 35)
         self.assertAlmostEqual(summary["total_quantity"], 70)
+        self.assertEqual(summary["checks"], 2)
+        self.assertEqual(summary["checks_count"], 2)
+        self.assertGreaterEqual(summary["checks_selling"], 1)
+        self.assertGreaterEqual(summary["checks_wholesale"], 1)
+        self.assertIn("profit_selling", summary)
+        self.assertIn("profit_wholesale", summary)
+        self.assertIn("cost_amount", summary)
 
     def test_channel_wholesale_only(self):
         from datetime import date

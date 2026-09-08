@@ -282,9 +282,15 @@ def _parse_list_prices(raw) -> dict[str, Decimal]:
     if isinstance(raw, dict):
         for key, val in raw.items():
             if isinstance(val, dict):
-                out[str(key)] = _first_dec(
-                    val.get("price"), val.get("value"), val.get("amount")
+                # Nested price object OR price-list metadata without price
+                price = _first_dec(
+                    val.get("price"),
+                    val.get("value"),
+                    val.get("amount"),
+                    val.get("selling_price"),
+                    val.get("wholesale_price"),
                 )
+                out[str(key)] = price
             else:
                 out[str(key)] = _dec(val)
         return out
@@ -297,9 +303,11 @@ def _parse_list_prices(raw) -> dict[str, Decimal]:
                 or row.get("list_id")
                 or row.get("price_list")
                 or row.get("id")
+                or row.get("pk")
+                or row.get("uuid")
             )
             if isinstance(lid, dict):
-                lid = lid.get("id")
+                lid = lid.get("id") or lid.get("pk") or lid.get("uuid")
             if not lid:
                 continue
             out[str(lid)] = _first_dec(
@@ -307,14 +315,87 @@ def _parse_list_prices(raw) -> dict[str, Decimal]:
                 row.get("value"),
                 row.get("amount"),
                 row.get("selling_price"),
+                row.get("wholesale_price"),
+                row.get("optom_price"),
             )
     return out
-    try:
-        if value is None or value == "":
-            return Decimal(default)
-        return Decimal(str(value).replace(",", ".").replace(" ", "").replace("\u00a0", ""))
-    except (InvalidOperation, ValueError, TypeError):
-        return Decimal(default)
+
+
+def _extract_product_list_prices(raw: dict) -> dict[str, Decimal]:
+    """Mahsulotdagi barcha mumkin bo‘lgan narxlar-ro‘yxati maydonlarini birlashtirish."""
+    out: dict[str, Decimal] = {}
+    for key in (
+        "list_prices",
+        "prices",
+        "product_prices",
+        "price_list_prices",
+        "extra_prices",
+        "listPrices",
+    ):
+        parsed = _parse_list_prices(raw.get(key))
+        for lid, val in parsed.items():
+            if val > 0 or lid not in out:
+                out[lid] = val if val > 0 else out.get(lid, val)
+
+    # price_lists ba'zan faqat ro‘yxat meta (narxsiz) — faqat haqiqiy narx bo‘lsa qo‘shamiz
+    pl_parsed = _parse_list_prices(raw.get("price_lists"))
+    if any(v > 0 for v in pl_parsed.values()):
+        for lid, val in pl_parsed.items():
+            if val > 0:
+                out[lid] = val
+    return {k: v for k, v in out.items() if k}
+
+
+def _price_list_id(pl: dict | None) -> str:
+    if not isinstance(pl, dict):
+        return ""
+    raw = (
+        pl.get("id")
+        or pl.get("pk")
+        or pl.get("uuid")
+        or pl.get("price_list_id")
+        or pl.get("list_id")
+    )
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get("pk") or raw.get("uuid")
+    return str(raw or "").strip()
+
+
+def _fill_list_prices_from_catalog(
+    product: SimpleNamespace,
+    price_lists: list[dict],
+) -> None:
+    """
+    TezPOS ba'zan list_prices ni bo‘sh qoldiradi.
+    Sotuv/optom maydonlaridan pl_* ustunlarini to‘ldiramiz.
+    """
+    lp = dict(getattr(product, "list_prices", None) or {})
+    selling = Decimal(str(getattr(product, "selling_price", 0) or 0))
+    wholesale = Decimal(str(getattr(product, "wholesale_price", 0) or 0))
+    changed = False
+    for pl in price_lists or []:
+        lid = _price_list_id(pl)
+        if not lid:
+            continue
+        cur = Decimal(str(lp.get(lid) or 0))
+        if cur > 0:
+            continue
+        if _is_api_selling_list(pl):
+            if selling > 0:
+                lp[lid] = selling
+                changed = True
+        elif wholesale > 0:
+            lp[lid] = wholesale
+            changed = True
+        elif selling > 0 and not any(
+            Decimal(str(v or 0)) > 0
+            for k, v in lp.items()
+            if k != lid
+        ):
+            # Hech qanday optom yo‘q — sotuvni qo‘yib qo‘yamiz emas; 0 qoldiramiz
+            pass
+    if changed:
+        product.list_prices = lp
 
 
 # TezPOS javoblarini qisqa muddat xotirada saqlash (SSR/AJAX tezligi)
@@ -527,12 +608,12 @@ def cabinet_catalog(request):
             ) or []
             return [
                 {
-                    "id": str(pl.get("id") or ""),
+                    "id": _price_list_id(pl),
                     "name": (pl.get("name") or "").strip() or "Narxlar",
-                    "is_selling": bool(pl.get("is_selling")),
+                    "is_selling": bool(pl.get("is_selling")) or _is_api_selling_list(pl),
                 }
                 for pl in raw_pl
-                if isinstance(pl, dict) and pl.get("is_active", True) and str(pl.get("id") or "")
+                if isinstance(pl, dict) and pl.get("is_active", True) and _price_list_id(pl)
             ]
         except Exception:
             return []
@@ -583,15 +664,28 @@ def cabinet_catalog(request):
                 ) or []
                 price_lists_payload = [
                     {
-                        "id": str(pl.get("id") or ""),
+                        "id": _price_list_id(pl),
                         "name": (pl.get("name") or "").strip() or "Narxlar",
-                        "is_selling": bool(pl.get("is_selling")),
+                        "is_selling": bool(pl.get("is_selling")) or _is_api_selling_list(pl),
                     }
                     for pl in raw_pl
-                    if isinstance(pl, dict) and pl.get("is_active", True) and str(pl.get("id") or "")
+                    if isinstance(pl, dict) and pl.get("is_active", True) and _price_list_id(pl)
                 ]
             except Exception:
                 price_lists_payload = []
+        if price_lists_payload and not skip_pl:
+            for p in products:
+                _fill_list_prices_from_catalog(
+                    p,
+                    [
+                        {
+                            "id": x["id"],
+                            "name": x["name"],
+                            "is_selling": x["is_selling"],
+                        }
+                        for x in price_lists_payload
+                    ],
+                )
         actual = len(products)
         requested = page_size
         total = int(pack.get("total") or 0)
@@ -1650,9 +1744,7 @@ def _map_product(raw: dict) -> SimpleNamespace:
     )
     barcode = codes[0] if codes else ""
 
-    list_prices = _parse_list_prices(
-        raw.get("list_prices") or raw.get("price_lists") or raw.get("prices")
-    )
+    list_prices = _extract_product_list_prices(raw)
     selling = _first_dec(
         raw.get("price"),
         raw.get("selling_price"),
@@ -3868,6 +3960,7 @@ _EXPORT_FIELD_LABELS = {
     "name": "Mahsulot nomi",
     "barcode": "Shtrixkod (barkod)",
     "selling_price": "Sotuv narxi",
+    "wholesale_price": "Optom narxi",
     "cost_price": "Sotib olish narxi",
     "stock_qty": "Omborda qoldiq",
     "unit": "O‘lchov birligi",
@@ -3881,7 +3974,17 @@ def _export_cell_value(product: SimpleNamespace, key: str, price_lists_by_id: di
     list_prices = getattr(product, "list_prices", None) or {}
     if key.startswith("pl_"):
         pid = key[3:]
-        return float(list_prices.get(pid) or list_prices.get(str(pid)) or 0)
+        val = float(list_prices.get(pid) or list_prices.get(str(pid)) or 0)
+        if val > 0:
+            return val
+        pl = price_lists_by_id.get(pid) or price_lists_by_id.get(str(pid)) or {}
+        if pl and _is_api_selling_list(pl):
+            return float(getattr(product, "selling_price", 0) or 0)
+        wholesale = float(getattr(product, "wholesale_price", 0) or 0)
+        if wholesale > 0:
+            return wholesale
+        # Noma'lum ro‘yxat — sotuvdan past bo‘lmasa 0
+        return 0
     if key == "name":
         return product.name or ""
     if key == "barcode":
@@ -3894,12 +3997,22 @@ def _export_cell_value(product: SimpleNamespace, key: str, price_lists_by_id: di
         )
     if key == "selling_price":
         return float(product.selling_price or 0)
+    if key == "wholesale_price":
+        return float(getattr(product, "wholesale_price", 0) or 0)
     if key == "cost_price":
         return float(product.cost_price or 0)
     if key == "stock_qty":
         return float(product.stock_qty or 0)
     if key == "unit":
-        return product.unit or "dona"
+        unit = product.unit or "dona"
+        # Ba'zan API "4 шт" kabi paket yozadi — faqat birlikni saqlaymiz
+        if isinstance(unit, (int, float, Decimal)):
+            return "dona"
+        unit = str(unit).strip()
+        parts = unit.split()
+        if len(parts) >= 2 and parts[0].replace(".", "", 1).isdigit():
+            return parts[-1] or "dona"
+        return unit or "dona"
     if key == "category":
         return product.category or ""
     if key == "brand":
@@ -3935,6 +4048,19 @@ def cabinet_products_export(request):
         seen.add(f)
         fields.append(f)
 
+    # Client yuborgan pl_* nomlari (API id→name topilmasa)
+    pl_label_map: dict[str, str] = {}
+    raw_labels = (request.GET.get("pl_labels") or "").strip()
+    if raw_labels:
+        for part in raw_labels.split("|"):
+            if "=" not in part:
+                continue
+            pid, label = part.split("=", 1)
+            pid = pid.strip()
+            label = label.strip()
+            if pid and label:
+                pl_label_map[pid] = label
+
     try:
         products_raw = tezpos_api.get_catalog_snapshot(token, server, timeout=25) or []
         if len(products_raw) <= 200:
@@ -3956,17 +4082,32 @@ def cabinet_products_export(request):
         return JsonResponse({"error": str(exc)}, status=504)
 
     products = [_map_product(p) for p in products_raw if isinstance(p, dict)]
-    price_lists_by_id = {
-        str(pl.get("id")): pl
-        for pl in price_lists
-        if isinstance(pl, dict) and pl.get("id")
-    }
+    price_lists_by_id: dict[str, dict] = {}
+    for pl in price_lists:
+        if not isinstance(pl, dict):
+            continue
+        lid = _price_list_id(pl)
+        if lid:
+            price_lists_by_id[lid] = pl
+
+    for p in products:
+        _fill_list_prices_from_catalog(p, price_lists)
 
     headers = []
     for key in fields:
         if key.startswith("pl_"):
-            pl = price_lists_by_id.get(key[3:]) or {}
-            headers.append(f"Narxlar: {pl.get('name') or key[3:]}")
+            pid = key[3:]
+            pl = price_lists_by_id.get(pid) or {}
+            name = (
+                (pl.get("name") or "").strip()
+                or pl_label_map.get(pid)
+                or pl_label_map.get(key)
+                or ""
+            )
+            if name.lower().startswith("narxlar:"):
+                headers.append(name)
+            else:
+                headers.append(f"Narxlar: {name or pid}")
         else:
             headers.append(_EXPORT_FIELD_LABELS.get(key, key))
 
@@ -4022,7 +4163,7 @@ def cabinet_products_export(request):
     bio = BytesIO()
     wb.save(bio)
     bio.seek(0)
-    filename = "barcha_mahsulotlar.xlsx"
+    filename = "narxlar_royxati.xlsx"
     resp = HttpResponse(
         bio.getvalue(),
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -5359,6 +5500,9 @@ def _product_sales_stats(
     product_daily: dict[str, dict[str, dict]] = defaultdict(dict)
     product_meta: dict[str, dict] = {}
     last_sale: dict[str, datetime] = dict(seed_last_sale or {})
+    checks_in_period: set[str] = set()
+    checks_selling: set[str] = set()
+    checks_wholesale: set[str] = set()
 
     for detail in details.values():
         if not isinstance(detail, dict) or not _is_countable_sale(detail):
@@ -5370,6 +5514,7 @@ def _product_sales_stats(
             or detail.get("sold_at")
         )
         in_period = bool(sale_day and period_start <= sale_day <= period_end)
+        sale_id = str(detail.get("id") or detail.get("sale_id") or "")
         sale_pl = (
             detail.get("price_list_id")
             or detail.get("price_list")
@@ -5424,6 +5569,13 @@ def _product_sales_stats(
 
             if not in_period:
                 continue
+
+            if sale_id:
+                checks_in_period.add(sale_id)
+                if is_selling:
+                    checks_selling.add(sale_id)
+                else:
+                    checks_wholesale.add(sale_id)
 
             p = products_by_id.get(pid) if not str(pid).startswith("name:") else None
             if not p and name:
@@ -5640,6 +5792,10 @@ def _product_sales_stats(
         "unsold": len(unsold_rows),
         "never_sold": never_count,
         "avg_days_unsold": round(sum(idle_days) / len(idle_days), 1) if idle_days else 0,
+        "checks": len(checks_in_period),
+        "checks_count": len(checks_in_period),
+        "checks_selling": len(checks_selling),
+        "checks_wholesale": len(checks_wholesale),
         "qty_selling": round(sum(float(r.get("qty_selling") or 0) for r in sold_rows), 3),
         "qty_wholesale": round(sum(float(r.get("qty_wholesale") or 0) for r in sold_rows), 3),
         "profit_selling": round(sum(float(r.get("profit_selling") or 0) for r in sold_rows), 2),
@@ -5650,6 +5806,7 @@ def _product_sales_stats(
         "revenue_wholesale": round(rev_wholesale, 2),
         "revenue_selling": round(rev_selling, 2),
         "cost_amount": round(total_cost, 2),
+        "total_cost": round(total_cost, 2),
         "total_profit": round(total_profit, 2),
         "profit": round(total_profit, 2),
         "margin_percent": _margin_on_revenue(total_profit, total_rev),

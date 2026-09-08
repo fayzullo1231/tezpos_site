@@ -204,7 +204,7 @@
       <a href="?section=overview" class="{% if section == 'overview' %}is-active{% endif %}"><span class="nav-dot"></span> Bosh sahifa</a>
       <a href="?section=signals" class="{% if section == 'signals' %}is-active{% endif %}"><span class="nav-dot"></span> Signallar</a>
       <a href="?section=reports" class="{% if section == 'reports' %}is-active{% endif %}"><span class="nav-dot"></span> Hisobotlar</a>
-      <a href="?section=tops" class="{% if section == 'tops' %}is-active{% endif %}"><span class="nav-dot"></span> Top reyting</a>
+      <a href="?section=tops" class="{% if section == 'tops' %}is-active{% endif %}"><span class="nav-dot"></span> Sotuv analitikasi</a>
       <a href="?section=stock_in" class="{% if section == 'stock_in' %}is-active{% endif %}"><span class="nav-dot"></span> Kirim qilingan mahsulotlar</a>
       <a href="?section=labels" class="{% if section == 'labels' %}is-active{% endif %}"><span class="nav-dot"></span> Yorliqlar</a>
       <a href="?section=sales" class="{% if section == 'sales' %}is-active{% endif %}"><span class="nav-dot"></span> Kunlik sotuvlar</a>
@@ -484,11 +484,11 @@
     {% endif %}
 
     {% if section == 'tops' %}
-    <section class="cabinet-card tops-products-panel">
+    <section class="cabinet-card tops-products-panel tops-analytics-panel">
         <div class="cabinet-card-head">
         <div>
-          <h3>Top reyting</h3>
-          <p class="cabinet-hint" id="tops-period-hint">Tanlangan sana oralig‘idagi barcha sotilgan mahsulotlar</p>
+          <h3>Sotuv analitikasi</h3>
+          <p class="cabinet-hint" id="tops-period-hint">Tanlangan kundagi / davrdagi TezPOS savdolari — mahsulot, tannarx, sotuv va optom</p>
         </div>
         <div class="tops-toolbar">
           <div class="tops-period-presets" id="tops-period-presets" role="group" aria-label="Davr">
@@ -567,6 +567,69 @@
           </a>
         </div>
         </div>
+
+      <div class="sa-hero" id="tops-analytics-hero" hidden>
+        <div class="sa-hero-main">
+          <p class="sa-hero-label">Jami savdo</p>
+          <strong class="sa-hero-value" id="sa-kpi-revenue">—</strong>
+          <p class="sa-hero-sub" id="sa-kpi-period">—</p>
+        </div>
+        <div class="sa-hero-side">
+          <div class="sa-pill">
+            <span>Sotuvlar (cheklar)</span>
+            <strong id="sa-kpi-checks">—</strong>
+          </div>
+          <div class="sa-pill">
+            <span>Jami dona</span>
+            <strong id="sa-kpi-qty">—</strong>
+          </div>
+          <div class="sa-pill sa-pill--profit">
+            <span>Jami foyda</span>
+            <strong id="sa-kpi-profit">—</strong>
+          </div>
+          <div class="sa-pill">
+            <span>Marja</span>
+            <strong id="sa-kpi-margin">—</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="sa-channel-grid" id="tops-channel-grid" hidden>
+        <article class="sa-channel-card sa-channel-card--retail">
+          <header>
+            <h4>Sotuv narxida</h4>
+            <span id="sa-retail-checks">—</span>
+          </header>
+          <dl>
+            <div><dt>Savdo</dt><dd id="sa-retail-revenue">—</dd></div>
+            <div><dt>Dona</dt><dd id="sa-retail-qty">—</dd></div>
+            <div><dt>Foyda</dt><dd id="sa-retail-profit" class="is-profit">—</dd></div>
+          </dl>
+        </article>
+        <article class="sa-channel-card sa-channel-card--wholesale">
+          <header>
+            <h4>Optom narxida</h4>
+            <span id="sa-wholesale-checks">—</span>
+          </header>
+          <dl>
+            <div><dt>Savdo</dt><dd id="sa-wholesale-revenue">—</dd></div>
+            <div><dt>Dona</dt><dd id="sa-wholesale-qty">—</dd></div>
+            <div><dt>Foyda</dt><dd id="sa-wholesale-profit" class="is-profit">—</dd></div>
+          </dl>
+        </article>
+        <article class="sa-channel-card sa-channel-card--cost">
+          <header>
+            <h4>Tannarx va qoldiq</h4>
+            <span>Davr yig‘indisi</span>
+          </header>
+          <dl>
+            <div><dt>Jami tannarx</dt><dd id="sa-kpi-cost">—</dd></div>
+            <div><dt>Eng ko‘p sotilgan</dt><dd id="sa-kpi-top">—</dd></div>
+            <div><dt>Mahsulotlar</dt><dd id="sa-kpi-meta">—</dd></div>
+          </dl>
+        </article>
+      </div>
+
       <div class="tops-summary-kpis tops-summary-kpis--rich" id="tops-summary-kpis" hidden>
         <div class="tops-summary-kpi"><span>Eng ko‘p sotilgan</span><strong id="tops-kpi-top-name">—</strong></div>
         <div class="tops-summary-kpi"><span>Jami dona</span><strong id="tops-kpi-qty">—</strong></div>
@@ -576,6 +639,11 @@
         <div class="tops-summary-kpi"><span>Jami foyda</span><strong id="tops-kpi-profit" class="is-profit">—</strong></div>
         <div class="tops-summary-kpi"><span>Marja</span><strong id="tops-kpi-margin">—</strong></div>
         <div class="tops-summary-kpi tops-summary-kpi--meta"><span>Mahsulotlar</span><strong id="tops-kpi-meta">—</strong></div>
+      </div>
+
+      <div class="sa-products-head">
+        <h4>Mahsulotlar bo‘yicha savdo</h4>
+        <p class="cabinet-hint">Har bir mahsulot: tannarx · sotuv · optom · dona · tushum · foyda</p>
       </div>
       <p class="cabinet-hint" id="tops-empty-hint" hidden>Bu davrda sotuvlar mavjud emas.</p>
       <div class="product-tile-grid product-tile-grid--list product-tile-grid--full" id="tops-products-grid">
@@ -1434,9 +1502,9 @@
           </div>
           <div class="products-toolbar-right">
             <span class="products-total" id="products-total">Jami: <strong>{{ all_products_count }}</strong> ta</span>
-            <button type="button" class="btn-ghost" id="btn-product-export" title="Excelga yuklash">
+            <button type="button" class="btn-ghost" id="btn-product-export" title="Narxlar ro‘yxatini Excelga yuklash">
               <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4 6.3 10.7l1.4-1.4L11 12.6V4zM5 18h14v2H5v-2z"/></svg>
-              Yuklash
+              Narxlar ro‘yxati
             </button>
             <button type="button" class="btn-soft" id="btn-product-add">
               <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>
@@ -1609,8 +1677,8 @@
       <div class="product-modal-dialog product-import-dialog" role="dialog" aria-modal="true" aria-labelledby="product-import-title">
         <header class="product-modal-head">
           <div>
-            <h3 id="product-import-title">Excelga yuklash</h3>
-            <p>Avval kerakli maydonlarni tanlang. Shtrixkod katakda har bir kod vergul bilan, keyingisi pastki qatorda. Shu Excel shablonini tahrirlab qayta yuklash mumkin.</p>
+            <h3 id="product-import-title">Narxlar ro‘yxatini yuklash</h3>
+            <p>Kerakli ustunlarni tanlang — barcha mahsulotlar Excelga yuklanadi (sotuv, optom va boshqa narxlar ro‘yxatlari). Shtrixkod katakda har bir kod vergul bilan, keyingisi pastki qatorda.</p>
           </div>
           <button type="button" class="modal-close" data-close-import aria-label="Yopish">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>
@@ -1638,7 +1706,7 @@
               </label>
               <span class="pi-file-name" id="pi-file-name">Fayl tanlanmagan</span>
             </div>
-            <p class="cabinet-hint">Yuklash — tanlangan ustunlar bilan barcha mahsulotlar (shtrixkodlar bitta katakda). Import — shu shablon Excelini TezPOS ga qo‘shish.</p>
+            <p class="cabinet-hint">Yuklash — tanlangan ustunlar bilan barcha mahsulotlar narxlari (shtrixkodlar bitta katakda). Import — shu Excelni TezPOS ga qo‘shish.</p>
           </section>
           <section class="pi-step" id="pi-preview-wrap" hidden>
             <div class="pi-step-head">
@@ -1786,5 +1854,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=20260902-qtysplit" defer></script>
+<script src="/static/cabinet.js?v=20260908-analytics" defer></script>
 {% endblock %}
