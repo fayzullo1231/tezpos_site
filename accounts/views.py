@@ -4001,6 +4001,9 @@ def _save_product_via_api(request, token: str, server: str, product_id: str | No
 
     codes = [c.strip() for c in request.POST.getlist("barcodes") if c.strip()]
     barcode = codes[0] if codes else (request.POST.get("barcode") or "").strip()
+    if not barcode:
+        return False, {"barcode": ["Shtrix-kod majburiy."]}
+
     payload = {
         "name": name,
         "unit": (request.POST.get("unit") or "dona").strip() or "dona",
@@ -4012,11 +4015,38 @@ def _save_product_via_api(request, token: str, server: str, product_id: str | No
         "barcodes": codes or ([barcode] if barcode else []),
         "is_active": True,
     }
+
     try:
         if product_id:
-            tezpos_api.update_product(token, server, product_id, payload)
+            saved = tezpos_api.update_product(token, server, product_id, payload)
+            pid = str(product_id)
         else:
-            tezpos_api.create_product(token, server, payload)
+            saved = tezpos_api.create_product(token, server, payload)
+            pid = str(
+                (saved or {}).get("id")
+                or (saved or {}).get("pk")
+                or ""
+            ).strip()
+            if not pid and barcode:
+                # Ba'zi APIlar faqat payload qaytaradi — barcode bo‘yicha topish
+                try:
+                    hit = tezpos_api.api_request(
+                        "GET",
+                        "/api/catalog/products/",
+                        token=token,
+                        server_name=server,
+                        query={"barcode": barcode, "page_size": 1},
+                        timeout=15,
+                    )
+                    rows = tezpos_api._product_rows(hit)
+                    if rows:
+                        pid = str(rows[0].get("id") or "").strip()
+                except Exception:
+                    pid = ""
+
+        images = request.FILES.getlist("images")
+        if images and pid:
+            tezpos_api.upload_product_images(token, server, pid, images)
         return True, {}
     except tezpos_api.TezPosApiError as exc:
         return False, {"__all__": [str(exc)]}

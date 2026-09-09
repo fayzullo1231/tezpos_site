@@ -7,6 +7,7 @@ import json
 import socket
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1741,3 +1742,86 @@ def update_product(token: str, server_name: str, product_id: str, payload: dict)
         body=payload,
         timeout=60,
     )
+
+
+def upload_product_images(
+    token: str,
+    server_name: str,
+    product_id: str,
+    files: list,
+    *,
+    timeout: float = 60,
+) -> dict:
+    """POST /api/catalog/products/{id}/images/ — multipart form-data."""
+    pid = str(product_id or "").strip()
+    if not pid or not files:
+        return {}
+
+    boundary = f"----tezpos{uuid.uuid4().hex}"
+    body = bytearray()
+    for f in files:
+        if not f:
+            continue
+        filename = str(getattr(f, "name", "") or "image.jpg")
+        filename = filename.replace("\\", "/").split("/")[-1] or "image.jpg"
+        ctype = str(getattr(f, "content_type", "") or "application/octet-stream")
+        try:
+            payload = f.read()
+        except Exception:
+            continue
+        if hasattr(f, "seek"):
+            try:
+                f.seek(0)
+            except Exception:
+                pass
+        if not payload:
+            continue
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            (
+                f'Content-Disposition: form-data; name="images"; '
+                f'filename="{filename}"\r\n'
+            ).encode("utf-8")
+        )
+        body.extend(f"Content-Type: {ctype}\r\n\r\n".encode("utf-8"))
+        body.extend(payload if isinstance(payload, (bytes, bytearray)) else bytes(payload))
+        body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    if len(body) < 32:
+        return {}
+
+    base = normalize_api_base()
+    url = f"{base}/api/catalog/products/{pid}/images/"
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "User-Agent": "TezPOS-Site-Cabinet/1.1",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Authorization": f"Token {token}",
+        "X-Server-Name": server_name or "",
+    }
+    req = urllib.request.Request(url, data=bytes(body), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            enc = (resp.headers.get("Content-Encoding") or "").lower()
+            if "gzip" in enc:
+                try:
+                    raw = gzip.decompress(raw)
+                except Exception:
+                    pass
+            if not raw:
+                return {}
+            return json.loads(raw.decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read() if hasattr(exc, "read") else b""
+        raise TezPosApiError(_parse_error(err_body, exc.code), status=exc.code, payload=err_body) from exc
+    except TimeoutError as exc:
+        raise TezPosApiError(
+            f"TezPOS javob bermadi (timeout). Server: {normalize_api_base()}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise TezPosApiError(
+            f"TezPOS serverga ulanib bo'lmadi ({normalize_api_base()}). "
+            f"Backend ishlayotganini tekshiring."
+        ) from exc

@@ -1609,8 +1609,19 @@
               <div class="barcode-block">
                 <div class="barcode-block-head">
                   <span class="field-label">Shtrix-kod <span class="req">*</span></span>
+                  <div class="barcode-scan-actions">
+                    <button type="button" class="btn-scan" id="btn-barcode-camera" title="Kameradan skanerlash">
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M9 3H4a1 1 0 0 0-1 1v5h2V5h4V3zm11 0h-5v2h4v4h2V4a1 1 0 0 0-1-1zM5 15H3v5a1 1 0 0 0 1 1h5v-2H5v-4zm16 0h-2v4h-4v2h5a1 1 0 0 0 1-1v-5zM7 8h2v8H7V8zm4 0h1.5v8H11V8zm3.5 0H16v8h-1.5V8zm3.5 0h2v8h-2V8z"/></svg>
+                      Kamera
+                    </button>
+                    <button type="button" class="btn-scan" id="btn-barcode-gallery" title="Rasm/galereyadan o‘qish">
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 5h4l1.5-2h3L15 5h4a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm7 3.5A4.5 4.5 0 1 0 16.5 13 4.5 4.5 0 0 0 12 8.5zm0 2A2.5 2.5 0 1 1 9.5 13 2.5 2.5 0 0 1 12 10.5z"/></svg>
+                      Galereya
+                    </button>
+                  </div>
                 </div>
                 <div id="barcode-list" class="barcode-list"></div>
+                <input type="file" id="f_barcode_image" accept="image/*" hidden>
               </div>
               <div class="field-row">
                 <label>
@@ -1670,6 +1681,28 @@
             <button type="submit" class="btn-save">Saqlash</button>
           </footer>
         </form>
+      </div>
+    </div>
+    <div class="product-modal barcode-scan-modal" id="barcode-scan-modal" hidden>
+      <div class="product-modal-backdrop" data-close-barcode-scan></div>
+      <div class="product-modal-dialog barcode-scan-dialog" role="dialog" aria-modal="true" aria-labelledby="barcode-scan-title">
+        <header class="product-modal-head">
+          <div>
+            <h3 id="barcode-scan-title">Shtrix-kod skaner</h3>
+            <p>Kamerani shtrix-kodga qarating — avtomatik o‘qiydi</p>
+          </div>
+          <button type="button" class="modal-close" data-close-barcode-scan aria-label="Yopish">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>
+          </button>
+        </header>
+        <div class="product-modal-body barcode-scan-body">
+          <div id="barcode-scan-reader" class="barcode-scan-reader"></div>
+          <p class="barcode-scan-status" id="barcode-scan-status">Kamera ochilmoqda…</p>
+        </div>
+        <footer class="product-modal-foot">
+          <button type="button" class="btn-ghost" data-close-barcode-scan>Yopish</button>
+          <button type="button" class="btn-soft" id="btn-barcode-scan-gallery">Galereyadan tanlash</button>
+        </footer>
       </div>
     </div>
     <div class="product-modal" id="product-import-modal" hidden>
@@ -1854,5 +1887,6 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=20260908-optom5" defer></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+<script src="/static/cabinet.js?v=20260909-barcode-scan1" defer></script>
 {% endblock %}

@@ -4127,6 +4127,13 @@
   const modal = document.getElementById("product-modal");
   const modalForm = document.getElementById("product-modal-form");
   const modalTitle = document.getElementById("product-modal-title");
+  const btnBarcodeCamera = document.getElementById("btn-barcode-camera");
+  const btnBarcodeGallery = document.getElementById("btn-barcode-gallery");
+  const barcodeImageInput = document.getElementById("f_barcode_image");
+  const barcodeScanModal = document.getElementById("barcode-scan-modal");
+  const barcodeScanReader = document.getElementById("barcode-scan-reader");
+  const barcodeScanStatus = document.getElementById("barcode-scan-status");
+  const btnBarcodeScanGallery = document.getElementById("btn-barcode-scan-gallery");
   const productsMap = Object.fromEntries(
     (data.products || []).map((p) => [String(p.id), p])
   );
@@ -4239,6 +4246,137 @@
       .join("");
   };
 
+  const cleanBarcodeValue = (raw) =>
+    String(raw || "")
+      .replace(/[^\dA-Za-z\-_.]/g, "")
+      .trim();
+
+  const setBarcodeValue = (raw, focus = true) => {
+    const code = cleanBarcodeValue(raw);
+    if (!code) return false;
+    const inputs = [...(barcodeList?.querySelectorAll('input[name="barcodes"]') || [])];
+    if (!inputs.length) {
+      renderBarcodes([code]);
+      return true;
+    }
+    const firstEmpty = inputs.find((el) => !String(el.value || "").trim());
+    const target = firstEmpty || inputs[0];
+    if (target) {
+      target.value = code;
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      if (focus) target.focus();
+      return true;
+    }
+    return false;
+  };
+
+  let html5QrcodeScanner = null;
+  let scannerRunning = false;
+  let scannerLock = false;
+
+  const setScanStatus = (text, kind = "") => {
+    if (!barcodeScanStatus) return;
+    barcodeScanStatus.textContent = text || "";
+    barcodeScanStatus.classList.remove("is-ok", "is-err");
+    if (kind) barcodeScanStatus.classList.add(kind === "ok" ? "is-ok" : "is-err");
+  };
+
+  const stopCameraScanner = async () => {
+    if (!html5QrcodeScanner) return;
+    try {
+      if (scannerRunning) {
+        await html5QrcodeScanner.stop();
+      }
+    } catch {}
+    try {
+      await html5QrcodeScanner.clear();
+    } catch {}
+    scannerRunning = false;
+    html5QrcodeScanner = null;
+  };
+
+  const closeBarcodeScanModal = async () => {
+    if (barcodeScanModal) barcodeScanModal.hidden = true;
+    await stopCameraScanner();
+    if (modal && !modal.hidden) {
+      document.body.style.overflow = "hidden";
+      barcodeList?.querySelector('input[name="barcodes"]')?.focus();
+    } else {
+      document.body.style.overflow = "";
+    }
+  };
+
+  const openBarcodeScanModal = async () => {
+    if (!barcodeScanModal || !barcodeScanReader) return;
+    barcodeScanModal.hidden = false;
+    document.body.style.overflow = "hidden";
+    setScanStatus("Kamera ochilmoqda…");
+    if (!window.Html5Qrcode) {
+      setScanStatus("Skaner kutubxonasi yuklanmadi. Sahifani yangilang.", "err");
+      return;
+    }
+    await stopCameraScanner();
+    html5QrcodeScanner = new window.Html5Qrcode("barcode-scan-reader");
+    scannerLock = false;
+    try {
+      await html5QrcodeScanner.start(
+        { facingMode: "environment" },
+        { fps: 12, qrbox: { width: 260, height: 160 }, aspectRatio: 1.5 },
+        (decodedText) => {
+          if (scannerLock) return;
+          scannerLock = true;
+          const ok = setBarcodeValue(decodedText);
+          setScanStatus(ok ? `Topildi: ${cleanBarcodeValue(decodedText)}` : "Kod o‘qildi, lekin format xato.", ok ? "ok" : "err");
+          setTimeout(() => {
+            closeBarcodeScanModal();
+            scannerLock = false;
+          }, ok ? 350 : 700);
+        },
+        () => {}
+      );
+      scannerRunning = true;
+      setScanStatus("Kamerani shtrix-kodga qarating");
+    } catch (err) {
+      setScanStatus(`Kamera ochilmadi: ${err?.message || err}`, "err");
+      scannerRunning = false;
+    }
+  };
+
+  const decodeBarcodeFromFile = async (file) => {
+    if (!file) return "";
+    if ("BarcodeDetector" in window) {
+      try {
+        const bmp = await createImageBitmap(file);
+        const detector = new window.BarcodeDetector({
+          formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf"],
+        });
+        const rows = await detector.detect(bmp);
+        const val = rows?.[0]?.rawValue || "";
+        const cleaned = cleanBarcodeValue(val);
+        if (cleaned) return cleaned;
+      } catch {}
+    }
+    if (window.Html5Qrcode) {
+      try {
+        const tmpId = "barcode-file-scan-tmp";
+        let el = document.getElementById(tmpId);
+        if (!el) {
+          el = document.createElement("div");
+          el.id = tmpId;
+          el.hidden = true;
+          document.body.appendChild(el);
+        }
+        const scanner = new window.Html5Qrcode(tmpId, /* verbose= */ false);
+        const text = await scanner.scanFile(file, /* showImage= */ false);
+        try {
+          await scanner.clear();
+        } catch {}
+        return cleanBarcodeValue(text);
+      } catch {}
+    }
+    return "";
+  };
+
   const updateImagesCount = () => {
     if (imagesCount) imagesCount.textContent = `${keepImages.length + pendingFiles.length} ta`;
   };
@@ -4343,6 +4481,7 @@
     if (!modal) return;
     modal.hidden = true;
     document.body.style.overflow = "";
+    closeBarcodeScanModal();
   };
 
   document.getElementById("btn-product-add")?.addEventListener("click", () => openModal(null));
@@ -5119,6 +5258,9 @@
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && modal && !modal.hidden) closeModal();
+    if (e.key === "Escape" && barcodeScanModal && !barcodeScanModal.hidden) {
+      closeBarcodeScanModal();
+    }
   });
 
   document.getElementById("f_brand")?.addEventListener("change", (e) => {
@@ -5134,6 +5276,37 @@
     const isNew = e.target.value === "__new__";
     categoryNew.hidden = !isNew;
     if (isNew) categoryNew.focus();
+  });
+
+  btnBarcodeCamera?.addEventListener("click", () => {
+    openBarcodeScanModal();
+  });
+  btnBarcodeGallery?.addEventListener("click", () => {
+    barcodeImageInput?.click();
+  });
+  btnBarcodeScanGallery?.addEventListener("click", () => {
+    barcodeImageInput?.click();
+  });
+  barcodeImageInput?.addEventListener("change", async (e) => {
+    const file = e.target?.files?.[0];
+    if (!file) return;
+    const code = await decodeBarcodeFromFile(file);
+    if (code) {
+      setBarcodeValue(code);
+      setScanStatus(`Topildi: ${code}`, "ok");
+      if (barcodeScanModal && !barcodeScanModal.hidden) {
+        setTimeout(() => closeBarcodeScanModal(), 300);
+      }
+    } else {
+      setScanStatus("Rasmdan shtrix-kod topilmadi. Yana urinib ko‘ring.", "err");
+      alert("Rasmdan shtrix-kod topilmadi.");
+    }
+    e.target.value = "";
+  });
+  document.querySelectorAll("[data-close-barcode-scan]").forEach((el) => {
+    el.addEventListener("click", () => {
+      closeBarcodeScanModal();
+    });
   });
 
   barcodeList?.addEventListener("click", (e) => {
