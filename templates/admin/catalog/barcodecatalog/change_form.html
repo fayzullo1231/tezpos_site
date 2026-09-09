@@ -1,0 +1,27 @@
+{% extends "admin/change_form.html" %}
+{% load i18n static %}
+
+{% block after_field_sets %}
+{{ block.super }}
+<div class="bc-scan-panel">
+  <h2>Shtrix-kod skaner (faqat admin)</h2>
+  <p class="bc-scan-hint">Kamerani oching yoki galereyadan rasm tanlang — kod avtomatik maydonga tushadi.</p>
+  <div class="bc-scan-actions">
+    <button type="button" class="button default" id="bc-btn-camera">Kamera</button>
+    <button type="button" class="button" id="bc-btn-gallery">Galereya</button>
+    <input type="file" id="bc-file-input" accept="image/*" hidden>
+  </div>
+  <p class="bc-scan-status" id="bc-scan-status"></p>
+</div>
+
+<div class="bc-scan-modal" id="bc-scan-modal" hidden>
+  <div class="bc-scan-modal-card">
+    <div class="bc-scan-modal-head">
+      <strong>Kameradan skan</strong>
+      <button type="button" class="button" id="bc-scan-close">Yopish</button>
+    </div>
+    <div id="bc-scan-reader" class="bc-scan-reader"></div>
+    <p class="bc-scan-status" id="bc-scan-modal-status">Kamera ochilmoqda…</p>
+  </div>
+</div>
+{% endblock %}

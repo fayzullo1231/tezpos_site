@@ -76,3 +76,30 @@ class ProductImage(models.Model):
 
     def __str__(self) -> str:
         return f"{self.product_id} image {self.pk}"
+
+
+class BarcodeCatalog(models.Model):
+    """
+    Sayt yaratuvchisi (Django admin / staff) uchun global shtrih-kod bazasi.
+    Oddiy kabinet / kassir / boshqa foydalanuvchilar kira olmaydi.
+    """
+
+    UNIT_CHOICES = Product.UNIT_CHOICES
+
+    barcode = models.CharField("Shtrix-kod", max_length=64, unique=True, db_index=True)
+    name = models.CharField("Nomi", max_length=180)
+    unit = models.CharField(
+        "O‘lchov birligi", max_length=20, choices=UNIT_CHOICES, default="dona"
+    )
+    image = models.ImageField("Rasm", upload_to="barcode_catalog/", blank=True, null=True)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "name"]
+        verbose_name = "Shtrix-kod bazasi"
+        verbose_name_plural = "Shtrix-kod bazasi"
+
+    def __str__(self) -> str:
+        return f"{self.barcode} — {self.name}"
