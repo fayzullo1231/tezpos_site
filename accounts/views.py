@@ -3368,6 +3368,12 @@ def _compute_line_financials(
         if unit_cost > 0 and qty_dec > 0
         else Decimal("0")
     )
+    # Sotuv analitika: foyda minus bo‘lmasin (tannarx > tushum → foyda 0, tannarx = tushum)
+    if line_rev > 0 and line_cost > line_rev:
+        line_cost = line_rev
+        line_profit = Decimal("0")
+    elif line_profit < 0:
+        line_profit = Decimal("0")
     return qty_dec, line_rev, line_cost, line_profit, list_id
 
 
@@ -3627,7 +3633,7 @@ def _estimate_sale_profit(
 ) -> tuple[Decimal, Decimal]:
     """
     Qaytaradi: (tannarx, foyda).
-    Manfiy foyda ham hisoblanadi; tannarxi yo‘q qatorlar tashlab ketiladi.
+    Foyda 0 dan pastga tushmaydi (tannarx tushumdan oshsa — tenglashtiriladi).
     """
     del margin_ratio
     level = _sale_level_cost_profit(sale_detail, total)
@@ -6495,7 +6501,7 @@ def _build_top_products_pack(
     if include_unsold:
         fast = False
     mode = "f" if fast else ("u" if include_unsold else "x")
-    pack_key = f"{memo_prefix}|topspack19|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack20|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)

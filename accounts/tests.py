@@ -907,12 +907,15 @@ class ProfitMarginRegressionTests(SimpleTestCase):
         self.assertAlmostEqual(_margin_on_revenue(profit, rev), 5000 / 135000 * 100, places=5)
 
     def test_4_negative_profit(self):
+        """Tannarx > narx bo‘lsa foyda 0 (minus ko‘rsatilmaydi)."""
         from accounts.views import _margin_on_revenue
 
         p = self._maxev_product()
-        _qty, rev, _cost, profit, _pl = self._line_fin(p, 12000, 1)
-        self.assertAlmostEqual(float(profit), -1000)
-        self.assertAlmostEqual(_margin_on_revenue(profit, rev), -1000 / 12000 * 100, places=4)
+        _qty, rev, cost, profit, _pl = self._line_fin(p, 12000, 1)
+        self.assertAlmostEqual(float(rev), 12000)
+        self.assertAlmostEqual(float(cost), 12000)
+        self.assertAlmostEqual(float(profit), 0)
+        self.assertAlmostEqual(_margin_on_revenue(profit, rev), 0.0)
 
     def test_5_zero_revenue_margin(self):
         from accounts.views import _margin_on_revenue
