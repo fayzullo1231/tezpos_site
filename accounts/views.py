@@ -5587,8 +5587,14 @@ def _new_top_daily_bucket() -> dict:
 
 
 def _top_daily_row(day_iso: str, bucket: dict) -> dict:
-    rev = bucket["revenue"]
-    profit = bucket["profit"]
+    rev = Decimal(str(bucket["revenue"] or 0))
+    cost = Decimal(str(bucket["cost"] or 0))
+    profit = Decimal(str(bucket["profit"] or 0))
+    if rev > 0 and cost > rev:
+        cost = rev
+        profit = Decimal("0")
+    elif profit < 0:
+        profit = Decimal("0")
     return {
         "date": day_iso,
         "total_quantity": float(bucket["qty"]),
@@ -5597,7 +5603,7 @@ def _top_daily_row(day_iso: str, bucket: dict) -> dict:
         "wholesale_amount": float(bucket["revenue_wholesale"]),
         "retail_quantity": float(bucket["qty_selling"]),
         "retail_amount": float(bucket["revenue_selling"]),
-        "cost_amount": float(bucket["cost"]),
+        "cost_amount": float(cost),
         "profit": float(profit),
         "margin_percent": _margin_on_revenue(profit, rev),
     }
@@ -5884,6 +5890,16 @@ def _product_sales_stats(
         profit = product_profit.get(pid) or Decimal("0")
         profit_sell = product_profit_sell.get(pid) or Decimal("0")
         profit_optom = product_profit_optom.get(pid) or Decimal("0")
+        # Qator yig‘indisida ham minus bo‘lmasin
+        if rev > 0 and cost_total > rev:
+            cost_total = rev
+            profit = Decimal("0")
+        elif profit < 0:
+            profit = Decimal("0")
+        if profit_sell < 0:
+            profit_sell = Decimal("0")
+        if profit_optom < 0:
+            profit_optom = Decimal("0")
         cost_unit = float(meta.get("cost") or 0)
         selling_show = float(meta.get("selling") or 0)
         wholesale_show = float(meta.get("wholesale") or 0)
@@ -6503,7 +6519,7 @@ def _build_top_products_pack(
     if include_unsold:
         fast = False
     mode = "f" if fast else ("u" if include_unsold else "x")
-    pack_key = f"{memo_prefix}|topspack20|{start}|{end}|{limit}|{mode}|{channel}"
+    pack_key = f"{memo_prefix}|topspack21|{start}|{end}|{limit}|{mode}|{channel}"
     cached = _TEZPOS_MEMO.get(pack_key)
     today = timezone.localdate()
     cache_ttl = _stats_cache_ttl(end, today, fast=fast)

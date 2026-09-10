@@ -1487,7 +1487,9 @@
       const wholesale = Number(item.wholesale || 0);
       const qtySell = Number(item.qty_selling || 0);
       const qtyOptom = Number(item.qty_wholesale || 0);
-      const profit = Number(item.profit || 0);
+      const profit = Math.max(0, Number(item.profit || 0));
+      const profitSell = Math.max(0, Number(item.profit_selling || 0));
+      const profitWh = Math.max(0, Number(item.profit_wholesale || 0));
       const sharePct = Number(
         item.share != null
           ? item.share
@@ -1535,8 +1537,8 @@
             <span><em>Jami</em><b>${fmt(Number(qtySell) + Number(qtyOptom))} dona · ${fmtSom(item.revenue || 0)}</b></span>
           </div>
           <div class="tops-row-split tops-row-split--profit">
-            <span><em>Foyda (sotuv)</em><b>${fmtSom(item.profit_selling || 0)}</b></span>
-            <span><em>Foyda (optom)</em><b>${fmtSom(item.profit_wholesale || 0)}</b></span>
+            <span><em>Foyda (sotuv)</em><b>${fmtSom(profitSell)}</b></span>
+            <span><em>Foyda (optom)</em><b>${fmtSom(profitWh)}</b></span>
           </div>
           ${idleHtml}
         </div>
@@ -1551,7 +1553,7 @@
           </div>
           <div class="tops-row-metric tops-row-metric--profit">
             <em>Foyda</em>
-            <strong>${Number.isFinite(profit) ? fmtSom(profit) : "—"}</strong>
+            <strong>${fmtSom(profit)}</strong>
             ${soldInPeriod ? `<span class="tops-row-margin" title="Jami mahsulot savdosidagi ulush">Ulush ${sharePct.toFixed(1)}%</span>` : ""}
           </div>
         </div>
@@ -2349,14 +2351,22 @@
               ? item.margin_percent
               : 0
       );
-      const profitMargin = Number(item.profit_margin != null ? item.profit_margin : 0);
+      const profitMargin = Math.max(
+        0,
+        Number(item.profit_margin != null ? item.profit_margin : 0)
+      );
+      const showProfit = Math.max(0, Number(item.profit || 0));
+      const showCost = Math.min(
+        Number(item.cost_total || 0),
+        Number(item.revenue || 0) || Number(item.cost_total || 0)
+      );
       summaryEl.innerHTML = `
         <div><span>Jami sotildi</span><strong>${fmt(item.qty || 0)} dona</strong></div>
         <div><span>Optom</span><strong>${fmt(item.qty_wholesale || 0)} dona · ${fmtSom(item.revenue_wholesale || 0)}</strong></div>
         <div><span>Sotuv narxi</span><strong>${fmt(item.qty_selling || 0)} dona · ${fmtSom(item.revenue_selling || 0)}</strong></div>
         <div><span>Jami savdo</span><strong>${fmtSom(item.revenue || 0)}</strong></div>
-        <div><span>Tannarx</span><strong>${fmtSom(item.cost_total || 0)}</strong></div>
-        <div><span>Foyda</span><strong class="is-profit">${fmtSom(item.profit || 0)}</strong></div>
+        <div><span>Tannarx</span><strong>${fmtSom(showCost)}</strong></div>
+        <div><span>Foyda</span><strong class="is-profit">${fmtSom(showProfit)}</strong></div>
         <div><span>Savdo ulushi</span><strong>${share.toFixed(2)}%</strong></div>
         <div><span>Sof marja</span><strong>${profitMargin.toFixed(2)}%</strong></div>
       `;
@@ -2373,7 +2383,7 @@
               <td>${fmt(row.retail_quantity || 0)}</td>
               <td>${fmtSom(row.retail_amount || 0)}</td>
               <td>${fmtSom(row.cost_amount || 0)}</td>
-              <td class="is-profit">${fmtSom(row.profit || 0)}</td>
+              <td class="is-profit">${fmtSom(Math.max(0, Number(row.profit || 0)))}</td>
             </tr>`
           )
           .join("")
