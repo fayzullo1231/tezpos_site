@@ -48,7 +48,9 @@
       });
       const j1 = await r1.json().catch(() => null);
       if (j1 && !j1.error) onData(j1, true);
-      const wantFull = typeof needsFull === "function" ? needsFull(j1) : true;
+      let wantFull = typeof needsFull === "function" ? needsFull(j1) : true;
+      // Fast yiqilsa yoki xato — to‘liq so‘rovni baribir urinib ko‘r
+      if (!j1 || j1.error) wantFull = true;
       if (!wantFull) return j1;
       const r2 = await fetch(`${url}?${base}`, {
         credentials: "same-origin",
@@ -2881,22 +2883,25 @@
         .join("");
     };
 
+    let receiptsCache = [];
+
     const paintReceipts = (rows) => {
       if (!receiptsBody) return;
-      if (!rows.length) {
+      receiptsCache = Array.isArray(rows) ? rows.slice() : [];
+      if (!receiptsCache.length) {
         receiptsBody.innerHTML =
           `<tr><td colspan="6" class="cabinet-empty">Bu kunda kirim hujjati yo‘q.</td></tr>`;
         return;
       }
-      receiptsBody.innerHTML = rows
-        .map((r) => {
-          const names = (r.items || [])
+      receiptsBody.innerHTML = receiptsCache
+        .map((r, idx) => {
+          const items = Array.isArray(r.items) ? r.items : [];
+          const names = items
             .slice(0, 4)
             .map((it) => it.name)
             .join(", ");
-          const more =
-            (r.items || []).length > 4 ? ` +${(r.items || []).length - 4}` : "";
-          return `<tr>
+          const more = items.length > 4 ? ` <em class="stock-in-more">+${items.length - 4}</em>` : "";
+          return `<tr class="is-clickable" data-receipt-idx="${idx}" title="Barcha mahsulotlarni ko‘rish">
             <td>${r.time || r.created_display || "—"}</td>
             <td>${r.supplier || "—"}</td>
             <td>${r.warehouse || "—"}</td>
@@ -2907,6 +2912,74 @@
         })
         .join("");
     };
+
+    const detailModal = document.getElementById("stock-in-detail-modal");
+    const detailTitle = document.getElementById("stock-in-detail-title");
+    const detailSub = document.getElementById("stock-in-detail-sub");
+    const detailSummary = document.getElementById("stock-in-detail-summary");
+    const detailItems = document.getElementById("stock-in-detail-items");
+
+    const closeStockInDetail = () => {
+      if (detailModal) detailModal.hidden = true;
+    };
+
+    const openStockInDetail = (receipt) => {
+      if (!detailModal || !receipt) return;
+      const items = Array.isArray(receipt.items) ? receipt.items : [];
+      if (detailTitle) {
+        detailTitle.textContent = receipt.supplier
+          ? `Kirim — ${receipt.supplier}`
+          : "Kirim hujjati";
+      }
+      if (detailSub) {
+        const parts = [
+          receipt.time || receipt.created_display || "",
+          receipt.warehouse || "",
+        ].filter(Boolean);
+        detailSub.textContent = parts.length
+          ? parts.join(" · ")
+          : `${items.length} ta mahsulot`;
+      }
+      if (detailSummary) {
+        detailSummary.innerHTML = `
+          <div><span>Mahsulot turi</span><strong>${fmt(items.length)}</strong></div>
+          <div><span>Jami miqdor</span><strong>${fmt(receipt.total_qty)}</strong></div>
+          <div><span>Jami tannarx</span><strong>${fmtMoney(receipt.total_cost)}</strong></div>
+          <div><span>Ombor</span><strong>${receipt.warehouse || "—"}</strong></div>
+        `;
+      }
+      if (detailItems) {
+        detailItems.innerHTML = items.length
+          ? items
+              .map((it, i) => {
+                const qty = Number(it.qty || it.quantity || 0);
+                const cost = Number(it.unit_cost || it.cost || 0);
+                const line =
+                  Number(it.line_cost || it.total || 0) ||
+                  (qty > 0 && cost > 0 ? qty * cost : 0);
+                return `<tr>
+                  <td>${i + 1}</td>
+                  <td>${it.name || "Mahsulot"}</td>
+                  <td>${fmt(qty)}</td>
+                  <td>${fmtMoney(cost)}</td>
+                  <td>${fmtMoney(line)}</td>
+                </tr>`;
+              })
+              .join("")
+          : `<tr><td colspan="5" class="cabinet-empty">Mahsulotlar ro‘yxati yo‘q</td></tr>`;
+      }
+      detailModal.hidden = false;
+    };
+
+    receiptsBody?.addEventListener("click", (e) => {
+      const tr = e.target.closest("tr[data-receipt-idx]");
+      if (!tr) return;
+      const idx = Number(tr.getAttribute("data-receipt-idx"));
+      if (!Number.isFinite(idx) || !receiptsCache[idx]) return;
+      openStockInDetail(receiptsCache[idx]);
+    });
+    document.getElementById("stock-in-detail-close")?.addEventListener("click", closeStockInDetail);
+    document.getElementById("stock-in-detail-backdrop")?.addEventListener("click", closeStockInDetail);
 
     const loadStockIn = async (iso, { force = false } = {}) => {
       if (!force && cache[iso]) {
@@ -5632,11 +5705,15 @@
       const params = dateKey ? { sale_date: dateKey } : {};
       fetchProgressive(data.daySalesUrl, params, {
         onData: applyPack,
-        needsFull: (j) =>
-          Boolean(j?.partial) &&
-          Number(j?.gross || 0) > 0 &&
-          Number(j?.profit || 0) === 0 &&
-          Number(j?.cost || 0) === 0,
+        needsFull: (j) => {
+          if (!j || j.error) return true;
+          if (j.partial) return true;
+          return (
+            Number(j.gross || 0) > 0 &&
+            Number(j.profit || 0) === 0 &&
+            Number(j.cost || 0) === 0
+          );
+        },
       }).catch(() => {});
       return;
     }
@@ -5646,11 +5723,20 @@
       loading.textContent = "…";
     }
     const params = dateKey ? { sale_date: dateKey } : {};
-    const dayNeedsFull = (j) =>
-      Boolean(j?.partial) &&
-      Number(j?.gross || 0) > 0 &&
-      Number(j?.profit || 0) === 0 &&
-      Number(j?.cost || 0) === 0;
+    const dayNeedsFull = (j) => {
+      if (!j || j.error) return true;
+      if (j.partial) return true;
+      const sales = Array.isArray(j.sales) ? j.sales : Array.isArray(j.day_sales) ? j.day_sales : [];
+      if (!sales.length && Number(j.checks || j.count || 0) === 0 && Number(j.gross || 0) === 0) {
+        // Bo‘sh kun — to‘liq ham kerak emas, lekin fast xato bo‘lsa yuqorida force
+        return false;
+      }
+      return (
+        Number(j.gross || 0) > 0 &&
+        Number(j.profit || 0) === 0 &&
+        Number(j.cost || 0) === 0
+      );
+    };
     fetchProgressive(data.daySalesUrl, params, {
       onData: (json, isFast) => {
         applyPack(json, isFast);

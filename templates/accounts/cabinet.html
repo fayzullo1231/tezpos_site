@@ -789,6 +789,33 @@
         </table>
       </div>
     </section>
+    <div class="stock-in-detail-modal" id="stock-in-detail-modal" hidden role="dialog" aria-modal="true" aria-labelledby="stock-in-detail-title">
+      <div class="stock-in-detail-backdrop" id="stock-in-detail-backdrop"></div>
+      <div class="stock-in-detail-panel">
+        <header class="tops-detail-head">
+          <div>
+            <h3 id="stock-in-detail-title">Kirim hujjati</h3>
+            <p class="cabinet-hint" id="stock-in-detail-sub">—</p>
+          </div>
+          <button type="button" class="tops-detail-close" id="stock-in-detail-close" aria-label="Yopish">×</button>
+        </header>
+        <div class="tops-detail-summary" id="stock-in-detail-summary"></div>
+        <div class="cabinet-table-wrap tops-detail-table-wrap">
+          <table class="stock-in-detail-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Mahsulot</th>
+                <th>Miqdor</th>
+                <th>Tannarx</th>
+                <th>Summa</th>
+              </tr>
+            </thead>
+            <tbody id="stock-in-detail-items"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
     {% endif %}
 
     {% if section == 'labels' %}
@@ -1854,5 +1881,5 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=20260909-admin-only-scan" defer></script>
+<script src="/static/cabinet.js?v=20260910-smena-kirim" defer></script>
 {% endblock %}

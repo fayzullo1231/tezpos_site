@@ -1122,7 +1122,9 @@ def _collect_shifts_payload(token: str, server: str, *, days: int = 90) -> tuple
         open_id = str(current_raw.get("id") or current_raw.get("uuid") or "").strip()
     for sh in shifts_payload:
         sid = str(sh.get("id") or "")
-        if sh.get("status") == "open" and (not open_id or sid != open_id):
+        # Admin token da current bo‘sh — ochiq smenalarni yopiq deb YOZMASLIK
+        # (aks holda Telegram: erta «yopildi», «ochildi» umuman kelmaydi)
+        if open_id and sh.get("status") == "open" and sid and sid != open_id:
             sh["status"] = "closed"
             sh["status_label"] = "Yopilgan"
             if not sh.get("closed_at"):
@@ -8058,6 +8060,9 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
                     notified[key] = timezone.now().isoformat()
                     continue
             if event == "close":
+                # Yopilish vaqti yo‘q — hali ochiq (yoki force-close artefakti)
+                if not sh.get("closed_at"):
+                    continue
                 closed_dt = _parse_dt(sh.get("closed_at")) or _parse_dt(sh.get("opened_at"))
                 if closed_dt and timezone.now() - closed_dt > timedelta(days=3):
                     notified[key] = timezone.now().isoformat()
