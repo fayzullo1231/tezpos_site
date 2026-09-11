@@ -80,14 +80,17 @@ class Command(BaseCommand):
                     or not r.telegram_checked_at
                 ]
             self.stdout.write(
-                f"Resolve: {len(todo)} ta (batch=8, pauza=4s). Kutish mumkin..."
+                f"Resolve: {len(todo)} ta (resolvePhone, pauza=3.5s, kontaktga saqlanmaydi)..."
             )
             resolve_debtors_batch(todo, force=True)
-            for row in rows:
+            for row in todo:
                 row.refresh_from_db()
                 self.stdout.write(
                     f"  {row.name} | {row.phone} | {telegram_display(row)} | {row.telegram_status}"
                 )
+            # refresh all for summary
+            for row in rows:
+                row.refresh_from_db()
             ok_n = sum(1 for r in rows if r.telegram_status == "ok")
             no_n = sum(1 for r in rows if r.telegram_status == "no_telegram")
             err_n = sum(1 for r in rows if r.telegram_status == "error")
@@ -95,19 +98,6 @@ class Command(BaseCommand):
                 f"Tayyor. ok={ok_n} no_telegram={no_n} error={err_n} total={len(rows)}"
             )
             return
-
-        # Eslatma oldidan keraklilarini resolve
-        need_resolve = [
-            r
-            for r in rows
-            if reminder_kind_for(r.due_date, today)
-            and r.telegram_status not in ("ok", "no_telegram", "no_phone")
-        ]
-        if need_resolve:
-            self.stdout.write(f"Resolve {len(need_resolve)} ta...")
-            resolve_debtors_batch(need_resolve, force=False)
-            for r in need_resolve:
-                r.refresh_from_db()
 
         jobs = []
         skipped = 0
@@ -120,10 +110,11 @@ class Command(BaseCommand):
             if row.tg_last_remind_date == today and row.tg_last_remind_kind == kind:
                 skipped += 1
                 continue
-            if row.telegram_status in ("no_telegram", "no_phone"):
+            if row.telegram_status == "no_phone" or not (row.phone or "").strip():
                 no_tg += 1
                 continue
-            if row.telegram_status != "ok" or not row.telegram_id:
+            # no_telegram — qayta urinmaymiz (privacy / yo‘q); --force resolve-only bilan yangilanadi
+            if row.telegram_status == "no_telegram" and row.telegram_checked_at:
                 no_tg += 1
                 continue
             if options["dry_run"]:

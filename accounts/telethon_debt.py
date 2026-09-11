@@ -1,8 +1,8 @@
 """
 Qarz eslatmalari — Telethon (user session) orqali Telegramga yuborish.
 
-Muhim: ImportContacts FloodWait oldini olish uchun
-bitta ulanish + batch + kutish.
+Kontaktga saqlanmaydi: contacts.resolvePhone (ImportContacts yo‘q).
+Har safar raqam bo‘yicha qidiriladi, keyin xabar yuboriladi.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.utils import timezone
 
@@ -38,10 +39,11 @@ MSG_OVERDUE = (
     "muddati {date} kuni tugagan. Hozirda to‘lov {days} kun kechikkan. "
     "Iltimos, qarzingizni imkon qadar tezroq to‘lashingizni so‘raymiz."
 )
-
-BATCH_SIZE = 8
-BATCH_PAUSE_SEC = 4.0
 PLACEHOLDER_NAMES = {"tezpos", "qarz", "mijoz", "tp"}
+
+# Telegram: resolvePhone — max 1 so‘rov ~3 soniyada
+RESOLVE_PAUSE_SEC = 3.5
+SEND_PAUSE_SEC = 1.5
 
 
 def _fmt_amount(value) -> str:
@@ -105,16 +107,20 @@ def telethon_configured() -> bool:
 
 
 def _run(coro, timeout: int = 900):
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
+    """Sync kontekstda async ishlatish (manage.py / view)."""
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, coro).result(timeout=timeout)
-        return loop.run_until_complete(coro)
+    async def _wrapped():
+        return await asyncio.wait_for(coro, timeout=timeout)
+
+    try:
+        asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return asyncio.run(_wrapped())
+
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _wrapped()).result(timeout=timeout + 30)
 
 
 async def _client():
@@ -132,6 +138,13 @@ async def _client():
     return client
 
 
+def _intl_phone(phone_n: str) -> str:
+    p = (phone_n or "").strip()
+    if not p:
+        return ""
+    return p if p.startswith("+") else ("+" + p)
+
+
 def _user_display(u) -> tuple[str, str]:
     username = (getattr(u, "username", None) or "") or ""
     first = (getattr(u, "first_name", None) or "") or ""
@@ -145,242 +158,84 @@ def _user_display(u) -> tuple[str, str]:
     return username, display
 
 
-async def _import_batch(client, items: list[tuple[int, str, str]]) -> dict[int, dict]:
-    """
-    items: [(client_id, phone_normalized, label_name), ...]
-    returns: {client_id: meta}
-    """
-    from telethon.errors import FloodWaitError
-    from telethon.tl.functions.contacts import (
-        DeleteContactsRequest,
-        ImportContactsRequest,
-    )
-    from telethon.tl.types import InputPhoneContact, InputUser
+def _meta_ok(u) -> dict:
+    username, display = _user_display(u)
+    return {
+        "ok": True,
+        "status": "ok",
+        "telegram_id": str(u.id),
+        "username": username,
+        "display_name": display,
+        "error": "",
+        "user": u,
+    }
 
-    out: dict[int, dict] = {}
-    if not items:
-        return out
 
-    contacts = []
-    for cid, phone_n, label in items:
-        intl = "+" + phone_n if not str(phone_n).startswith("+") else str(phone_n)
-        # Import uchun qisqa label (Telegram contact name)
-        nm = (label or "Mijoz").strip()[:40] or "Mijoz"
-        contacts.append(
-            InputPhoneContact(
-                client_id=cid,
-                phone=intl,
-                first_name=nm,
-                last_name="",
-            )
-        )
+def _meta_no_tg(err: str = "Bu raqamda Telegram yo‘q") -> dict:
+    return {
+        "ok": False,
+        "status": "no_telegram",
+        "telegram_id": "",
+        "username": "",
+        "display_name": "",
+        "error": err,
+        "user": None,
+    }
+
+
+def _meta_err(err: str) -> dict:
+    return {
+        "ok": False,
+        "status": "error",
+        "telegram_id": "",
+        "username": "",
+        "display_name": "",
+        "error": (err or "Xato")[:200],
+        "user": None,
+    }
+
+
+async def _resolve_phone(client, phone_n: str) -> dict:
+    """
+    Raqamni Telegram userga aylantiradi.
+    Kontaktga qo‘shilmaydi (ResolvePhoneRequest).
+    """
+    from telethon.errors import FloodWaitError, RPCError
+    from telethon.tl.functions.contacts import ResolvePhoneRequest
+
+    intl = _intl_phone(phone_n)
+    if not intl:
+        return _meta_err("Telefon yo‘q")
 
     while True:
         try:
-            result = await client(ImportContactsRequest(contacts))
-            break
+            result = await client(ResolvePhoneRequest(phone=intl))
+            users = list(getattr(result, "users", None) or [])
+            if not users:
+                return _meta_no_tg()
+            return _meta_ok(users[0])
         except FloodWaitError as exc:
             wait = int(getattr(exc, "seconds", 0) or 0) + 2
             logger.warning("FloodWait %ss — kutilyapti", wait)
             await asyncio.sleep(wait)
-
-    # retry_contacts / users mapping
-    users_by_id = {u.id: u for u in (result.users or [])}
-    imported = list(getattr(result, "imported", []) or [])
-    # imported: ImportContact {user_id, client_id}
-    for imp in imported:
-        cid = int(getattr(imp, "client_id", 0) or 0)
-        uid = int(getattr(imp, "user_id", 0) or 0)
-        u = users_by_id.get(uid)
-        if not u:
-            out[cid] = {
-                "ok": False,
-                "status": "no_telegram",
-                "telegram_id": "",
-                "username": "",
-                "display_name": "",
-                "error": "Telegram yo‘q",
-            }
-            continue
-        username, display = _user_display(u)
-        out[cid] = {
-            "ok": True,
-            "status": "ok",
-            "telegram_id": str(u.id),
-            "username": username,
-            "display_name": display,
-            "error": "",
-            "_user": u,
-        }
-
-    # retry_contacts — raqam Telegramda yo‘q
-    for rc in list(getattr(result, "retry_contacts", []) or []):
-        try:
-            cid = int(rc)
-        except (TypeError, ValueError):
-            continue
-        if cid not in out:
-            out[cid] = {
-                "ok": False,
-                "status": "no_telegram",
-                "telegram_id": "",
-                "username": "",
-                "display_name": "",
-                "error": "Bu raqamda Telegram yo‘q",
-            }
-
-    # Import qilinmaganlar
-    for cid, _, _ in items:
-        if cid not in out:
-            out[cid] = {
-                "ok": False,
-                "status": "no_telegram",
-                "telegram_id": "",
-                "username": "",
-                "display_name": "",
-                "error": "Bu raqamda Telegram yo‘q",
-            }
-
-    # Kontaktlarni o‘chirish
-    to_del = []
-    for meta in out.values():
-        u = meta.pop("_user", None)
-        if u is not None:
-            to_del.append(InputUser(u.id, u.access_hash))
-    if to_del:
-        try:
-            await client(DeleteContactsRequest(to_del))
-        except FloodWaitError as exc:
-            await asyncio.sleep(int(getattr(exc, "seconds", 0) or 0) + 1)
-        except Exception:
-            pass
-
-    return out
+        except RPCError as exc:
+            msg = (getattr(exc, "message", None) or str(exc) or "").upper()
+            if "PHONE_NOT_OCCUPIED" in msg or "PHONE_NOT_OCCUPIED" in str(exc):
+                return _meta_no_tg()
+            logger.exception("telethon resolvePhone failed")
+            return _meta_err(str(exc))
+        except Exception as exc:
+            logger.exception("telethon resolvePhone failed")
+            return _meta_err(str(exc))
 
 
-async def resolve_debtors_batch_async(
-    debtors: list[ClientDebtor], *, force: bool = False
-) -> list[ClientDebtor]:
-    if not telethon_configured():
-        return debtors
-
-    need: list[ClientDebtor] = []
-    for d in debtors:
-        if not (d.phone or "").strip():
-            d.telegram_status = "no_phone"
-            d.save(update_fields=["telegram_status", "updated_at"])
-            continue
-        checked = d.telegram_checked_at
-        fresh = (
-            checked
-            and (timezone.now() - checked) < timedelta(days=7)
-            and d.telegram_status in ("ok", "no_telegram")
-        )
-        if fresh and not force:
-            continue
-        need.append(d)
-
-    if not need:
-        return debtors
-
-    client = await _client()
-    try:
-        for i in range(0, len(need), BATCH_SIZE):
-            chunk = need[i : i + BATCH_SIZE]
-            items = []
-            for idx, d in enumerate(chunk):
-                phone_n = devsms.normalize_phone(d.phone)
-                if not phone_n:
-                    d.telegram_status = "no_phone"
-                    d.save(update_fields=["telegram_status", "updated_at"])
-                    continue
-                # client_id > 0 unique in batch
-                items.append((idx + 1, phone_n, (d.name or "Mijoz")[:40]))
-
-            if not items:
-                continue
-
-            mapping = await _import_batch(client, items)
-            for cid, phone_n, _label in items:
-                # find debtor by phone in chunk
-                meta = mapping.get(cid) or {
-                    "ok": False,
-                    "status": "error",
-                    "telegram_id": "",
-                    "username": "",
-                    "display_name": "",
-                    "error": "Noma’lum",
-                }
-                # map client_id back to debtor: items order == chunk filtered
-                # rebuild: items only has those with phone
-                pass
-
-            # Reliable mapping: zip filtered debtors with items
-            phone_debtors = []
-            for d in chunk:
-                phone_n = devsms.normalize_phone(d.phone)
-                if phone_n:
-                    phone_debtors.append(d)
-            for (cid, _p, _l), d in zip(items, phone_debtors):
-                meta = mapping.get(cid) or {
-                    "ok": False,
-                    "status": "error",
-                    "telegram_id": "",
-                    "username": "",
-                    "display_name": "",
-                    "error": "Noma’lum",
-                }
-                apply_telegram_meta(d, meta)
-
-            if i + BATCH_SIZE < len(need):
-                await asyncio.sleep(BATCH_PAUSE_SEC)
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-    return debtors
+@sync_to_async
+def _save_status(debtor: ClientDebtor, status: str) -> None:
+    debtor.telegram_status = status
+    debtor.save(update_fields=["telegram_status", "updated_at"])
 
 
-async def _send_many_async(messages: list[tuple[str, str]]) -> list[dict]:
-    """messages: [(telegram_id, text), ...]"""
-    from telethon.errors import FloodWaitError
-
-    if not messages:
-        return []
-    client = await _client()
-    results = []
-    try:
-        for tid, text in messages:
-            try:
-                await client.send_message(int(tid), text)
-                results.append({"ok": True, "error": "", "telegram_id": tid})
-                await asyncio.sleep(1.2)
-            except FloodWaitError as exc:
-                wait = int(getattr(exc, "seconds", 0) or 0) + 2
-                await asyncio.sleep(wait)
-                try:
-                    await client.send_message(int(tid), text)
-                    results.append({"ok": True, "error": "", "telegram_id": tid})
-                except Exception as e2:
-                    results.append({"ok": False, "error": str(e2)[:200], "telegram_id": tid})
-            except Exception as exc:
-                results.append({"ok": False, "error": str(exc)[:200], "telegram_id": tid})
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-    return results
-
-
-def resolve_debtors_batch(
-    debtors: Iterable[ClientDebtor], *, force: bool = False
-) -> list[ClientDebtor]:
-    rows = list(debtors)
-    return _run(resolve_debtors_batch_async(rows, force=force), timeout=1800)
-
-
+@sync_to_async
 def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
     debtor.telegram_status = meta.get("status") or "error"
     debtor.telegram_id = meta.get("telegram_id") or ""
@@ -397,6 +252,149 @@ def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
             "updated_at",
         ]
     )
+
+
+@sync_to_async
+def _mark_reminded(debtor: ClientDebtor, kind: str) -> None:
+    debtor.tg_last_remind_kind = kind
+    debtor.tg_last_remind_date = timezone.localdate()
+    debtor.save(
+        update_fields=["tg_last_remind_kind", "tg_last_remind_date", "updated_at"]
+    )
+
+
+async def resolve_debtors_batch_async(
+    debtors: list[ClientDebtor], *, force: bool = False
+) -> list[ClientDebtor]:
+    if not telethon_configured():
+        return debtors
+
+    need: list[ClientDebtor] = []
+    for d in debtors:
+        if not (d.phone or "").strip():
+            await _save_status(d, "no_phone")
+            continue
+        checked = d.telegram_checked_at
+        fresh = (
+            checked
+            and (timezone.now() - checked) < timedelta(days=7)
+            and d.telegram_status in ("ok", "no_telegram")
+        )
+        if fresh and not force:
+            continue
+        need.append(d)
+
+    if not need:
+        return debtors
+
+    client = await _client()
+    try:
+        for i, d in enumerate(need):
+            phone_n = await sync_to_async(devsms.normalize_phone)(d.phone)
+            if not phone_n:
+                await _save_status(d, "no_phone")
+                continue
+            meta = await _resolve_phone(client, phone_n)
+            meta.pop("user", None)
+            await apply_telegram_meta(d, meta)
+            if i + 1 < len(need):
+                await asyncio.sleep(RESOLVE_PAUSE_SEC)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    return debtors
+
+
+async def _send_by_phone(client, phone_n: str, text: str) -> dict:
+    """Har safar raqam bo‘yicha qidiradi, yuboradi — kontaktga saqlamaydi."""
+    from telethon.errors import FloodWaitError
+
+    meta = await _resolve_phone(client, phone_n)
+    user = meta.pop("user", None)
+    if not meta.get("ok") or user is None:
+        return {
+            "ok": False,
+            "error": meta.get("error") or "Telegram topilmadi",
+            "status": meta.get("status") or "error",
+            "meta": meta,
+        }
+
+    while True:
+        try:
+            await client.send_message(user, text)
+            return {
+                "ok": True,
+                "error": "",
+                "status": "ok",
+                "telegram_id": str(user.id),
+                "meta": meta,
+            }
+        except FloodWaitError as exc:
+            wait = int(getattr(exc, "seconds", 0) or 0) + 2
+            logger.warning("FloodWait send %ss", wait)
+            await asyncio.sleep(wait)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc)[:200],
+                "status": "error",
+                "meta": meta,
+            }
+
+
+async def send_jobs_by_phone_async(
+    jobs: list[tuple[ClientDebtor, str, str]],
+) -> list[dict]:
+    """jobs: [(debtor, kind, text), ...] — har biri raqam orqali."""
+    if not jobs:
+        return []
+    client = await _client()
+    out: list[dict] = []
+    try:
+        for i, (debtor, kind, text) in enumerate(jobs):
+            phone_n = await sync_to_async(devsms.normalize_phone)(debtor.phone)
+            if not phone_n:
+                out.append(
+                    {
+                        "ok": False,
+                        "error": "Telefon yo‘q",
+                        "debtor_id": debtor.pk,
+                        "name": debtor.name,
+                    }
+                )
+                continue
+            res = await _send_by_phone(client, phone_n, text)
+            meta = res.get("meta") or {}
+            if meta:
+                await apply_telegram_meta(debtor, meta)
+            if res.get("ok"):
+                await _mark_reminded(debtor, kind)
+            row = {
+                "ok": bool(res.get("ok")),
+                "error": res.get("error") or "",
+                "telegram_id": res.get("telegram_id") or meta.get("telegram_id") or "",
+                "debtor_id": debtor.pk,
+                "name": debtor.name,
+                "display": await sync_to_async(telegram_display)(debtor),
+            }
+            out.append(row)
+            if i + 1 < len(jobs):
+                await asyncio.sleep(max(SEND_PAUSE_SEC, RESOLVE_PAUSE_SEC))
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    return out
+
+
+def resolve_debtors_batch(
+    debtors: Iterable[ClientDebtor], *, force: bool = False
+) -> list[ClientDebtor]:
+    rows = list(debtors)
+    return _run(resolve_debtors_batch_async(rows, force=force), timeout=3600)
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:
@@ -427,16 +425,6 @@ def send_debt_reminder(debtor: ClientDebtor, kind: str) -> dict[str, Any]:
     bal = debtor.balance()
     if bal <= 0 or not debtor.due_date:
         return {"ok": False, "skipped": True, "error": "Qarz yoki sana yo‘q"}
-    if debtor.telegram_status != "ok" or not debtor.telegram_id:
-        ensure_telegram_resolved(debtor)
-    if debtor.telegram_status != "ok" or not debtor.telegram_id:
-        return {
-            "ok": False,
-            "skipped": True,
-            "status": debtor.telegram_status,
-            "error": "Telegram yo‘q yoki topilmadi",
-            "display": telegram_display(debtor),
-        }
     overdue_days = max(0, (timezone.localdate() - debtor.due_date).days)
     text = build_reminder_text(
         kind=kind,
@@ -445,27 +433,20 @@ def send_debt_reminder(debtor: ClientDebtor, kind: str) -> dict[str, Any]:
         due=debtor.due_date,
         overdue_days=overdue_days,
     )
-    results = _run(_send_many_async([(debtor.telegram_id, text)]))
+    results = _run(send_jobs_by_phone_async([(debtor, kind, text)]))
     res = results[0] if results else {"ok": False, "error": "Yuborilmadi"}
-    if res.get("ok"):
-        debtor.tg_last_remind_kind = kind
-        debtor.tg_last_remind_date = timezone.localdate()
-        debtor.save(
-            update_fields=["tg_last_remind_kind", "tg_last_remind_date", "updated_at"]
-        )
+    debtor.refresh_from_db()
     res["display"] = telegram_display(debtor)
     res["text_preview"] = text[:120]
     return res
 
 
 def send_debt_reminders_batch(jobs: list[tuple[ClientDebtor, str]]) -> list[dict]:
-    """jobs: [(debtor, kind), ...] — bitta client bilan yuboradi."""
+    """jobs: [(debtor, kind), ...] — har safar raqam bilan qidirib yuboradi."""
     prepared: list[tuple[ClientDebtor, str, str]] = []
     for debtor, kind in jobs:
         bal = debtor.balance()
         if bal <= 0 or not debtor.due_date:
-            continue
-        if debtor.telegram_status != "ok" or not debtor.telegram_id:
             continue
         overdue_days = max(0, (timezone.localdate() - debtor.due_date).days)
         text = build_reminder_text(
@@ -477,25 +458,4 @@ def send_debt_reminders_batch(jobs: list[tuple[ClientDebtor, str]]) -> list[dict
         )
         prepared.append((debtor, kind, text))
 
-    results = _run(
-        _send_many_async([(d.telegram_id, t) for d, _k, t in prepared]),
-        timeout=1800,
-    )
-    out = []
-    for (debtor, kind, text), res in zip(prepared, results):
-        if res.get("ok"):
-            debtor.tg_last_remind_kind = kind
-            debtor.tg_last_remind_date = timezone.localdate()
-            debtor.save(
-                update_fields=[
-                    "tg_last_remind_kind",
-                    "tg_last_remind_date",
-                    "updated_at",
-                ]
-            )
-        res = dict(res)
-        res["debtor_id"] = debtor.pk
-        res["name"] = debtor.name
-        res["display"] = telegram_display(debtor)
-        out.append(res)
-    return out
+    return _run(send_jobs_by_phone_async(prepared), timeout=3600)
