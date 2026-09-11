@@ -1,0 +1,14 @@
+[Unit]
+Description=TezPOS qarz Telegram eslatmalari (Telethon)
+After=network.target tezpos-site.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/tezpos_site
+EnvironmentFile=/opt/tezpos_site/.env
+TimeoutStartSec=600
+ExecStart=/opt/tezpos_site/.venv/bin/python /opt/tezpos_site/manage.py send_debt_telegram_reminders
+Nice=10

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 import time
@@ -20,6 +21,16 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from . import devsms, tezpos_api
 from .auth_views import SESSION_DISPLAY, SESSION_SERVER
 from .models import ClientDebtor, ClientDebtorLedger, DebtSmsTemplate, TenantProfile
+from .telethon_debt import ensure_telegram_resolved
+
+
+def _maybe_resolve_telegram(row: ClientDebtor) -> None:
+    try:
+        if not (row.phone or "").strip():
+            return
+        ensure_telegram_resolved(row, force=False)
+    except Exception:
+        pass
 
 
 def _shop(request) -> str:
@@ -63,6 +74,73 @@ def _fmt_dt(dt) -> str:
     if not dt:
         return ""
     return timezone.localtime(dt).strftime("%d.%m.%Y %H:%M")
+
+
+def _parse_due_date(value):
+    """'2026-09-11' yoki '11.09.2026' → date | None."""
+    if value is None or value == "":
+        return None
+    if hasattr(value, "year") and hasattr(value, "month"):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _due_meta(due) -> dict:
+    """
+    Rang:
+      yashil — qaytarish kunigacha (shu kun ham)
+      ko'k   — 1 kun oldin
+      sariq  — kun o'tgach (1–2 kun)
+      qizil  — 3+ kun o'tgach
+    """
+    if not due:
+        return {
+            "due_date": "",
+            "due_date_display": "",
+            "due_status": "",
+            "due_tone": "",
+        }
+    today = timezone.localdate()
+    delta = (due - today).days
+    if delta > 1:
+        tone, status = "green", "ok"
+    elif delta == 1:
+        tone, status = "blue", "soon"
+    elif delta >= 0:
+        tone, status = "green", "due_today"
+    elif delta > -3:
+        tone, status = "yellow", "overdue"
+    else:
+        tone, status = "red", "critical"
+    return {
+        "due_date": due.isoformat(),
+        "due_date_display": due.strftime("%d.%m.%Y"),
+        "due_status": status,
+        "due_tone": tone,
+    }
+
+
+def _apply_due_date(row: ClientDebtor, body: dict, *, kind: str | None = None) -> None:
+    """Qarz qo'shilganda due_date yangilanadi; balans 0 bo'lsa tozalanadi."""
+    if "due_date" in body or "qaytarish_sanasi" in body:
+        raw = body.get("due_date", body.get("qaytarish_sanasi"))
+        parsed = _parse_due_date(raw)
+        row.due_date = parsed
+        row.save(update_fields=["due_date", "updated_at"])
+        return
+    if kind == ClientDebtorLedger.KIND_SUB:
+        bal = row.balance()
+        if bal <= 0 and row.due_date:
+            row.due_date = None
+            row.save(update_fields=["due_date", "updated_at"])
 
 
 def _tenant(request):
@@ -183,6 +261,20 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
     ledger = []
     if with_ledger:
         ledger = [_serialize_ledger(x) for x in row.ledger.all()[:limit]]
+    due = _due_meta(row.due_date)
+    tg_user = (row.telegram_username or "").strip()
+    tg_name = (row.telegram_name or "").strip()
+    tg_status = (row.telegram_status or "").strip()
+    if tg_status == "ok":
+        tg_display = ("@" + tg_user.lstrip("@")) if tg_user else (tg_name or "Telegram bor")
+    elif tg_status == "no_telegram":
+        tg_display = "Telegram yo‘q"
+    elif tg_status == "no_phone":
+        tg_display = "Telefon yo‘q"
+    elif tg_status == "error":
+        tg_display = "Telegram xato"
+    else:
+        tg_display = ""
     return {
         "id": row.pk,
         "name": row.name,
@@ -195,6 +287,14 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
             if float(bal or 0) < 0
             else _fmt_money(abs(float(bal or 0)))
         ),
+        "due_date": due["due_date"],
+        "due_date_display": due["due_date_display"],
+        "due_status": due["due_status"],
+        "due_tone": due["due_tone"],
+        "telegram_status": tg_status,
+        "telegram_username": tg_user,
+        "telegram_name": tg_name,
+        "telegram_display": tg_display,
         "ledger": ledger,
         "created_at": row.created_at.isoformat() if row.created_at else "",
     }
@@ -346,6 +446,9 @@ def cabinet_client_debtor_save(request):
         target = _dec(body.get("debt", body.get("balance")))
         _apply_balance_target(row, target, who=who)
 
+    _apply_due_date(row, body)
+    _maybe_resolve_telegram(row)
+
     return JsonResponse({"ok": True, "debtor": _serialize_debtor(row, with_ledger=True)})
 
 
@@ -404,6 +507,7 @@ def cabinet_client_debt_adjust(request):
             created_by=str(who)[:180],
         )
         bal = debtor.balance()
+        _apply_due_date(debtor, body, kind=kind)
 
     sms_res = None
     check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
@@ -423,6 +527,8 @@ def cabinet_client_debt_adjust(request):
         if sms_res.get("ok"):
             entry.sms_sent = True
             entry.save(update_fields=["sms_sent"])
+
+    _maybe_resolve_telegram(debtor)
 
     return JsonResponse(
         {
@@ -623,6 +729,8 @@ def api_client_debtor_save(request):
         _apply_balance_target(
             row, _dec(body.get("debt", body.get("balance"))), who=who
         )
+    _apply_due_date(row, body)
+    _maybe_resolve_telegram(row)
     return _cors(
         JsonResponse({"ok": True, "debtor": _serialize_debtor(row, with_ledger=True)})
     )
@@ -664,6 +772,7 @@ def api_client_debt_adjust(request):
             created_by=shop[:180],
         )
         bal = debtor.balance()
+        _apply_due_date(debtor, body, kind=kind)
     sms_res = None
     if send_sms and debtor.phone:
         tpl = _get_or_create_template(shop)
@@ -682,6 +791,7 @@ def api_client_debt_adjust(request):
         if sms_res.get("ok"):
             entry.sms_sent = True
             entry.save(update_fields=["sms_sent"])
+    _maybe_resolve_telegram(debtor)
     return _cors(
         JsonResponse(
             {

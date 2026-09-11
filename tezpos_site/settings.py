@@ -193,6 +193,11 @@ DEVSMS_TYPE = (os.environ.get("DEVSMS_TYPE", "") or "").strip().lower()
 # Smena Telegram sync (cron/systemd) — brauzersiz
 TELEGRAM_CRON_SECRET = os.environ.get("TELEGRAM_CRON_SECRET", "").strip()
 
+# Qarz eslatmalari — Telethon user session
+TELETHON_API_ID = (os.environ.get("TELETHON_API_ID", "") or "").strip()
+TELETHON_API_HASH = (os.environ.get("TELETHON_API_HASH", "") or "").strip()
+TELETHON_SESSION = (os.environ.get("TELETHON_SESSION", "") or "").strip()
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

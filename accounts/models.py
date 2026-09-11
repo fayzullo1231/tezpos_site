@@ -219,6 +219,25 @@ class ClientDebtor(models.Model):
         default="",
         help_text="Do‘kon / izoh (masalan: Kokcha market)",
     )
+    due_date = models.DateField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Qarz qaytarish sanasi",
+    )
+    # Telegram (Telethon)
+    telegram_id = models.CharField(max_length=32, blank=True, default="")
+    telegram_username = models.CharField(max_length=120, blank=True, default="")
+    telegram_name = models.CharField(max_length=180, blank=True, default="")
+    telegram_status = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="ok | no_telegram | no_phone | error",
+    )
+    telegram_checked_at = models.DateTimeField(null=True, blank=True)
+    tg_last_remind_kind = models.CharField(max_length=20, blank=True, default="")
+    tg_last_remind_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
