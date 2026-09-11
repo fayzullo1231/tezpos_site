@@ -7,8 +7,10 @@ Har safar raqam bo‘yicha qidiriladi, keyin xabar yuboriladi.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import random
+import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -45,6 +47,35 @@ PLACEHOLDER_NAMES = {"tezpos", "qarz", "mijoz", "tp"}
 # Telegram: resolvePhone — max 1 so‘rov ~3 soniyada
 RESOLVE_PAUSE_SEC = 3.5
 SEND_PAUSE_SEC = 1.5
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+
+def format_text_for_telegram(text: str) -> str:
+    """
+    DevSMS matnini Telegram HTML ga: URL larni <a> qilib bosiladigan qiladi.
+    (Oddiy send_message ba’zan uzun chek linkini oddiy yozuvdek qoldiradi.)
+    """
+    raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Ko‘rinmas belgilarni URL dan olib tashlash
+    raw = raw.replace("\u200b", "").replace("\u200c", "").replace("\ufeff", "")
+    parts: list[str] = []
+    last = 0
+    for m in _URL_RE.finditer(raw):
+        parts.append(html.escape(raw[last : m.start()]))
+        url = m.group(0).rstrip(".,);]")
+        # faqat ascii URL
+        url_clean = "".join(ch for ch in url if ord(ch) < 128)
+        if url_clean.startswith("http"):
+            parts.append(
+                f'<a href="{html.escape(url_clean, quote=True)}">'
+                f"{html.escape(url_clean)}</a>"
+            )
+        else:
+            parts.append(html.escape(url))
+        last = m.start() + len(m.group(0))
+    parts.append(html.escape(raw[last:]))
+    return "".join(parts).replace("\n", "<br/>")
 
 
 def _fmt_amount(value) -> str:
@@ -427,7 +458,12 @@ async def _send_by_phone(
     send_err = ""
     while True:
         try:
-            await client.send_message(user, text)
+            await client.send_message(
+                user,
+                format_text_for_telegram(text),
+                parse_mode="html",
+                link_preview=True,
+            )
             send_ok = True
             break
         except FloodWaitError as exc:
