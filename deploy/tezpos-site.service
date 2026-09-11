@@ -15,7 +15,7 @@ ExecStart=/opt/tezpos_site/.venv/bin/gunicorn tezpos_site.wsgi:application \
     --bind 127.0.0.1:8001 \
     --workers 4 \
     --threads 2 \
-    --timeout 90 \
+    --timeout 180 \
     --graceful-timeout 25 \
     --keep-alive 5 \
     --max-requests 400 \

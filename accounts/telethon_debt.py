@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -231,24 +232,21 @@ async def _resolve_phone(client, phone_n: str) -> dict:
             return _meta_err(str(exc))
 
 
-async def _resolve_via_import(client, phone_n: str) -> dict:
+async def _import_user_by_phone(client, phone_n: str) -> dict:
     """
-    Vaqtinchalik ImportContacts → user topiladi → darhol DeleteContacts.
-    Kontakt ro‘yxatida qolmaydi.
+    Vaqtinchalik ImportContacts — user qaytaradi.
+    Kontaktni o‘chirish yuborishdan KEYIN (_delete_temp_contact).
     """
     from telethon.errors import FloodWaitError
-    from telethon.tl.functions.contacts import (
-        DeleteContactsRequest,
-        ImportContactsRequest,
-    )
-    from telethon.tl.types import InputPhoneContact, InputUser
+    from telethon.tl.functions.contacts import ImportContactsRequest
+    from telethon.tl.types import InputPhoneContact
 
     intl = _intl_phone(phone_n)
     if not intl:
         return _meta_err("Telefon yo‘q")
 
     contact = InputPhoneContact(
-        client_id=1,
+        client_id=random.randint(1, 0x7FFFFFFF),
         phone=intl,
         first_name="TP",
         last_name="",
@@ -271,31 +269,38 @@ async def _resolve_via_import(client, phone_n: str) -> dict:
     elif users:
         user = users[0]
 
-    # Darhol kontaktlardan o‘chirish
-    if user is not None:
-        try:
-            await client(
-                DeleteContactsRequest(
-                    [InputUser(int(user.id), int(user.access_hash or 0))]
-                )
-            )
-        except FloodWaitError as exc:
-            await asyncio.sleep(int(getattr(exc, "seconds", 0) or 0) + 1)
-        except Exception:
-            logger.warning("DeleteContacts failed (ignore)", exc_info=True)
-
     if user is None:
         return _meta_no_tg()
-    return _meta_ok(user)
+    meta = _meta_ok(user)
+    meta["_imported"] = True
+    return meta
+
+
+async def _delete_temp_contact(client, user) -> None:
+    from telethon.errors import FloodWaitError
+    from telethon.tl.functions.contacts import DeleteContactsRequest
+    from telethon.tl.types import InputUser
+
+    if user is None:
+        return
+    try:
+        await client(
+            DeleteContactsRequest(
+                [InputUser(int(user.id), int(user.access_hash or 0))]
+            )
+        )
+    except FloodWaitError as exc:
+        await asyncio.sleep(int(getattr(exc, "seconds", 0) or 0) + 1)
+    except Exception:
+        logger.warning("DeleteContacts failed (ignore)", exc_info=True)
 
 
 async def _resolve_phone_for_send(client, phone_n: str) -> dict:
-    """Yuborish uchun: ResolvePhone, bo‘lmasa vaqtinchalik Import (+delete)."""
+    """Yuborish uchun: ResolvePhone, bo‘lmasa Import (delete keyinroq)."""
     meta = await _resolve_phone(client, phone_n)
     if meta.get("ok") and meta.get("user") is not None:
         return meta
-    # Privacy yoki topilmadi — import (keyin o‘chiriladi)
-    return await _resolve_via_import(client, phone_n)
+    return await _import_user_by_phone(client, phone_n)
 
 
 @sync_to_async
@@ -364,8 +369,11 @@ async def resolve_debtors_batch_async(
                 await _save_status(d, "no_phone")
                 continue
             meta = await _resolve_phone_for_send(client, phone_n)
-            meta.pop("user", None)
+            user = meta.pop("user", None)
+            imported = bool(meta.pop("_imported", False))
             meta.pop("_privacy", None)
+            if imported:
+                await _delete_temp_contact(client, user)
             await apply_telegram_meta(d, meta)
             if i + 1 < len(need):
                 await asyncio.sleep(RESOLVE_PAUSE_SEC)
@@ -382,14 +390,14 @@ async def _send_by_phone(
 ) -> dict:
     """
     DevSMS bilan bir xil matnni Telegramga yuboradi.
-    Kontaktga saqlanmaydi (resolve yoki vaqtinchalik import + delete).
+    Tartib: topish → yuborish → (agar import qilingan bo‘lsa) kontaktni o‘chirish.
     """
     from telethon.errors import FloodWaitError
 
     user = None
     meta: dict = {}
+    imported_temp = False
 
-    # Avval saqlangan telegram_id (sessiya keshi)
     tid = str(prefer_telegram_id or "").strip()
     if tid.isdigit():
         try:
@@ -402,8 +410,11 @@ async def _send_by_phone(
     if user is None:
         meta = await _resolve_phone_for_send(client, phone_n)
         user = meta.get("user")
+        imported_temp = bool(meta.get("_imported"))
 
-    clean_meta = {k: v for k, v in meta.items() if k not in ("user", "_privacy")}
+    clean_meta = {
+        k: v for k, v in meta.items() if k not in ("user", "_privacy", "_imported")
+    }
     if not meta.get("ok") or user is None:
         return {
             "ok": False,
@@ -412,28 +423,41 @@ async def _send_by_phone(
             "meta": clean_meta,
         }
 
+    send_ok = False
+    send_err = ""
     while True:
         try:
             await client.send_message(user, text)
-            return {
-                "ok": True,
-                "error": "",
-                "status": "ok",
-                "telegram_id": str(getattr(user, "id", "") or ""),
-                "meta": clean_meta,
-            }
+            send_ok = True
+            break
         except FloodWaitError as exc:
             wait = int(getattr(exc, "seconds", 0) or 0) + 2
             logger.warning("FloodWait send %ss", wait)
             await asyncio.sleep(wait)
         except Exception as exc:
             logger.exception("telethon send_message failed")
-            return {
-                "ok": False,
-                "error": str(exc)[:200],
-                "status": "error",
-                "meta": clean_meta,
-            }
+            send_err = str(exc)[:200]
+            break
+
+    # Muhim: yuborgandan KEYIN o‘chirish (maxfiylik / kontaktga saqlamaslik)
+    if imported_temp:
+        await _delete_temp_contact(client, user)
+
+    if not send_ok:
+        return {
+            "ok": False,
+            "error": send_err or "Yuborilmadi",
+            "status": "error",
+            "meta": clean_meta,
+        }
+
+    return {
+        "ok": True,
+        "error": "",
+        "status": "ok",
+        "telegram_id": str(getattr(user, "id", "") or ""),
+        "meta": clean_meta,
+    }
 
 
 async def send_jobs_by_phone_async(

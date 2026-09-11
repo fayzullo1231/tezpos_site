@@ -11,6 +11,32 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 
+def _read_env_file_value(key: str) -> str:
+    """
+    .env faylidan to‘g‘ridan-to‘g‘ri o‘qiydi.
+    systemd EnvironmentFile ba’zan uzun TELETHON_SESSION ni buzadi;
+    load_dotenv esa mavjud env ni override qilmaydi — shu uchun majburiy.
+    """
+    path = BASE_DIR / ".env"
+    if not path.is_file():
+        return ""
+    try:
+        for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() != key:
+                continue
+            val = v.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                val = val[1:-1]
+            return val
+    except OSError:
+        return ""
+    return ""
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
@@ -194,9 +220,19 @@ DEVSMS_TYPE = (os.environ.get("DEVSMS_TYPE", "") or "").strip().lower()
 TELEGRAM_CRON_SECRET = os.environ.get("TELEGRAM_CRON_SECRET", "").strip()
 
 # Qarz eslatmalari — Telethon user session
-TELETHON_API_ID = (os.environ.get("TELETHON_API_ID", "") or "").strip()
-TELETHON_API_HASH = (os.environ.get("TELETHON_API_HASH", "") or "").strip()
-TELETHON_SESSION = (os.environ.get("TELETHON_SESSION", "") or "").strip()
+# Avvalo .env fayl (to‘g‘ri SESSION), keyin os.environ
+TELETHON_API_ID = (
+    _read_env_file_value("TELETHON_API_ID")
+    or (os.environ.get("TELETHON_API_ID", "") or "")
+).strip()
+TELETHON_API_HASH = (
+    _read_env_file_value("TELETHON_API_HASH")
+    or (os.environ.get("TELETHON_API_HASH", "") or "")
+).strip()
+TELETHON_SESSION = (
+    _read_env_file_value("TELETHON_SESSION")
+    or (os.environ.get("TELETHON_SESSION", "") or "")
+).strip()
 
 LOGGING = {
     "version": 1,
@@ -227,5 +263,6 @@ LOGGING = {
         },
         "tezpos.slow": {"handlers": ["console"], "level": "WARNING"},
         "tezpos.telegram": {"handlers": ["console"], "level": "INFO"},
+        "accounts.telethon_debt": {"handlers": ["console"], "level": "INFO", "propagate": False},
     },
 }
