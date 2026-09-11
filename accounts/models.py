@@ -311,8 +311,7 @@ class DebtSmsTemplate(models.Model):
             "\n"
             "Qoldiq: {balance} so'm\n"
             "\n"
-            "Chek:\n"
-            "{check_link}"
+            "Chek : {check_link}"
         )
     )
     is_approved = models.BooleanField(default=True)
@@ -333,6 +332,5 @@ class DebtSmsTemplate(models.Model):
         "\n"
         "Qoldiq: {balance} so'm\n"
         "\n"
-        "Chek:\n"
-        "{check_link}"
+        "Chek : {check_link}"
     )

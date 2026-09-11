@@ -53,29 +53,48 @@ _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 def format_text_for_telegram(text: str) -> str:
     """
-    DevSMS matnini Telegram HTML ga: URL larni <a> qilib bosiladigan qiladi.
-    (Oddiy send_message ba’zan uzun chek linkini oddiy yozuvdek qoldiradi.)
+    DevSMS matnini Telegram HTML ga:
+    - do‘kon nomi qalin
+    - URL lar bosiladigan <a>
+    - Chek link bir qatorda
     """
     raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    # Ko‘rinmas belgilarni URL dan olib tashlash
     raw = raw.replace("\u200b", "").replace("\u200c", "").replace("\ufeff", "")
-    parts: list[str] = []
-    last = 0
-    for m in _URL_RE.finditer(raw):
-        parts.append(html.escape(raw[last : m.start()]))
-        url = m.group(0).rstrip(".,);]")
-        # faqat ascii URL
-        url_clean = "".join(ch for ch in url if ord(ch) < 128)
-        if url_clean.startswith("http"):
-            parts.append(
-                f'<a href="{html.escape(url_clean, quote=True)}">'
-                f"{html.escape(url_clean)}</a>"
-            )
+    # "Chek:\nhttps://..." → "Chek : https://..."
+    raw = re.sub(
+        r"(?im)^Chek\s*:\s*\n+(https?://\S+)",
+        r"Chek : \1",
+        raw,
+    )
+    raw = re.sub(r"(?im)^Chek\s*:\s*(https?://)", r"Chek : \1", raw)
+
+    lines = raw.split("\n")
+    out_lines: list[str] = []
+    headed = False
+    for line in lines:
+        if not headed and line.strip():
+            out_lines.append(f"<b>{html.escape(line.strip())}</b>")
+            headed = True
+            continue
+        m = _URL_RE.search(line)
+        if m:
+            before = line[: m.start()]
+            url = m.group(0).rstrip(".,);]")
+            url_clean = "".join(ch for ch in url if ord(ch) < 128)
+            after = line[m.end() :]
+            chunk = html.escape(before)
+            if url_clean.startswith("http"):
+                chunk += (
+                    f'<a href="{html.escape(url_clean, quote=True)}">'
+                    f"{html.escape(url_clean)}</a>"
+                )
+            else:
+                chunk += html.escape(url)
+            chunk += html.escape(after)
+            out_lines.append(chunk)
         else:
-            parts.append(html.escape(url))
-        last = m.start() + len(m.group(0))
-    parts.append(html.escape(raw[last:]))
-    return "".join(parts).replace("\n", "<br/>")
+            out_lines.append(html.escape(line))
+    return "<br/>".join(out_lines)
 
 
 def _fmt_amount(value) -> str:

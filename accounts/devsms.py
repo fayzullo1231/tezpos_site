@@ -120,8 +120,7 @@ def build_client_debt_message(
         f"\n"
         f"{qoldiq_line}\n"
         f"\n"
-        f"Chek:\n"
-        f"{link}"
+        f"Chek : {link}"
     )
     return _normalize_sms_text(text)
 
@@ -142,8 +141,7 @@ def build_debt_message(
 
       Qoldiq: 5 000 so'm
 
-      Chek:
-      https://tez-pos.uz/check/...
+      Chek : https://tez-pos.uz/check/...
     """
     shop = (shop or "").strip() or "TezPOS"
     branch = (branch or "").strip()
