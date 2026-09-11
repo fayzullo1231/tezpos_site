@@ -21,16 +21,69 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from . import devsms, tezpos_api
 from .auth_views import SESSION_DISPLAY, SESSION_SERVER
 from .models import ClientDebtor, ClientDebtorLedger, DebtSmsTemplate, TenantProfile
-from .telethon_debt import ensure_telegram_resolved
+from .telethon_debt import ensure_telegram_resolved, send_text_by_phone, telethon_configured
 
 
 def _maybe_resolve_telegram(row: ClientDebtor) -> None:
     try:
         if not (row.phone or "").strip():
             return
+        # Faqat hali tekshirilmaganlar — FloodWait dan saqlanish
+        if row.telegram_checked_at and row.telegram_status in (
+            "ok",
+            "no_telegram",
+            "no_phone",
+        ):
+            return
         ensure_telegram_resolved(row, force=False)
     except Exception:
         pass
+
+
+def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
+    """
+    Qarz SMS matni: avvalo Telegram (Telethon), bo‘lmasa DevSMS.
+    Kontaktga saqlanmaydi — raqam bo‘yicha resolvePhone.
+    """
+    msg = (text or "").strip()
+    if not msg:
+        return {"ok": False, "error": "Matn bo‘sh", "channel": "none"}
+    if not (debtor.phone or "").strip():
+        return {"ok": False, "error": "Telefon yo‘q", "channel": "none"}
+
+    tg_err = ""
+    if telethon_configured():
+        try:
+            res = send_text_by_phone(debtor.phone, msg, debtor=debtor)
+            if res.get("ok"):
+                try:
+                    debtor.refresh_from_db()
+                except Exception:
+                    pass
+                return {
+                    "ok": True,
+                    "channel": "telegram",
+                    "error": "",
+                    "telegram_id": res.get("telegram_id") or "",
+                }
+            tg_err = str(res.get("error") or "Telegram yuborilmadi")
+        except Exception as exc:
+            tg_err = str(exc)[:200]
+
+    sms = devsms.send_dev_sms(phone=debtor.phone, message=msg)
+    if sms.get("ok"):
+        out = dict(sms)
+        out["channel"] = "sms"
+        if tg_err:
+            out["telegram_error"] = tg_err
+        return out
+    return {
+        "ok": False,
+        "channel": "none",
+        "error": tg_err or str(sms.get("error") or "Yuborilmadi"),
+        "telegram_error": tg_err,
+        "sms_error": sms.get("error"),
+    }
 
 
 def _shop(request) -> str:
@@ -447,9 +500,39 @@ def cabinet_client_debtor_save(request):
         _apply_balance_target(row, target, who=who)
 
     _apply_due_date(row, body)
-    _maybe_resolve_telegram(row)
 
-    return JsonResponse({"ok": True, "debtor": _serialize_debtor(row, with_ledger=True)})
+    # Yangi mijoz + boshlang‘ich qarz: Telegram/SMS
+    sms_res = None
+    send_sms = bool(body.get("send_sms", True))
+    if send_sms and not sid and amount > 0 and row.phone:
+        entry = row.ledger.order_by("-id").first()
+        check_url = (
+            f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
+            if entry
+            else "https://tez-pos.uz/"
+        )
+        tpl = _get_or_create_template(shop, tenant)
+        text = _render_sms(
+            tpl,
+            amount=amount,
+            balance=row.balance(),
+            name=row.name,
+            note=note,
+            check_link=check_url,
+            request=request,
+            kind=ClientDebtorLedger.KIND_ADD,
+        )
+        sms_res = _deliver_debt_notice(row, text)
+        if sms_res.get("ok") and entry:
+            entry.sms_sent = True
+            entry.save(update_fields=["sms_sent"])
+    else:
+        _maybe_resolve_telegram(row)
+
+    out = {"ok": True, "debtor": _serialize_debtor(row, with_ledger=True)}
+    if sms_res is not None:
+        out["sms"] = sms_res
+    return JsonResponse(out)
 
 
 @login_required
@@ -523,12 +606,12 @@ def cabinet_client_debt_adjust(request):
             request=request,
             kind=kind,
         )
-        sms_res = devsms.send_dev_sms(phone=debtor.phone, message=text)
+        sms_res = _deliver_debt_notice(debtor, text)
         if sms_res.get("ok"):
             entry.sms_sent = True
             entry.save(update_fields=["sms_sent"])
-
-    _maybe_resolve_telegram(debtor)
+    elif not send_sms:
+        _maybe_resolve_telegram(debtor)
 
     return JsonResponse(
         {
@@ -730,10 +813,36 @@ def api_client_debtor_save(request):
             row, _dec(body.get("debt", body.get("balance"))), who=who
         )
     _apply_due_date(row, body)
-    _maybe_resolve_telegram(row)
-    return _cors(
-        JsonResponse({"ok": True, "debtor": _serialize_debtor(row, with_ledger=True)})
-    )
+    sms_res = None
+    send_sms = bool(body.get("send_sms", True))
+    if send_sms and not sid and amount > 0 and row.phone:
+        entry = row.ledger.order_by("-id").first()
+        check_url = (
+            f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
+            if entry
+            else "https://tez-pos.uz/"
+        )
+        tpl = _get_or_create_template(shop)
+        text = _render_sms(
+            tpl,
+            amount=amount,
+            balance=row.balance(),
+            name=row.name,
+            note=note,
+            check_link=check_url,
+            request=request,
+            kind=ClientDebtorLedger.KIND_ADD,
+        )
+        sms_res = _deliver_debt_notice(row, text)
+        if sms_res.get("ok") and entry:
+            entry.sms_sent = True
+            entry.save(update_fields=["sms_sent"])
+    else:
+        _maybe_resolve_telegram(row)
+    payload = {"ok": True, "debtor": _serialize_debtor(row, with_ledger=True)}
+    if sms_res is not None:
+        payload["sms"] = sms_res
+    return _cors(JsonResponse(payload))
 
 
 @csrf_exempt
@@ -774,24 +883,25 @@ def api_client_debt_adjust(request):
         bal = debtor.balance()
         _apply_due_date(debtor, body, kind=kind)
     sms_res = None
+    check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
     if send_sms and debtor.phone:
         tpl = _get_or_create_template(shop)
-        check_link = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
         text = _render_sms(
             tpl,
             amount=amount,
             balance=bal,
             name=debtor.name,
             note=note or debtor.note,
-            check_link=check_link,
+            check_link=check_url,
             request=request,
             kind=kind,
         )
-        sms_res = devsms.send_dev_sms(phone=debtor.phone, message=text)
+        sms_res = _deliver_debt_notice(debtor, text)
         if sms_res.get("ok"):
             entry.sms_sent = True
             entry.save(update_fields=["sms_sent"])
-    _maybe_resolve_telegram(debtor)
+    elif not send_sms:
+        _maybe_resolve_telegram(debtor)
     return _cors(
         JsonResponse(
             {
@@ -799,7 +909,7 @@ def api_client_debt_adjust(request):
                 "entry": _serialize_ledger(entry),
                 "debtor": _serialize_debtor(debtor, with_ledger=True, limit=80),
                 "sms": sms_res,
-                "check_url": f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/",
+                "check_url": check_url,
             }
         )
     )

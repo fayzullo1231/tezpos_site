@@ -397,6 +397,49 @@ def resolve_debtors_batch(
     return _run(resolve_debtors_batch_async(rows, force=force), timeout=3600)
 
 
+def send_text_by_phone(
+    phone: str, text: str, *, debtor: ClientDebtor | None = None
+) -> dict[str, Any]:
+    """
+    Raqam bo‘yicha qidirib xabar yuboradi (kontaktga saqlamaydi).
+    Qarz SMS matni / eslatma uchun.
+    """
+    if not telethon_configured():
+        return {"ok": False, "error": "Telethon sozlanmagan"}
+    phone_n = devsms.normalize_phone(phone)
+    if not phone_n:
+        return {"ok": False, "error": "Telefon yo‘q"}
+    msg = (text or "").strip()
+    if not msg:
+        return {"ok": False, "error": "Matn bo‘sh"}
+
+    async def _one():
+        client = await _client()
+        try:
+            res = await _send_by_phone(client, phone_n, msg)
+            meta = res.get("meta") or {}
+            if debtor is not None and meta:
+                await apply_telegram_meta(debtor, meta)
+            return {
+                "ok": bool(res.get("ok")),
+                "error": res.get("error") or "",
+                "telegram_id": res.get("telegram_id") or "",
+                "status": res.get("status") or "",
+                "channel": "telegram",
+            }
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    try:
+        return _run(_one(), timeout=180)
+    except Exception as exc:
+        logger.exception("send_text_by_phone failed")
+        return {"ok": False, "error": str(exc)[:200], "channel": "telegram"}
+
+
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:
     resolve_debtors_batch([debtor], force=force)
     debtor.refresh_from_db()
