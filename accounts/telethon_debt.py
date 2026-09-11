@@ -178,8 +178,9 @@ def _meta_no_tg(err: str = "Bu raqamda Telegram yo‘q") -> dict:
         "telegram_id": "",
         "username": "",
         "display_name": "",
-        "error": err,
+        "error": err if err != "resolve_privacy" else "Bu raqamda Telegram yo‘q",
         "user": None,
+        "_privacy": err == "resolve_privacy",
     }
 
 
@@ -198,7 +199,7 @@ def _meta_err(err: str) -> dict:
 async def _resolve_phone(client, phone_n: str) -> dict:
     """
     Raqamni Telegram userga aylantiradi.
-    Kontaktga qo‘shilmaydi (ResolvePhoneRequest).
+    Avvalo ResolvePhone (kontaktga qo‘shilmaydi).
     """
     from telethon.errors import FloodWaitError, RPCError
     from telethon.tl.functions.contacts import ResolvePhoneRequest
@@ -221,12 +222,80 @@ async def _resolve_phone(client, phone_n: str) -> dict:
         except RPCError as exc:
             msg = (getattr(exc, "message", None) or str(exc) or "").upper()
             if "PHONE_NOT_OCCUPIED" in msg or "PHONE_NOT_OCCUPIED" in str(exc):
-                return _meta_no_tg()
+                # Privacy: resolvePhone yopiq bo‘lishi mumkin — import fallback
+                return _meta_no_tg("resolve_privacy")
             logger.exception("telethon resolvePhone failed")
             return _meta_err(str(exc))
         except Exception as exc:
             logger.exception("telethon resolvePhone failed")
             return _meta_err(str(exc))
+
+
+async def _resolve_via_import(client, phone_n: str) -> dict:
+    """
+    Vaqtinchalik ImportContacts → user topiladi → darhol DeleteContacts.
+    Kontakt ro‘yxatida qolmaydi.
+    """
+    from telethon.errors import FloodWaitError
+    from telethon.tl.functions.contacts import (
+        DeleteContactsRequest,
+        ImportContactsRequest,
+    )
+    from telethon.tl.types import InputPhoneContact, InputUser
+
+    intl = _intl_phone(phone_n)
+    if not intl:
+        return _meta_err("Telefon yo‘q")
+
+    contact = InputPhoneContact(
+        client_id=1,
+        phone=intl,
+        first_name="TP",
+        last_name="",
+    )
+    while True:
+        try:
+            result = await client(ImportContactsRequest([contact]))
+            break
+        except FloodWaitError as exc:
+            wait = int(getattr(exc, "seconds", 0) or 0) + 2
+            logger.warning("FloodWait import %ss", wait)
+            await asyncio.sleep(wait)
+
+    users = list(getattr(result, "users", None) or [])
+    imported = list(getattr(result, "imported", None) or [])
+    user = None
+    if imported and users:
+        uid = int(getattr(imported[0], "user_id", 0) or 0)
+        user = next((u for u in users if int(u.id) == uid), users[0])
+    elif users:
+        user = users[0]
+
+    # Darhol kontaktlardan o‘chirish
+    if user is not None:
+        try:
+            await client(
+                DeleteContactsRequest(
+                    [InputUser(int(user.id), int(user.access_hash or 0))]
+                )
+            )
+        except FloodWaitError as exc:
+            await asyncio.sleep(int(getattr(exc, "seconds", 0) or 0) + 1)
+        except Exception:
+            logger.warning("DeleteContacts failed (ignore)", exc_info=True)
+
+    if user is None:
+        return _meta_no_tg()
+    return _meta_ok(user)
+
+
+async def _resolve_phone_for_send(client, phone_n: str) -> dict:
+    """Yuborish uchun: ResolvePhone, bo‘lmasa vaqtinchalik Import (+delete)."""
+    meta = await _resolve_phone(client, phone_n)
+    if meta.get("ok") and meta.get("user") is not None:
+        return meta
+    # Privacy yoki topilmadi — import (keyin o‘chiriladi)
+    return await _resolve_via_import(client, phone_n)
 
 
 @sync_to_async
@@ -294,8 +363,9 @@ async def resolve_debtors_batch_async(
             if not phone_n:
                 await _save_status(d, "no_phone")
                 continue
-            meta = await _resolve_phone(client, phone_n)
+            meta = await _resolve_phone_for_send(client, phone_n)
             meta.pop("user", None)
+            meta.pop("_privacy", None)
             await apply_telegram_meta(d, meta)
             if i + 1 < len(need):
                 await asyncio.sleep(RESOLVE_PAUSE_SEC)
@@ -307,18 +377,39 @@ async def resolve_debtors_batch_async(
     return debtors
 
 
-async def _send_by_phone(client, phone_n: str, text: str) -> dict:
-    """Har safar raqam bo‘yicha qidiradi, yuboradi — kontaktga saqlamaydi."""
+async def _send_by_phone(
+    client, phone_n: str, text: str, *, prefer_telegram_id: str = ""
+) -> dict:
+    """
+    DevSMS bilan bir xil matnni Telegramga yuboradi.
+    Kontaktga saqlanmaydi (resolve yoki vaqtinchalik import + delete).
+    """
     from telethon.errors import FloodWaitError
 
-    meta = await _resolve_phone(client, phone_n)
-    user = meta.pop("user", None)
+    user = None
+    meta: dict = {}
+
+    # Avval saqlangan telegram_id (sessiya keshi)
+    tid = str(prefer_telegram_id or "").strip()
+    if tid.isdigit():
+        try:
+            entity = await client.get_entity(int(tid))
+            user = entity
+            meta = _meta_ok(entity)
+        except Exception:
+            user = None
+
+    if user is None:
+        meta = await _resolve_phone_for_send(client, phone_n)
+        user = meta.get("user")
+
+    clean_meta = {k: v for k, v in meta.items() if k not in ("user", "_privacy")}
     if not meta.get("ok") or user is None:
         return {
             "ok": False,
             "error": meta.get("error") or "Telegram topilmadi",
             "status": meta.get("status") or "error",
-            "meta": meta,
+            "meta": clean_meta,
         }
 
     while True:
@@ -328,19 +419,20 @@ async def _send_by_phone(client, phone_n: str, text: str) -> dict:
                 "ok": True,
                 "error": "",
                 "status": "ok",
-                "telegram_id": str(user.id),
-                "meta": meta,
+                "telegram_id": str(getattr(user, "id", "") or ""),
+                "meta": clean_meta,
             }
         except FloodWaitError as exc:
             wait = int(getattr(exc, "seconds", 0) or 0) + 2
             logger.warning("FloodWait send %ss", wait)
             await asyncio.sleep(wait)
         except Exception as exc:
+            logger.exception("telethon send_message failed")
             return {
                 "ok": False,
                 "error": str(exc)[:200],
                 "status": "error",
-                "meta": meta,
+                "meta": clean_meta,
             }
 
 
@@ -365,7 +457,12 @@ async def send_jobs_by_phone_async(
                     }
                 )
                 continue
-            res = await _send_by_phone(client, phone_n, text)
+            res = await _send_by_phone(
+                client,
+                phone_n,
+                text,
+                prefer_telegram_id=str(getattr(debtor, "telegram_id", "") or ""),
+            )
             meta = res.get("meta") or {}
             if meta:
                 await apply_telegram_meta(debtor, meta)
@@ -401,8 +498,8 @@ def send_text_by_phone(
     phone: str, text: str, *, debtor: ClientDebtor | None = None
 ) -> dict[str, Any]:
     """
-    Raqam bo‘yicha qidirib xabar yuboradi (kontaktga saqlamaydi).
-    Qarz SMS matni / eslatma uchun.
+    DevSMS shabloni matnini Telegramga yuboradi (bir xil text).
+    Kontaktga saqlanmaydi.
     """
     if not telethon_configured():
         return {"ok": False, "error": "Telethon sozlanmagan"}
@@ -412,21 +509,33 @@ def send_text_by_phone(
     msg = (text or "").strip()
     if not msg:
         return {"ok": False, "error": "Matn bo‘sh"}
+    prefer_id = ""
+    if debtor is not None:
+        prefer_id = str(getattr(debtor, "telegram_id", "") or "")
 
     async def _one():
         client = await _client()
         try:
-            res = await _send_by_phone(client, phone_n, msg)
+            res = await _send_by_phone(
+                client, phone_n, msg, prefer_telegram_id=prefer_id
+            )
             meta = res.get("meta") or {}
             if debtor is not None and meta:
                 await apply_telegram_meta(debtor, meta)
-            return {
+            out = {
                 "ok": bool(res.get("ok")),
                 "error": res.get("error") or "",
                 "telegram_id": res.get("telegram_id") or "",
                 "status": res.get("status") or "",
                 "channel": "telegram",
             }
+            if not out["ok"]:
+                logger.warning(
+                    "Telegram qarz xabari yuborilmadi phone=%s err=%s",
+                    phone_n,
+                    out["error"],
+                )
+            return out
         finally:
             try:
                 await client.disconnect()
