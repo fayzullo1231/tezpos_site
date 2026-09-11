@@ -42,7 +42,7 @@ def _maybe_resolve_telegram(row: ClientDebtor) -> None:
 
 def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     """
-    Qarz SMS matni: avvalo Telegram (Telethon), bo‘lmasa DevSMS.
+    Qarz matni: Telegram va DevSMS — ikkalasiga ham yuboriladi.
     Kontaktga saqlanmaydi — raqam bo‘yicha resolvePhone.
     """
     msg = (text or "").strip()
@@ -51,38 +51,56 @@ def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     if not (debtor.phone or "").strip():
         return {"ok": False, "error": "Telefon yo‘q", "channel": "none"}
 
+    tg_ok = False
     tg_err = ""
+    tg_id = ""
     if telethon_configured():
         try:
             res = send_text_by_phone(debtor.phone, msg, debtor=debtor)
             if res.get("ok"):
+                tg_ok = True
+                tg_id = str(res.get("telegram_id") or "")
                 try:
                     debtor.refresh_from_db()
                 except Exception:
                     pass
-                return {
-                    "ok": True,
-                    "channel": "telegram",
-                    "error": "",
-                    "telegram_id": res.get("telegram_id") or "",
-                }
-            tg_err = str(res.get("error") or "Telegram yuborilmadi")
+            else:
+                tg_err = str(res.get("error") or "Telegram yuborilmadi")
         except Exception as exc:
             tg_err = str(exc)[:200]
+    else:
+        tg_err = "Telethon sozlanmagan"
 
     sms = devsms.send_dev_sms(phone=debtor.phone, message=msg)
-    if sms.get("ok"):
-        out = dict(sms)
-        out["channel"] = "sms"
-        if tg_err:
-            out["telegram_error"] = tg_err
-        return out
+    sms_ok = bool(sms.get("ok"))
+    sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
+
+    if tg_ok and sms_ok:
+        channel = "both"
+    elif tg_ok:
+        channel = "telegram"
+    elif sms_ok:
+        channel = "sms"
+    else:
+        channel = "none"
+
+    ok = tg_ok or sms_ok
+    err_parts = []
+    if not tg_ok and tg_err:
+        err_parts.append("TG: " + tg_err)
+    if not sms_ok and sms_err:
+        err_parts.append("SMS: " + sms_err)
+
     return {
-        "ok": False,
-        "channel": "none",
-        "error": tg_err or str(sms.get("error") or "Yuborilmadi"),
+        "ok": ok,
+        "channel": channel,
+        "telegram_ok": tg_ok,
+        "sms_ok": sms_ok,
+        "telegram_id": tg_id,
         "telegram_error": tg_err,
-        "sms_error": sms.get("error"),
+        "sms_error": sms_err,
+        "error": "" if ok and tg_ok and sms_ok else (" | ".join(err_parts) or ""),
+        "id": sms.get("id") if isinstance(sms, dict) else None,
     }
 
 
