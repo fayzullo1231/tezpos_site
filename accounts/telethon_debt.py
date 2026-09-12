@@ -56,7 +56,7 @@ def format_text_for_telegram(text: str) -> str:
     DevSMS matnini Telegram HTML ga:
     - do‘kon nomi qalin
     - URL lar bosiladigan <a>
-    - Chek link bir qatorda
+    - qatorlar \\n bilan (br emas — aks holda bir qator bo‘lib ketadi)
     """
     raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     raw = raw.replace("\u200b", "").replace("\u200c", "").replace("\ufeff", "")
@@ -94,7 +94,8 @@ def format_text_for_telegram(text: str) -> str:
             out_lines.append(chunk)
         else:
             out_lines.append(html.escape(line))
-    return "<br/>".join(out_lines)
+    # Muhim: <br/> emas — Telethon HTML da \n qator uzadi
+    return "\n".join(out_lines)
 
 
 def _fmt_amount(value) -> str:
