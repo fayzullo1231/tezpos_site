@@ -7022,11 +7022,19 @@ def cabinet_stock_in(request):
     day = _parse_sale_date(request.GET.get("date") or request.GET.get("sale_date"))
     fast = (request.GET.get("fast") or "").strip().lower() in ("1", "true", "yes")
     memo_prefix = f"{server}|{(token or '')[-12:]}"
-    memo_key = f"{memo_prefix}|stockin_v3|{day.isoformat()}|{'f' if fast else 'x'}"
+    memo_key = f"{memo_prefix}|stockin_v4|{day.isoformat()}|{'f' if fast else 'x'}"
 
-    cached = _memo_peek(memo_key)
-    if isinstance(cached, dict) and cached.get("ok") and not fast:
-        return JsonResponse(cached)
+    # Kunning boshida olingan bo‘sh javob keyingi kirimlarni yashirmasin.
+    cache_hit = _TEZPOS_MEMO.get(memo_key)
+    if cache_hit and not fast:
+        cached_at, cached = cache_hit
+        ttl = 15.0 if not (cached.get("receipts") if isinstance(cached, dict) else None) else 60.0
+        if (
+            time.time() - cached_at < ttl
+            and isinstance(cached, dict)
+            and cached.get("ok")
+        ):
+            return JsonResponse(cached)
 
     try:
         # Katalog kutmasdan — asosiy sekinlik shu edi (Katта ombor snapshot)

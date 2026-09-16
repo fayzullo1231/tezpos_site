@@ -1376,6 +1376,7 @@ def get_stock_receipts(
                 server_name=server_name,
                 query={
                     "all": "true",
+                    "page_size": "100",
                     "include_items": "true",
                     "with_items": "true",
                     "date_from": date_from,
@@ -1393,9 +1394,11 @@ def get_stock_receipts(
         rows = _rows_from_list_payload(data)
         _absorb(rows)
         _STOCK_RECEIPT_PATH[_server_slug(server_name) or server_name] = path
-        if isinstance(data, list) or (
-            isinstance(data, dict) and not data.get("next") and len(rows) != 20
-        ):
+        if isinstance(data, list):
+            return collected
+        # Backend sana filtrini e'tiborsiz qoldirib eng yangi 100 qatorni
+        # qaytarishi mumkin. To‘liq 100 lik sahifada keyingi sahifani ham o‘qiymiz.
+        if isinstance(data, dict) and not data.get("next") and len(rows) < 100:
             return collected
         if _page_older_than_range(rows):
             return collected

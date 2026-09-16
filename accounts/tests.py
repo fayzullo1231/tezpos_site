@@ -330,6 +330,50 @@ class SalesPagingTests(SimpleTestCase):
         self.assertEqual(len(rows), 25)
         self.assertGreaterEqual(len(calls), 2)
 
+    def test_stock_receipts_continue_after_full_page_without_next(self):
+        """Sana filtri ishlamasa ham eski kun keyingi 100-lik sahifadan topiladi."""
+        from unittest.mock import patch
+        from accounts.tezpos_api import get_stock_receipts
+
+        calls = []
+
+        def fake(_method, _path, **kwargs):
+            q = kwargs.get("query") or {}
+            calls.append(q)
+            if q.get("all") == "true":
+                return {
+                    "results": [
+                        {
+                            "id": f"new-{i}",
+                            "created_at": "2026-09-16T10:00:00+05:00",
+                        }
+                        for i in range(100)
+                    ],
+                    "next": None,
+                }
+            if str(q.get("page")) == "2":
+                return {
+                    "results": [
+                        {
+                            "id": "target",
+                            "created_at": "2026-09-15T10:00:00+05:00",
+                        }
+                    ],
+                    "next": None,
+                }
+            return {"results": []}
+
+        with patch("accounts.tezpos_api.api_request", side_effect=fake):
+            rows = get_stock_receipts(
+                "t",
+                "s",
+                date_from="2026-09-15",
+                date_to="2026-09-15",
+            )
+
+        self.assertIn("target", {str(row.get("id")) for row in rows})
+        self.assertTrue(any(str(q.get("page")) == "2" for q in calls))
+
     def test_merge_shift_summary_fills_totals(self):
         from accounts.tezpos_api import merge_shift_summary
 
