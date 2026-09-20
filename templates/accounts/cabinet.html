@@ -1650,7 +1650,7 @@
                       <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M4 5h3.2L9 3h6l1.8 2H20a2 2 0 012 2v11a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2zm8 12.5A4.5 4.5 0 1012 8a4.5 4.5 0 000 9.5zM7 8.5H5.5V7H7v1.5z"/></svg>
                       Rasm
                     </button>
-                    <input type="file" id="f_barcode_image" accept="image/*" capture="environment" hidden>
+                    <input type="file" id="f_barcode_image" accept="image/*" hidden>
                   </div>
                 </div>
                 <div id="barcode-list" class="barcode-list"></div>
@@ -1921,6 +1921,7 @@
 </script>
 {% if section == 'inventory' or section == 'products' %}
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20260320-barcode-cam" defer></script>
+<script src="/static/cabinet.js?v=20260320-barcode-img2" defer></script>
 {% endblock %}

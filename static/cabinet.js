@@ -4337,12 +4337,208 @@
 
   const cleanBarcodeValue = (raw) =>
     String(raw || "")
+      .replace(/\s+/g, "")
       .replace(/[^\dA-Za-z\-_.]/g, "")
       .trim();
 
+  const isLikelyBarcode = (code) => {
+    const c = cleanBarcodeValue(code);
+    if (!c || c.length < 6) return false;
+    // EAN/UPC/CODE128 odatda 8–14 raqam yoki alfanumerik
+    if (/^\d{8,14}$/.test(c)) return true;
+    if (/^[A-Za-z0-9\-_.]{6,32}$/.test(c)) return true;
+    return false;
+  };
+
+  const loadImageElement = (src) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+
+  const fileToDataUrl = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const canvasFromImage = (img, scale = 1, contrast = 1) => {
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return canvas;
+    ctx.drawImage(img, 0, 0, w, h);
+    if (contrast !== 1) {
+      const data = ctx.getImageData(0, 0, w, h);
+      const d = data.data;
+      const mid = 128;
+      for (let i = 0; i < d.length; i += 4) {
+        const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const v = Math.max(0, Math.min(255, mid + (gray - mid) * contrast));
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      ctx.putImageData(data, 0, 0);
+    }
+    return canvas;
+  };
+
+  const detectWithBarcodeDetector = async (source) => {
+    if (!("BarcodeDetector" in window)) return "";
+    try {
+      const formats = [
+        "ean_13",
+        "ean_8",
+        "upc_a",
+        "upc_e",
+        "code_128",
+        "code_39",
+        "codabar",
+        "itf",
+        "qr_code",
+        "data_matrix",
+      ];
+      let detector;
+      try {
+        detector = new window.BarcodeDetector({ formats });
+      } catch {
+        detector = new window.BarcodeDetector();
+      }
+      const rows = await detector.detect(source);
+      for (const row of rows || []) {
+        const cleaned = cleanBarcodeValue(row?.rawValue);
+        if (isLikelyBarcode(cleaned)) return cleaned;
+      }
+    } catch {}
+    return "";
+  };
+
+  const detectWithZXing = async (source) => {
+    const ZXing = window.ZXing;
+    if (!ZXing?.BrowserMultiFormatReader) return "";
+    try {
+      const reader = new ZXing.BrowserMultiFormatReader();
+      let result = null;
+      if (typeof source === "string") {
+        result = await reader.decodeFromImageUrl(source);
+      } else if (source instanceof HTMLCanvasElement) {
+        if (typeof reader.decodeFromCanvas === "function") {
+          result = await reader.decodeFromCanvas(source);
+        } else {
+          result = await reader.decodeFromImageUrl(source.toDataURL("image/jpeg", 0.92));
+        }
+      } else if (source instanceof HTMLImageElement) {
+        if (typeof reader.decodeFromImageElement === "function") {
+          result = await reader.decodeFromImageElement(source);
+        } else {
+          result = await reader.decodeFromImageUrl(source.src);
+        }
+      }
+      const cleaned = cleanBarcodeValue(result?.getText?.() || result?.text || "");
+      if (isLikelyBarcode(cleaned)) return cleaned;
+    } catch {}
+    return "";
+  };
+
+  const detectWithHtml5Qr = async (fileOrUrl) => {
+    if (!window.Html5Qrcode) return "";
+    const tmpId = "barcode-file-scan-tmp";
+    let el = document.getElementById(tmpId);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = tmpId;
+      el.style.cssText = "position:fixed;left:-9999px;width:1px;height:1px;overflow:hidden;";
+      document.body.appendChild(el);
+    }
+    const scanner = new window.Html5Qrcode(tmpId, false);
+    try {
+      let text = "";
+      if (fileOrUrl instanceof Blob || fileOrUrl instanceof File) {
+        text = await scanner.scanFile(fileOrUrl, false);
+      } else if (typeof scanner.scanFileV2 === "function") {
+        // ba'zi versiyalarda URL uchun
+        text = "";
+      }
+      const cleaned = cleanBarcodeValue(text);
+      if (isLikelyBarcode(cleaned)) return cleaned;
+    } catch {
+    } finally {
+      try {
+        await scanner.clear();
+      } catch {}
+    }
+    return "";
+  };
+
+  const decodeBarcodeFromFile = async (file) => {
+    if (!file) return "";
+    // Kutubxonalar defer bilan keladi — biroz kutamiz
+    for (let i = 0; i < 25 && !window.Html5Qrcode && !window.ZXing; i += 1) {
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    // 1) Original fayl — BarcodeDetector + Html5
+    let code = await detectWithBarcodeDetector(file);
+    if (code) return code;
+    code = await detectWithHtml5Qr(file);
+    if (code) return code;
+
+    let dataUrl = "";
+    try {
+      dataUrl = await fileToDataUrl(file);
+    } catch {
+      return "";
+    }
+    code = await detectWithZXing(dataUrl);
+    if (code) return code;
+
+    let img;
+    try {
+      img = await loadImageElement(dataUrl);
+    } catch {
+      return "";
+    }
+
+    code = await detectWithBarcodeDetector(img);
+    if (code) return code;
+    code = await detectWithZXing(img);
+    if (code) return code;
+
+    // 2) Turli masshtab / kontrast — kichik yoki xira barkodlar uchun
+    const attempts = [
+      { scale: 1, contrast: 1 },
+      { scale: 1.5, contrast: 1.4 },
+      { scale: 2, contrast: 1.6 },
+      { scale: 2.5, contrast: 1.8 },
+      { scale: 0.75, contrast: 1.3 },
+    ];
+    for (const a of attempts) {
+      try {
+        const canvas = canvasFromImage(img, a.scale, a.contrast);
+        code = await detectWithBarcodeDetector(canvas);
+        if (code) return code;
+        code = await detectWithZXing(canvas);
+        if (code) return code;
+        // canvas → blob → html5
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+        if (blob) {
+          code = await detectWithHtml5Qr(blob);
+          if (code) return code;
+        }
+      } catch {}
+    }
+    return "";
+  };
+
   const setBarcodeValue = (raw, focus = true) => {
     const code = cleanBarcodeValue(raw);
-    if (!code) return false;
+    if (!isLikelyBarcode(code)) return false;
     const inputs = [...(barcodeList?.querySelectorAll('input[name="barcodes"]') || [])];
     if (!inputs.length) {
       renderBarcodes([code]);
@@ -4417,13 +4613,34 @@
       return;
     }
     await stopCameraScanner();
-    html5QrcodeScanner = new window.Html5Qrcode("barcode-scan-reader");
+    const formats = window.Html5QrcodeSupportedFormats
+      ? [
+          window.Html5QrcodeSupportedFormats.EAN_13,
+          window.Html5QrcodeSupportedFormats.EAN_8,
+          window.Html5QrcodeSupportedFormats.UPC_A,
+          window.Html5QrcodeSupportedFormats.UPC_E,
+          window.Html5QrcodeSupportedFormats.CODE_128,
+          window.Html5QrcodeSupportedFormats.CODE_39,
+          window.Html5QrcodeSupportedFormats.ITF,
+          window.Html5QrcodeSupportedFormats.QR_CODE,
+        ]
+      : undefined;
+    html5QrcodeScanner = new window.Html5Qrcode("barcode-scan-reader", {
+      formatsToSupport: formats,
+      verbose: false,
+    });
     scannerLock = false;
-    const boxSize = Math.min(260, Math.max(180, Math.floor(window.innerWidth * 0.72)));
+    const boxW = Math.min(280, Math.max(200, Math.floor(window.innerWidth * 0.78)));
+    const boxH = Math.floor(boxW * 0.55);
     try {
       await html5QrcodeScanner.start(
         { facingMode: "environment" },
-        { fps: 12, qrbox: { width: boxSize, height: Math.floor(boxSize * 0.62) }, aspectRatio: 1.5 },
+        {
+          fps: 15,
+          qrbox: { width: boxW, height: boxH },
+          aspectRatio: 1.777,
+          disableFlip: false,
+        },
         (decodedText) => {
           if (scannerLock) return;
           scannerLock = true;
@@ -4442,41 +4659,6 @@
       setScanStatus(`Kamera ochilmadi: ${err?.message || err}`, "err");
       scannerRunning = false;
     }
-  };
-
-  const decodeBarcodeFromFile = async (file) => {
-    if (!file) return "";
-    if ("BarcodeDetector" in window) {
-      try {
-        const bmp = await createImageBitmap(file);
-        const detector = new window.BarcodeDetector({
-          formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf"],
-        });
-        const rows = await detector.detect(bmp);
-        const val = rows?.[0]?.rawValue || "";
-        const cleaned = cleanBarcodeValue(val);
-        if (cleaned) return cleaned;
-      } catch {}
-    }
-    if (window.Html5Qrcode) {
-      try {
-        const tmpId = "barcode-file-scan-tmp";
-        let el = document.getElementById(tmpId);
-        if (!el) {
-          el = document.createElement("div");
-          el.id = tmpId;
-          el.hidden = true;
-          document.body.appendChild(el);
-        }
-        const scanner = new window.Html5Qrcode(tmpId, /* verbose= */ false);
-        const text = await scanner.scanFile(file, /* showImage= */ false);
-        try {
-          await scanner.clear();
-        } catch {}
-        return cleanBarcodeValue(text);
-      } catch {}
-    }
-    return "";
   };
 
   const updateImagesCount = () => {
@@ -5395,7 +5577,15 @@
     const file = e.target?.files?.[0];
     if (!file) return;
     setScanStatus("Rasm o‘qilmoqda…");
-    const code = await decodeBarcodeFromFile(file);
+    if (barcodeScanModal && barcodeScanModal.hidden) {
+      // modal ochiq bo‘lmasa ham holat ko‘rinsin
+    }
+    let code = "";
+    try {
+      code = await decodeBarcodeFromFile(file);
+    } catch (err) {
+      console.warn("barcode decode", err);
+    }
     if (code) {
       setBarcodeValue(code);
       setScanStatus(`Topildi: ${code}`, "ok");
@@ -5403,8 +5593,8 @@
         setTimeout(() => closeBarcodeScanModal(), 300);
       }
     } else {
-      setScanStatus("Rasmdan shtrix-kod topilmadi. Yana urinib ko‘ring.", "err");
-      alert("Rasmdan shtrix-kod topilmadi.");
+      setScanStatus("Rasmdan shtrix-kod topilmadi. Barkodni yaqinroq va aniqroq suratga oling.", "err");
+      alert("Rasmdan shtrix-kod topilmadi.\n\nMaslahat:\n• Barkodni ekranga yaqin tuting\n• Yorug‘ joyda, xira bo‘lmasin\n• Yoki «Kamera» tugmasidan jonli skan qiling");
     }
     e.target.value = "";
   });
