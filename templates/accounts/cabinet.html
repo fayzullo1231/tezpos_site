@@ -1294,6 +1294,10 @@
             <span>Boshlang‘ich qarz (ixtiyoriy)</span>
             <input type="text" id="cd-form-amount" inputmode="decimal" placeholder="Masalan: 1456000">
           </label>
+          <label class="sup-field" id="cd-form-due-wrap">
+            <span>Qaytarish sanasi</span>
+            <input type="date" id="cd-form-due">
+          </label>
           <p class="cabinet-hint" id="cd-form-error" hidden></p>
           <div class="sup-modal-actions">
             <button type="button" class="btn-soft" data-cd-close>Bekor</button>
@@ -1320,6 +1324,7 @@
             <option value="sub">Qarz ayirish (to‘lov)</option>
           </select>
           <input type="text" id="cd-adj-amount" inputmode="decimal" placeholder="5 000 yoki -5 000">
+          <input type="date" id="cd-adj-due" title="Qaytarish sanasi">
           <input type="text" id="cd-adj-note" placeholder="Izoh (ixtiyoriy)" hidden>
           <label class="cd-sms-check"><input type="checkbox" id="cd-adj-sms" checked> SMS yuborish</label>
           <button type="button" class="btn-save" id="cd-adj-btn">Saqlash</button>
@@ -1636,6 +1641,17 @@
               <div class="barcode-block">
                 <div class="barcode-block-head">
                   <span class="field-label">Shtrix-kod <span class="req">*</span></span>
+                  <div class="barcode-scan-actions">
+                    <button type="button" class="btn-scan" id="btn-barcode-camera" title="Kameradan skan">
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 3L7.2 5H4a2 2 0 00-2 2v11a2 2 0 002 2h16a2 2 0 002-2V7a2 2 0 00-2-2h-3.2L15 3H9zm3 14a4.5 4.5 0 110-9 4.5 4.5 0 010 9zm0-2.2a2.3 2.3 0 100-4.6 2.3 2.3 0 000 4.6z"/></svg>
+                      Kamera
+                    </button>
+                    <button type="button" class="btn-scan" id="btn-barcode-gallery" title="Rasmdan o‘qish">
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M4 5h3.2L9 3h6l1.8 2H20a2 2 0 012 2v11a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2zm8 12.5A4.5 4.5 0 1012 8a4.5 4.5 0 000 9.5zM7 8.5H5.5V7H7v1.5z"/></svg>
+                      Rasm
+                    </button>
+                    <input type="file" id="f_barcode_image" accept="image/*" capture="environment" hidden>
+                  </div>
                 </div>
                 <div id="barcode-list" class="barcode-list"></div>
               </div>
@@ -1697,6 +1713,28 @@
             <button type="submit" class="btn-save">Saqlash</button>
           </footer>
         </form>
+      </div>
+    </div>
+    <div class="product-modal barcode-scan-modal" id="barcode-scan-modal" hidden>
+      <div class="product-modal-backdrop" data-close-barcode-scan></div>
+      <div class="product-modal-dialog barcode-scan-dialog" role="dialog" aria-modal="true" aria-labelledby="barcode-scan-title">
+        <header class="product-modal-head">
+          <div>
+            <h3 id="barcode-scan-title">Shtrix-kod skaner</h3>
+            <p>Kamerani barkodga qarating</p>
+          </div>
+          <button type="button" class="modal-close" data-close-barcode-scan aria-label="Yopish">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>
+          </button>
+        </header>
+        <div class="barcode-scan-body">
+          <div id="barcode-scan-reader" class="barcode-scan-reader"></div>
+          <p class="barcode-scan-status" id="barcode-scan-status">Kamera ochilmoqda…</p>
+        </div>
+        <footer class="product-modal-foot">
+          <button type="button" class="btn-ghost" id="btn-barcode-scan-gallery">Galereyadan</button>
+          <button type="button" class="btn-save" data-close-barcode-scan>Yopish</button>
+        </footer>
       </div>
     </div>
     <div class="product-modal" id="product-import-modal" hidden>
@@ -1881,5 +1919,8 @@
     }
   })();
 </script>
-<script src="/static/cabinet.js?v=20260910-profit0" defer></script>
+{% if section == 'inventory' or section == 'products' %}
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+{% endif %}
+<script src="/static/cabinet.js?v=20260320-barcode-cam" defer></script>
 {% endblock %}

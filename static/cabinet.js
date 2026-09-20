@@ -4311,7 +4311,10 @@
   const iconRefresh = `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 6V3L8 7l4 4V8c2.76 0 5 2.24 5 5a5 5 0 0 1-8.9 3.1l-1.45 1.45A7 7 0 0 0 19 13c0-3.87-3.13-7-7-7zm0 12v3l4-4-4-4v3a5 5 0 0 1-5-5c0-.9.24-1.74.66-2.47L6.2 8.08A7 7 0 0 0 5 13c0 3.87 3.13 7 7 7z"/></svg>`;
   const iconTrash = `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9z"/></svg>`;
   const iconPlus = `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>`;
+  const iconCamera = `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 3L7.2 5H4a2 2 0 00-2 2v11a2 2 0 002 2h16a2 2 0 002-2V7a2 2 0 00-2-2h-3.2L15 3H9zm3 14a4.5 4.5 0 110-9 4.5 4.5 0 010 9zm0-2.2a2.3 2.3 0 100-4.6 2.3 2.3 0 000 4.6z"/></svg>`;
   const iconClose = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>`;
+
+  let scanTargetInput = null;
 
   const renderBarcodes = (codes) => {
     if (!barcodeList) return;
@@ -4320,10 +4323,13 @@
       .map(
         (code, i) => `<div class="barcode-row">
           <span class="barcode-label">#${i + 1}</span>
-          <input type="text" name="barcodes" value="${String(code).replace(/"/g, "&quot;")}" placeholder="860..." ${i === 0 ? "required" : ""}>
-          <button type="button" class="btn-icon gen-one" title="Generatsiya">${iconRefresh}</button>
-          <button type="button" class="btn-icon add-one" title="Qo‘shish">${iconPlus}</button>
-          <button type="button" class="btn-icon danger rm-barcode" title="O‘chirish" ${list.length <= 1 ? "disabled" : ""}>${iconTrash}</button>
+          <input type="text" name="barcodes" value="${String(code).replace(/"/g, "&quot;")}" placeholder="860..." inputmode="numeric" autocomplete="off" ${i === 0 ? "required" : ""}>
+          <div class="barcode-row-actions">
+            <button type="button" class="btn-icon scan-one" title="Kameradan skan">${iconCamera}</button>
+            <button type="button" class="btn-icon gen-one" title="Generatsiya">${iconRefresh}</button>
+            <button type="button" class="btn-icon add-one" title="Qo‘shish">${iconPlus}</button>
+            <button type="button" class="btn-icon danger rm-barcode" title="O‘chirish" ${list.length <= 1 ? "disabled" : ""}>${iconTrash}</button>
+          </div>
         </div>`
       )
       .join("");
@@ -4340,10 +4346,16 @@
     const inputs = [...(barcodeList?.querySelectorAll('input[name="barcodes"]') || [])];
     if (!inputs.length) {
       renderBarcodes([code]);
+      scanTargetInput = null;
       return true;
     }
-    const firstEmpty = inputs.find((el) => !String(el.value || "").trim());
-    const target = firstEmpty || inputs[0];
+    let target = null;
+    if (scanTargetInput && inputs.includes(scanTargetInput)) {
+      target = scanTargetInput;
+    } else {
+      target = inputs.find((el) => !String(el.value || "").trim()) || inputs[0];
+    }
+    scanTargetInput = null;
     if (target) {
       target.value = code;
       target.dispatchEvent(new Event("input", { bubbles: true }));
@@ -4395,16 +4407,23 @@
     document.body.style.overflow = "hidden";
     setScanStatus("Kamera ochilmoqda…");
     if (!window.Html5Qrcode) {
+      // defer skript hali yuklanishi mumkin
+      for (let i = 0; i < 20 && !window.Html5Qrcode; i += 1) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    if (!window.Html5Qrcode) {
       setScanStatus("Skaner kutubxonasi yuklanmadi. Sahifani yangilang.", "err");
       return;
     }
     await stopCameraScanner();
     html5QrcodeScanner = new window.Html5Qrcode("barcode-scan-reader");
     scannerLock = false;
+    const boxSize = Math.min(260, Math.max(180, Math.floor(window.innerWidth * 0.72)));
     try {
       await html5QrcodeScanner.start(
         { facingMode: "environment" },
-        { fps: 12, qrbox: { width: 260, height: 160 }, aspectRatio: 1.5 },
+        { fps: 12, qrbox: { width: boxSize, height: Math.floor(boxSize * 0.62) }, aspectRatio: 1.5 },
         (decodedText) => {
           if (scannerLock) return;
           scannerLock = true;
@@ -5362,9 +5381,11 @@
   });
 
   btnBarcodeCamera?.addEventListener("click", () => {
+    scanTargetInput = null;
     openBarcodeScanModal();
   });
   btnBarcodeGallery?.addEventListener("click", () => {
+    scanTargetInput = null;
     barcodeImageInput?.click();
   });
   btnBarcodeScanGallery?.addEventListener("click", () => {
@@ -5373,6 +5394,7 @@
   barcodeImageInput?.addEventListener("change", async (e) => {
     const file = e.target?.files?.[0];
     if (!file) return;
+    setScanStatus("Rasm o‘qilmoqda…");
     const code = await decodeBarcodeFromFile(file);
     if (code) {
       setBarcodeValue(code);
@@ -5393,11 +5415,19 @@
   });
 
   barcodeList?.addEventListener("click", (e) => {
+    const scan = e.target.closest(".scan-one");
     const gen = e.target.closest(".gen-one");
     const add = e.target.closest(".add-one");
     const rm = e.target.closest(".rm-barcode");
+    if (scan) {
+      const row = scan.closest(".barcode-row");
+      scanTargetInput = row?.querySelector('input[name="barcodes"]') || null;
+      openBarcodeScanModal();
+      return;
+    }
     if (gen) {
-      const input = gen.parentElement.querySelector('input[name="barcodes"]');
+      const row = gen.closest(".barcode-row");
+      const input = row?.querySelector('input[name="barcodes"]');
       if (input) input.value = genCode();
     }
     if (add) {
@@ -7697,11 +7727,16 @@
       bal < 0
         ? `+${fmt(Math.abs(bal))} so‘m`
         : `${fmt(Math.abs(bal))} so‘m`;
-    return `<article class="sup-card cd-card ${bal > 0 ? "is-we-owe" : bal < 0 ? "is-credit" : ""}" data-id="${row.id}">
+    const tone = String(row.due_tone || "");
+    const dueLine = row.due_date_display
+      ? `<p class="cd-due ${esc(tone)}"><span class="cd-due-dot ${esc(tone)}"></span>Qaytarish: ${esc(row.due_date_display)}</p>`
+      : "";
+    return `<article class="sup-card cd-card ${bal > 0 ? "is-we-owe" : bal < 0 ? "is-credit" : ""}${tone ? ` tone-${esc(tone)}` : ""}" data-id="${row.id}">
       <div class="sup-card-head">
         <div>
-          <h4>${esc(row.name)}</h4>
+          <h4 class="cd-name-open" data-id="${row.id}" role="button" tabindex="0">${esc(row.name)}</h4>
           <p>${esc(row.phone || "Telefon yo‘q")}</p>
+          ${dueLine}
         </div>
         <div class="sup-bal ${bal > 0 ? "is-we-owe" : bal < 0 ? "is-credit" : "is-clear"}">${esc(balLabel)}</div>
       </div>
@@ -7789,6 +7824,13 @@
     document.getElementById("cd-form-name").value = "";
     document.getElementById("cd-form-phone").value = "";
     document.getElementById("cd-form-amount").value = "";
+    const dueEl = document.getElementById("cd-form-due");
+    if (dueEl) {
+      const t = new Date();
+      const m = String(t.getMonth() + 1).padStart(2, "0");
+      const d = String(t.getDate()).padStart(2, "0");
+      dueEl.value = `${t.getFullYear()}-${m}-${d}`;
+    }
     const wrap = document.getElementById("cd-form-amount-wrap");
     if (wrap) wrap.hidden = false;
     const err = document.getElementById("cd-form-error");
@@ -7809,7 +7851,13 @@
     active = row;
     activeId = row.id;
     document.getElementById("cd-detail-title").textContent = row.name;
-    document.getElementById("cd-detail-meta").textContent = row.phone || "Telefon yo‘q";
+    const dueTxt = row.due_date_display
+      ? ` · Qaytarish: ${row.due_date_display}`
+      : "";
+    document.getElementById("cd-detail-meta").textContent =
+      (row.phone || "Telefon yo‘q") + dueTxt;
+    const dueInp = document.getElementById("cd-adj-due");
+    if (dueInp) dueInp.value = row.due_date || "";
     const bal = document.getElementById("cd-detail-balance");
     const n = Number(row.balance) || 0;
     if (n < 0) {
@@ -7909,6 +7957,7 @@
         phone: document.getElementById("cd-form-phone").value,
         note: "",
         amount: document.getElementById("cd-form-amount").value,
+        due_date: document.getElementById("cd-form-due")?.value || "",
       });
       closeModal();
       await loadList();
@@ -7921,6 +7970,11 @@
   });
 
   listEl.addEventListener("click", (ev) => {
+    const nameBtn = ev.target.closest(".cd-name-open");
+    if (nameBtn) {
+      openDetail(nameBtn.getAttribute("data-id"));
+      return;
+    }
     const openBtn = ev.target.closest(".cd-open");
     if (openBtn) {
       openDetail(openBtn.getAttribute("data-id"));
@@ -7932,6 +7986,16 @@
         const kind = q.getAttribute("data-kind");
         const sel = document.getElementById("cd-adj-kind");
         if (sel && kind) sel.value = kind;
+        const dueInp = document.getElementById("cd-adj-due");
+        if (dueInp) {
+          dueInp.hidden = kind === "sub";
+          if (kind === "add" && !dueInp.value) {
+            const t = new Date();
+            const m = String(t.getMonth() + 1).padStart(2, "0");
+            const d0 = String(t.getDate()).padStart(2, "0");
+            dueInp.value = `${t.getFullYear()}-${m}-${d0}`;
+          }
+        }
         document.getElementById("cd-adj-amount")?.focus();
       });
     }
@@ -7952,6 +8016,10 @@
         amount,
         note: document.getElementById("cd-adj-note")?.value,
         send_sms: Boolean(document.getElementById("cd-adj-sms")?.checked),
+        due_date:
+          kind === "add"
+            ? document.getElementById("cd-adj-due")?.value || ""
+            : undefined,
       });
       if (msg) {
         msg.hidden = false;
