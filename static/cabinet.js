@@ -6845,6 +6845,7 @@
   const filterEl = document.getElementById("sv-stock-filter");
   const sortEl = document.getElementById("sv-sort");
   const kpisEl = document.getElementById("stock-value-kpis");
+  const exportBtn = document.getElementById("sv-export-btn");
 
   // Sotuv ustuni selling_price; qolgan (is_selling bo‘lmagan) ro‘yxatlar list_prices dan
   const getExtraLists = () => {
@@ -6873,17 +6874,16 @@
   const productSell = (p) =>
     Number(p.selling_price || p.price || p.sale_price || 0);
 
-  const paint = () => {
+  const collectRows = ({ applySearch = true, applyFilter = true } = {}) => {
     const products = Array.isArray(data.products) ? data.products : [];
     const extraLists = getExtraLists();
-    const q = String(searchEl?.value || "")
-      .trim()
-      .toLowerCase();
-    const mode = filterEl?.value || "all";
-    const loading = !data.catalogComplete && products.length > 0;
-    const expected = Number(data.catalogCount || 0);
+    const q = applySearch
+      ? String(searchEl?.value || "")
+          .trim()
+          .toLowerCase()
+      : "";
+    const mode = applyFilter ? filterEl?.value || "all" : "all";
 
-    // KPI: qidiruv/filtrsiz — barcha ombor (qoldiq × API narxi)
     let whCount = 0;
     let whQty = 0;
     let whCost = 0;
@@ -6920,6 +6920,9 @@
       if (!matchesFilter(qty, mode)) return;
       const name = String(p.name || "");
       const barcode = String(p.barcode || "");
+      const unit = String(p.unit || "");
+      const category = String(p.category || "");
+      const brand = String(p.brand || "");
       if (
         q &&
         !name.toLowerCase().includes(q) &&
@@ -6934,9 +6937,9 @@
       const listVals = {};
       extraLists.forEach((pl) => {
         const id = String(pl.id);
-        const unit = listPrice(p, id);
-        const val = qty * unit;
-        listVals[id] = { unit, val };
+        const unitPrice = listPrice(p, id);
+        const val = qty * unitPrice;
+        listVals[id] = { unit: unitPrice, val };
         sumLists[id] += val;
       });
       sumQty += qty;
@@ -6945,6 +6948,9 @@
       rows.push({
         name,
         barcode,
+        unit,
+        category,
+        brand,
         qty,
         cost,
         sell,
@@ -6964,6 +6970,43 @@
       if (sortKey === "name_asc") return String(a.name).localeCompare(String(b.name), "uz");
       return b.costVal - a.costVal;
     });
+
+    return {
+      products,
+      extraLists,
+      rows,
+      whCount,
+      whQty,
+      whCost,
+      whSell,
+      whLists,
+      sumQty,
+      sumCost,
+      sumSell,
+      sumLists,
+      loading: !data.catalogComplete && products.length > 0,
+      expected: Number(data.catalogCount || 0),
+    };
+  };
+
+  const paint = () => {
+    const pack = collectRows({ applySearch: true, applyFilter: true });
+    const {
+      extraLists,
+      rows,
+      whCount,
+      whQty,
+      whCost,
+      whSell,
+      whLists,
+      sumQty,
+      sumCost,
+      sumSell,
+      sumLists,
+      loading,
+      expected,
+      products,
+    } = pack;
 
     const countEl = document.getElementById("sv-count");
     const qtyEl = document.getElementById("sv-qty");
@@ -7123,9 +7166,131 @@
     }
   };
 
+  const downloadStockValueExcel = async () => {
+    if (typeof XLSX === "undefined") {
+      alert("Excel kutubxonasi yuklanmadi. Sahifani yangilang.");
+      return;
+    }
+    if (exportBtn) {
+      exportBtn.disabled = true;
+      exportBtn.classList.add("is-busy");
+    }
+    try {
+      if (typeof window.tezposEnsureCatalog === "function") {
+        try {
+          await window.tezposEnsureCatalog({ force: false });
+        } catch (_e) {
+          /* mavjud katalogdan yozamiz */
+        }
+      }
+      // Excel: filtr/qidiruvsiz — butun ombor
+      const pack = collectRows({ applySearch: false, applyFilter: false });
+      if (!pack.rows.length) {
+        alert("Yuklash uchun mahsulot yo‘q. Katalog yuklanguncha kuting.");
+        return;
+      }
+      const headers = [
+        "№",
+        "Mahsulot",
+        "Shtrixkod",
+        "Bo‘lim",
+        "Brend",
+        "Birlik",
+        "Qoldiq",
+        "Tannarx",
+        "Tannarx jami",
+        "Sotuv narxi",
+        "Sotuv jami",
+      ];
+      pack.extraLists.forEach((pl) => {
+        headers.push(String(pl.name || "Narx"));
+        headers.push(String(pl.name || "Narx") + " jami");
+      });
+      const body = pack.rows.map((r, i) => {
+        const row = [
+          i + 1,
+          r.name,
+          r.barcode,
+          r.category,
+          r.brand,
+          r.unit || "dona",
+          Math.round(r.qty),
+          Math.round(r.cost),
+          Math.round(r.costVal),
+          Math.round(r.sell),
+          Math.round(r.sellVal),
+        ];
+        pack.extraLists.forEach((pl) => {
+          const id = String(pl.id);
+          const lv = r.listVals[id] || { unit: 0, val: 0 };
+          row.push(Math.round(lv.unit));
+          row.push(Math.round(lv.val));
+        });
+        return row;
+      });
+      const totalRow = [
+        "",
+        "JAMI",
+        "",
+        "",
+        "",
+        "",
+        Math.round(pack.sumQty),
+        "",
+        Math.round(pack.sumCost),
+        "",
+        Math.round(pack.sumSell),
+      ];
+      pack.extraLists.forEach((pl) => {
+        const id = String(pl.id);
+        totalRow.push("");
+        totalRow.push(Math.round(pack.sumLists[id] || 0));
+      });
+      const summary = [
+        ["Ombor qiymati"],
+        ["Tovarlar", pack.whCount],
+        ["Jami qoldiq", Math.round(pack.whQty)],
+        ["Tannarx jami", Math.round(pack.whCost)],
+        ["Sotuv jami", Math.round(pack.whSell)],
+        ["Farq (sotuv − tannarx)", Math.round(pack.whSell - pack.whCost)],
+      ];
+      pack.extraLists.forEach((pl) => {
+        summary.push([
+          String(pl.name || "Narx") + " jami",
+          Math.round(pack.whLists[String(pl.id)] || 0),
+        ]);
+      });
+      summary.push([]);
+      summary.push(["Sana", new Date().toLocaleString("uz-UZ")]);
+
+      const wsSummary = XLSX.utils.aoa_to_sheet(summary);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...body, totalRow]);
+      ws["!cols"] = headers.map((h, idx) => {
+        if (idx === 1) return { wch: 36 };
+        if (idx === 2) return { wch: 16 };
+        return { wch: Math.min(18, Math.max(10, String(h).length + 2)) };
+      });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Ombor qiymati");
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Jami");
+      const stamp = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `ombor_qiymati_${stamp}.xlsx`);
+    } catch (err) {
+      alert("Excel yuklanmadi: " + (err?.message || err));
+    } finally {
+      if (exportBtn) {
+        exportBtn.disabled = false;
+        exportBtn.classList.remove("is-busy");
+      }
+    }
+  };
+
   searchEl?.addEventListener("input", paint);
   filterEl?.addEventListener("change", paint);
   sortEl?.addEventListener("change", paint);
+  exportBtn?.addEventListener("click", () => {
+    downloadStockValueExcel();
+  });
   document.addEventListener("tezpos:catalog", paint);
   paint();
 })();

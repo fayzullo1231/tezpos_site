@@ -1346,6 +1346,10 @@
           <h3>Ombor qiymati</h3>
           <p class="cabinet-hint">Tannarx jami = barcha ombor qoldig‘i × TezPOS sotib olish narxi. Sotuv jami va narx ro‘yxatlari ham shu qoldiqdan. Farq = sotuv jami − tannarx jami (katalog to‘liq yuklangach).</p>
         </div>
+        <button type="button" class="btn-export" id="sv-export-btn" title="Barcha mahsulotlar qoldig‘i va qiymatini Excelga yuklash">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 3v10.2l3.2-3.2 1.4 1.4L12 17l-4.6-4.6 1.4-1.4L11 13.2V3h1zM5 19h14v2H5v-2z"/></svg>
+          Excel yuklash
+        </button>
       </div>
       <div class="debtors-kpis" id="stock-value-kpis">
         <div class="debtors-kpi"><span>Tovarlar</span><strong id="sv-count">—</strong></div>
@@ -1802,7 +1806,7 @@
 {% if section == 'overview' or section == 'reports' or section == 'tops' %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 {% endif %}
-{% if section == 'products' or section == 'inventory' or section == 'labels' %}
+{% if section == 'products' or section == 'inventory' or section == 'labels' or section == 'stock_value' %}
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 {% endif %}
 <script>
@@ -1923,5 +1927,5 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20260320-barcode-img2" defer></script>
+<script src="/static/cabinet.js?v=20260326-stock-xlsx" defer></script>
 {% endblock %}
