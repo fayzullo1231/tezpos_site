@@ -7200,7 +7200,6 @@
         "Tannarx",
         "Tannarx jami",
         "Sotuv narxi",
-        "Sotuv jami",
       ];
       pack.extraLists.forEach((pl) => {
         headers.push(String(pl.name || "Narx"));
@@ -7218,7 +7217,6 @@
           Math.round(r.cost),
           Math.round(r.costVal),
           Math.round(r.sell),
-          Math.round(r.sellVal),
         ];
         pack.extraLists.forEach((pl) => {
           const id = String(pl.id);
@@ -7239,7 +7237,6 @@
         "",
         Math.round(pack.sumCost),
         "",
-        Math.round(pack.sumSell),
       ];
       pack.extraLists.forEach((pl) => {
         const id = String(pl.id);
@@ -7251,8 +7248,6 @@
         ["Tovarlar", pack.whCount],
         ["Jami qoldiq", Math.round(pack.whQty)],
         ["Tannarx jami", Math.round(pack.whCost)],
-        ["Sotuv jami", Math.round(pack.whSell)],
-        ["Farq (sotuv − tannarx)", Math.round(pack.whSell - pack.whCost)],
       ];
       pack.extraLists.forEach((pl) => {
         summary.push([
