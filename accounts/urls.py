@@ -8,6 +8,7 @@ from .client_debts import (
     cabinet_client_debtor_delete,
     cabinet_client_debtor_save,
     cabinet_client_debts,
+    cabinet_client_debts_calendar,
     cabinet_sms_template,
     cabinet_sms_template_save,
 )
@@ -86,6 +87,7 @@ urlpatterns = [
     path("cabinet/debtors/", cabinet_debtors, name="cabinet_debtors"),
     path("cabinet/debtors/pay/", cabinet_debtor_pay, name="cabinet_debtor_pay"),
     path("cabinet/client-debts/", cabinet_client_debts, name="cabinet_client_debts"),
+    path("cabinet/client-debts/calendar/", cabinet_client_debts_calendar, name="cabinet_client_debts_calendar"),
     path("cabinet/client-debts/save/", cabinet_client_debtor_save, name="cabinet_client_debtor_save"),
     path("cabinet/client-debts/delete/", cabinet_client_debtor_delete, name="cabinet_client_debtor_delete"),
     path("cabinet/client-debts/adjust/", cabinet_client_debt_adjust, name="cabinet_client_debt_adjust"),

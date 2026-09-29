@@ -469,6 +469,84 @@ def cabinet_client_debts(request):
 
 
 @login_required
+@require_GET
+def cabinet_client_debts_calendar(request):
+    shop = _shop(request)
+    base = ClientDebtorLedger.objects.filter(
+        debtor__shop_key=shop, debtor__is_active=True
+    )
+
+    day_raw = (request.GET.get("date") or "").strip()
+    if day_raw:
+        try:
+            day = datetime.strptime(day_raw, "%Y-%m-%d").date()
+        except ValueError:
+            return JsonResponse({"error": "Sana noto‘g‘ri"}, status=400)
+        entries = base.filter(created_at__date=day).select_related("debtor").order_by(
+            "-created_at", "-id"
+        )
+        out = []
+        add_sum = Decimal("0")
+        sub_sum = Decimal("0")
+        for e in entries:
+            item = _serialize_ledger(e)
+            item["debtor_id"] = e.debtor_id
+            item["debtor_name"] = e.debtor.name
+            item["time_display"] = timezone.localtime(e.created_at).strftime("%H:%M")
+            out.append(item)
+            if e.kind == ClientDebtorLedger.KIND_ADD:
+                add_sum += e.amount
+            else:
+                sub_sum += e.amount
+        return JsonResponse(
+            {
+                "ok": True,
+                "date": day.isoformat(),
+                "date_display": day.strftime("%d.%m.%Y"),
+                "count": len(out),
+                "add_total": float(add_sum),
+                "sub_total": float(sub_sum),
+                "entries": out,
+            }
+        )
+
+    month_raw = (request.GET.get("month") or "").strip()
+    try:
+        first = datetime.strptime(month_raw, "%Y-%m").date() if month_raw else None
+    except ValueError:
+        first = None
+    if first is None:
+        first = timezone.localdate().replace(day=1)
+    if first.month == 12:
+        nxt = first.replace(year=first.year + 1, month=1)
+    else:
+        nxt = first.replace(month=first.month + 1)
+
+    days: dict[str, dict] = {}
+    for e in base.filter(created_at__date__gte=first, created_at__date__lt=nxt).only(
+        "kind", "amount", "created_at"
+    ):
+        key = timezone.localtime(e.created_at).date().isoformat()
+        d = days.setdefault(key, {"count": 0, "add": 0, "sub": 0, "add_total": 0.0, "sub_total": 0.0})
+        d["count"] += 1
+        if e.kind == ClientDebtorLedger.KIND_ADD:
+            d["add"] += 1
+            d["add_total"] += float(e.amount)
+        else:
+            d["sub"] += 1
+            d["sub_total"] += float(e.amount)
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "month": first.strftime("%Y-%m"),
+            "days": days,
+            "total_count": sum(d["count"] for d in days.values()),
+        }
+    )
+
+
+@login_required
 @require_POST
 def cabinet_client_debtor_save(request):
     shop = _shop(request)

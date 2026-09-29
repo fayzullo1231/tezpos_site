@@ -1245,7 +1245,27 @@
       </label>
       <div class="sup-tabs" role="tablist">
         <button type="button" class="sup-tab is-active" data-cd-tab="list">Ro‘yxat</button>
+        <button type="button" class="sup-tab" data-cd-tab="calendar">Kalendar</button>
         <button type="button" class="sup-tab" data-cd-tab="sms">Shablon</button>
+      </div>
+      <div id="cd-cal-wrap" class="cd-cal" hidden>
+        <div class="cd-cal-head">
+          <button type="button" class="btn-soft cd-cal-nav" id="cd-cal-prev" aria-label="Oldingi oy">‹</button>
+          <strong id="cd-cal-title">—</strong>
+          <button type="button" class="btn-soft cd-cal-nav" id="cd-cal-next" aria-label="Keyingi oy">›</button>
+          <span class="cd-cal-total" id="cd-cal-total"></span>
+        </div>
+        <div class="cd-cal-grid" id="cd-cal-grid"></div>
+        <div class="cd-cal-day" id="cd-cal-day" hidden>
+          <div class="cd-cal-day-head">
+            <h4 id="cd-cal-day-title">—</h4>
+            <div class="cd-cal-day-sums">
+              <span class="is-add" id="cd-cal-day-add"></span>
+              <span class="is-sub" id="cd-cal-day-sub"></span>
+            </div>
+          </div>
+          <div class="sup-timeline" id="cd-cal-day-list"></div>
+        </div>
       </div>
       <div id="cd-list-wrap">
         <div class="debtors-list" id="cd-list">
@@ -1848,6 +1868,7 @@
     debtorsUrl: "{% url 'accounts:cabinet_debtors' %}",
     debtorPayUrl: "{% url 'accounts:cabinet_debtor_pay' %}",
     clientDebtsUrl: "{% url 'accounts:cabinet_client_debts' %}",
+    clientDebtsCalendarUrl: "{% url 'accounts:cabinet_client_debts_calendar' %}",
     clientDebtorSaveUrl: "{% url 'accounts:cabinet_client_debtor_save' %}",
     clientDebtorDeleteUrl: "{% url 'accounts:cabinet_client_debtor_delete' %}",
     clientDebtAdjustUrl: "{% url 'accounts:cabinet_client_debt_adjust' %}",

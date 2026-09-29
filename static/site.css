@@ -4542,6 +4542,58 @@ body.cabinet-body {
 .cd-due.red, .cd-due-dot.red { color: #b91c1c; }
 .cd-due-dot.red { background: #dc2626; }
 .cd-due.red { background: transparent; }
+
+/* Qarzdorlar kalendari */
+.cd-cal { display: grid; gap: .9rem; }
+.cd-cal-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .6rem;
+}
+.cd-cal-head strong { color: #002048; font-size: 1.05rem; min-width: 130px; text-align: center; }
+.cd-cal-nav { padding: .35rem .8rem; font-size: 1.1rem; line-height: 1; }
+.cd-cal-total { margin-left: auto; color: #5b6b85; font-size: .85rem; font-weight: 600; }
+.cd-cal-grid {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .35rem;
+}
+.cd-cal-dow {
+  text-align: center; font-size: .72rem; font-weight: 700; color: #8b97ab;
+  text-transform: uppercase; padding: .2rem 0;
+}
+.cd-cal-cell {
+  display: flex; flex-direction: column; align-items: flex-start; gap: .15rem;
+  min-height: 68px; padding: .4rem .45rem; border-radius: 10px;
+  border: 1px solid #e2e8f2; background: #fff; font: inherit; text-align: left;
+  cursor: pointer; color: #002048;
+}
+.cd-cal-cell.is-pad { border: 0; background: transparent; cursor: default; }
+.cd-cal-cell:hover:not(.is-pad) { border-color: #93b4e0; background: #f4f8fd; }
+.cd-cal-cell.has-tx { background: #eef5ff; border-color: #bfd4f2; }
+.cd-cal-cell.is-today { box-shadow: inset 0 0 0 2px #2c86e0; }
+.cd-cal-cell.is-selected { background: #2c86e0; border-color: #2c86e0; color: #fff; }
+.cd-cal-num { font-weight: 700; font-size: .9rem; }
+.cd-cal-count { font-size: .78rem; font-weight: 800; }
+.cd-cal-mini { display: flex; gap: .3rem; font-size: .7rem; font-weight: 700; }
+.cd-cal-mini i { font-style: normal; }
+.cd-cal-mini .is-add { color: #dc2626; }
+.cd-cal-mini .is-sub { color: #16a34a; }
+.cd-cal-cell.is-selected .cd-cal-mini i { color: #fff; }
+.cd-cal-day {
+  border: 1px solid #e2e8f2; border-radius: 14px; padding: .85rem 1rem; background: #fafbfd;
+  display: grid; gap: .6rem;
+}
+.cd-cal-day-head {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .5rem;
+}
+.cd-cal-day-head h4 { margin: 0; color: #002048; font-size: 1rem; }
+.cd-cal-day-sums { display: flex; flex-wrap: wrap; gap: .75rem; font-size: .85rem; font-weight: 700; }
+.cd-cal-day-sums .is-add { color: #dc2626; }
+.cd-cal-day-sums .is-sub { color: #16a34a; }
+.cd-cal-day .cd-name-open { cursor: pointer; color: #1d4ed8; }
+@media (max-width: 640px) {
+  .cd-cal-cell { min-height: 54px; padding: .3rem; }
+  .cd-cal-mini { display: none; }
+  .cd-cal-count { font-size: .68rem; }
+  .cd-cal-total { margin-left: 0; width: 100%; }
+}
 #cd-adj-due {
   min-width: 9.5rem;
   height: 2.5rem;

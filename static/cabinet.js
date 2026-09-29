@@ -8281,6 +8281,134 @@
     el.addEventListener("click", closeDetail)
   );
 
+  const calWrap = document.getElementById("cd-cal-wrap");
+  const calGrid = document.getElementById("cd-cal-grid");
+  const calTitle = document.getElementById("cd-cal-title");
+  const calTotal = document.getElementById("cd-cal-total");
+  const calDay = document.getElementById("cd-cal-day");
+  const monthNames = [
+    "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
+    "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr",
+  ];
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const isoDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  let calMonth = new Date();
+  calMonth.setDate(1);
+  let calDays = {};
+  let calSelected = "";
+
+  const paintCalendar = () => {
+    if (!calGrid) return;
+    const y = calMonth.getFullYear();
+    const m = calMonth.getMonth();
+    if (calTitle) calTitle.textContent = `${monthNames[m]} ${y}`;
+    const firstDow = (new Date(y, m, 1).getDay() + 6) % 7;
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const today = isoDay(new Date());
+    const cells = ["Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya"].map(
+      (d) => `<div class="cd-cal-dow">${d}</div>`
+    );
+    for (let i = 0; i < firstDow; i += 1) cells.push('<div class="cd-cal-cell is-pad"></div>');
+    for (let d = 1; d <= daysInMonth; d += 1) {
+      const key = `${y}-${pad2(m + 1)}-${pad2(d)}`;
+      const info = calDays[key];
+      const cls = [
+        "cd-cal-cell",
+        info ? "has-tx" : "",
+        key === today ? "is-today" : "",
+        key === calSelected ? "is-selected" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const badge = info
+        ? `<span class="cd-cal-count">${info.count} ta</span>
+           <span class="cd-cal-mini">${info.add ? `<i class="is-add">+${info.add}</i>` : ""}${info.sub ? `<i class="is-sub">−${info.sub}</i>` : ""}</span>`
+        : "";
+      cells.push(
+        `<button type="button" class="${cls}" data-cal-day="${key}"><span class="cd-cal-num">${d}</span>${badge}</button>`
+      );
+    }
+    calGrid.innerHTML = cells.join("");
+  };
+
+  const loadCalendar = async () => {
+    if (!data.clientDebtsCalendarUrl) return;
+    const key = `${calMonth.getFullYear()}-${pad2(calMonth.getMonth() + 1)}`;
+    try {
+      const res = await fetch(`${data.clientDebtsCalendarUrl}?month=${key}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Yuklanmadi");
+      calDays = json.days || {};
+      if (calTotal) calTotal.textContent = `Oy bo‘yicha: ${json.total_count || 0} ta tranzaksiya`;
+    } catch (e) {
+      calDays = {};
+      if (calTotal) calTotal.textContent = e.message || "Yuklanmadi";
+    }
+    paintCalendar();
+  };
+
+  const loadCalendarDay = async (day) => {
+    if (!data.clientDebtsCalendarUrl || !calDay) return;
+    calSelected = day;
+    paintCalendar();
+    const listBox = document.getElementById("cd-cal-day-list");
+    calDay.hidden = false;
+    if (listBox) listBox.innerHTML = '<p class="cabinet-hint">Yuklanmoqda…</p>';
+    try {
+      const res = await fetch(`${data.clientDebtsCalendarUrl}?date=${day}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Yuklanmadi");
+      document.getElementById("cd-cal-day-title").textContent =
+        `${json.date_display} — ${json.count} ta tranzaksiya`;
+      document.getElementById("cd-cal-day-add").textContent =
+        `Qarz qo‘shildi: ${fmt(json.add_total)} so‘m`;
+      document.getElementById("cd-cal-day-sub").textContent =
+        `To‘lov: ${fmt(json.sub_total)} so‘m`;
+      const entries = json.entries || [];
+      listBox.innerHTML = entries.length
+        ? entries
+            .map((e) => {
+              const tone = e.tone || "red";
+              const sms = e.sms_sent ? " · SMS" : "";
+              return `<article class="sup-tl-item is-${esc(tone)}">
+                <span class="sup-tl-dot"></span>
+                <div>
+                  <h5><span class="cd-name-open" data-id="${e.debtor_id}" role="button" tabindex="0">${esc(e.debtor_name)}</span> · ${esc(e.kind_label)}${sms}</h5>
+                  <p>${esc(e.time_display)}${e.note ? ` · ${esc(e.note)}` : ""}${e.created_by ? ` · ${esc(e.created_by)}` : ""}</p>
+                </div>
+                <div class="sup-tl-amt">${esc(e.amount_display)} so‘m</div>
+              </article>`;
+            })
+            .join("")
+        : '<p class="cabinet-hint">Bu kunda tranzaksiya yo‘q.</p>';
+    } catch (e) {
+      if (listBox) listBox.innerHTML = `<p class="cabinet-hint">${esc(e.message || "Yuklanmadi")}</p>`;
+    }
+  };
+
+  calGrid?.addEventListener("click", (ev) => {
+    const cell = ev.target.closest("[data-cal-day]");
+    if (cell) loadCalendarDay(cell.getAttribute("data-cal-day"));
+  });
+  calDay?.addEventListener("click", (ev) => {
+    const name = ev.target.closest(".cd-name-open");
+    if (name) openDetail(name.getAttribute("data-id"));
+  });
+  const shiftMonth = (delta) => {
+    calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + delta, 1);
+    calSelected = "";
+    if (calDay) calDay.hidden = true;
+    loadCalendar();
+  };
+  document.getElementById("cd-cal-prev")?.addEventListener("click", () => shiftMonth(-1));
+  document.getElementById("cd-cal-next")?.addEventListener("click", () => shiftMonth(1));
+
   document.querySelectorAll("[data-cd-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("[data-cd-tab]").forEach((b) => b.classList.remove("is-active"));
@@ -8288,7 +8416,12 @@
       const tab = btn.getAttribute("data-cd-tab");
       if (listWrap) listWrap.hidden = tab !== "list";
       if (smsWrap) smsWrap.hidden = tab !== "sms";
+      if (calWrap) calWrap.hidden = tab !== "calendar";
       if (tab === "sms") loadSms();
+      if (tab === "calendar") {
+        loadCalendar();
+        if (calSelected) loadCalendarDay(calSelected);
+      }
     });
   });
 
