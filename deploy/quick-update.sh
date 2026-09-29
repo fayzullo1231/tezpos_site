@@ -20,5 +20,13 @@ python manage.py collectstatic --noinput
 
 systemctl restart tezpos-site
 systemctl --no-pager is-active tezpos-site
+
+if [ -f deploy/tezpos-debt-listener.service ]; then
+  cp deploy/tezpos-debt-listener.service /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable tezpos-debt-listener >/dev/null 2>&1 || true
+  systemctl restart tezpos-debt-listener
+  systemctl --no-pager is-active tezpos-debt-listener || true
+fi
 git rev-parse --short HEAD
 echo "OK: yangilandi"

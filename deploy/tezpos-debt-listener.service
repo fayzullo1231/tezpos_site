@@ -1,0 +1,17 @@
+[Unit]
+Description=TezPOS qarz guruhi: /qarz buyrug'iga javob (Telethon)
+After=network.target tezpos-site.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/tezpos_site
+EnvironmentFile=/opt/tezpos_site/.env
+ExecStart=/opt/tezpos_site/.venv/bin/python /opt/tezpos_site/manage.py debt_group_listener
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
