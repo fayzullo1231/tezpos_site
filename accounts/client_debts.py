@@ -40,24 +40,15 @@ def _group_notice_text(debtor: ClientDebtor, entry: ClientDebtorLedger, bal) -> 
         b = Decimal(str(bal or 0))
     except (InvalidOperation, TypeError, ValueError):
         b = Decimal("0")
-    if b > 0:
-        bal_line = f"💰 Qoldiq qarz: <b>{_fmt_money(b)} so‘m</b>"
-    elif b < 0:
-        bal_line = f"💚 Qoldiq: <b>+{_fmt_money(abs(b))} so‘m</b> (ortiqcha to‘lov)"
+    if b < 0:
+        bal_line = f"Qoldiq: +{_fmt_money(abs(b))} so‘m"
     else:
-        bal_line = "✅ Qoldiq: <b>0 so‘m</b> — qarz yopildi"
-    head = (
-        f"🔴 Qarz qo‘shildi: <b>{amt} so‘m</b>"
-        if add
-        else f"🟢 To‘lov (qarz ayirildi): <b>{amt} so‘m</b>"
-    )
-    lines = [f"👤 <b>{esc(debtor.name)}</b>", head, bal_line]
+        bal_line = f"Qoldiq: {_fmt_money(b)} so‘m"
+    head = f"Qarz: {amt} so‘m" if add else f"To‘lov: {amt} so‘m"
+    lines = [f"<b>{esc(debtor.name)}</b>", head, bal_line]
     if (entry.note or "").strip():
-        lines.append(f"📝 {esc(entry.note.strip())}")
-    meta = _fmt_dt(entry.created_at)
-    if entry.created_by:
-        meta += f" · {esc(entry.created_by)}"
-    lines.append(f"🕒 {meta}")
+        lines.append(f"Izoh: {esc(entry.note.strip())}")
+    lines.append(_fmt_dt(entry.created_at))
     return "\n".join(lines)
 
 
@@ -886,7 +877,7 @@ def cabinet_client_debts_telegram_group(request):
     label = _canonical_shop_label(tpl.shop_label or tenant.business_name or "TezPOS")
     test = send_group_message(
         link,
-        f"✅ <b>{html.escape(label)}</b>\n"
+        f"<b>{html.escape(label)}</b>\n"
         "Qarz qo‘shilganda va ayirilganda xabarlar shu guruhga yuboriladi.",
     )
     if not test.get("ok"):
