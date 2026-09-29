@@ -4545,6 +4545,10 @@ body.cabinet-body {
 
 /* Qarzdorlar kalendari */
 .cd-cal { display: grid; gap: .9rem; }
+.cd-cal[hidden] { display: none; }
+.cd-tg-form { margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e2e8f2; }
+.cd-tg-msg.is-ok { color: #15803d; }
+.cd-tg-msg.is-err { color: #b91c1c; }
 .cd-cal-day {
   border: 1px solid #e2e8f2; border-radius: 14px; padding: .85rem 1rem; background: #fafbfd;
   display: grid; gap: .7rem;

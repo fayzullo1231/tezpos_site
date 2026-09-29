@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import queue
 import random
 import re
+import threading
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -627,6 +629,115 @@ def send_text_by_phone(
     except Exception as exc:
         logger.exception("send_text_by_phone failed")
         return {"ok": False, "error": str(exc)[:200], "channel": "telegram"}
+
+
+_GROUP_LINK_PRIVATE = re.compile(
+    r"^(?:https?://)?(?:www\.)?t(?:elegram)?\.me/c/(\d+)(?:/(\d+))?(?:/(\d+))?/?(?:\?.*)?$",
+    re.IGNORECASE,
+)
+_GROUP_LINK_PUBLIC = re.compile(
+    r"^(?:https?://)?(?:www\.)?t(?:elegram)?\.me/([A-Za-z][A-Za-z0-9_]{3,})(?:/(\d+))?(?:/(\d+))?/?(?:\?.*)?$",
+    re.IGNORECASE,
+)
+_RESERVED_TG_PATHS = {"c", "s", "joinchat", "share", "addstickers", "proxy", "socks", "iv"}
+
+
+def parse_group_link(link: str) -> dict | None:
+    """
+    https://t.me/c/4446533637/3 → {"chat": 4446533637, "topic": 3, ...}
+    https://t.me/guruh/5       → {"chat": "guruh", "topic": 5, ...}
+    """
+    s = (link or "").strip()
+    m = _GROUP_LINK_PRIVATE.match(s)
+    if m:
+        cid, a, _b = m.groups()
+        topic = int(a) if a else None
+        norm = f"https://t.me/c/{cid}" + (f"/{topic}" if topic else "")
+        return {"chat": int(cid), "topic": topic, "normalized": norm}
+    m = _GROUP_LINK_PUBLIC.match(s)
+    if m:
+        username, a, _b = m.groups()
+        if username.lower() in _RESERVED_TG_PATHS:
+            return None
+        topic = int(a) if a else None
+        norm = f"https://t.me/{username}" + (f"/{topic}" if topic else "")
+        return {"chat": username, "topic": topic, "normalized": norm}
+    return None
+
+
+async def _send_group_async(link: str, text: str) -> dict[str, Any]:
+    info = parse_group_link(link)
+    if not info:
+        return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
+    from telethon.tl.types import PeerChannel
+
+    client = await _client()
+    try:
+        target = PeerChannel(info["chat"]) if isinstance(info["chat"], int) else info["chat"]
+        try:
+            entity = await client.get_entity(target)
+        except ValueError:
+            # Session keshida yo‘q — dialoglarni yuklab qayta urinamiz
+            await client.get_dialogs(limit=500)
+            entity = await client.get_entity(target)
+        kwargs: dict[str, Any] = {"parse_mode": "html", "link_preview": False}
+        if info["topic"] and getattr(entity, "forum", False):
+            kwargs["reply_to"] = info["topic"]
+        msg = await client.send_message(entity, text, **kwargs)
+        return {
+            "ok": True,
+            "message_id": getattr(msg, "id", None),
+            "title": getattr(entity, "title", "") or "",
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200]}
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+def send_group_message(link: str, text: str, *, timeout: int = 60) -> dict[str, Any]:
+    if not telethon_configured():
+        return {"ok": False, "error": "Telethon sozlanmagan"}
+    if not (text or "").strip():
+        return {"ok": False, "error": "Matn bo‘sh"}
+    try:
+        return _run(_send_group_async(link, text), timeout=timeout)
+    except Exception as exc:
+        logger.exception("send_group_message failed")
+        return {"ok": False, "error": str(exc)[:200]}
+
+
+_group_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+_group_worker: threading.Thread | None = None
+_group_lock = threading.Lock()
+
+
+def _group_loop() -> None:
+    while True:
+        link, text = _group_queue.get()
+        try:
+            res = send_group_message(link, text)
+            if not res.get("ok"):
+                logger.warning("Guruhga qarz xabari yuborilmadi link=%s err=%s", link, res.get("error"))
+        except Exception:
+            logger.exception("Guruhga qarz xabari xato")
+        finally:
+            _group_queue.task_done()
+
+
+def enqueue_group_message(link: str, text: str) -> None:
+    """Javobni kutmasdan fon oqimida ketma-ket yuboradi."""
+    global _group_worker
+    _group_queue.put((link, text))
+    with _group_lock:
+        if _group_worker is None or not _group_worker.is_alive():
+            _group_worker = threading.Thread(
+                target=_group_loop, name="tg-group-notify", daemon=True
+            )
+            _group_worker.start()
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:

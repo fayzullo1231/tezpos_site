@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -21,7 +22,62 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from . import devsms, tezpos_api
 from .auth_views import SESSION_DISPLAY, SESSION_SERVER
 from .models import ClientDebtor, ClientDebtorLedger, DebtSmsTemplate, TenantProfile
-from .telethon_debt import ensure_telegram_resolved, send_text_by_phone, telethon_configured
+from .telethon_debt import (
+    enqueue_group_message,
+    ensure_telegram_resolved,
+    parse_group_link,
+    send_group_message,
+    send_text_by_phone,
+    telethon_configured,
+)
+
+
+def _group_notice_text(debtor: ClientDebtor, entry: ClientDebtorLedger, bal) -> str:
+    esc = html.escape
+    add = entry.kind == ClientDebtorLedger.KIND_ADD
+    amt = _fmt_money(abs(entry.amount))
+    try:
+        b = Decimal(str(bal or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        b = Decimal("0")
+    if b > 0:
+        bal_line = f"💰 Qoldiq qarz: <b>{_fmt_money(b)} so‘m</b>"
+    elif b < 0:
+        bal_line = f"💚 Qoldiq: <b>+{_fmt_money(abs(b))} so‘m</b> (ortiqcha to‘lov)"
+    else:
+        bal_line = "✅ Qoldiq: <b>0 so‘m</b> — qarz yopildi"
+    head = (
+        f"🔴 Qarz qo‘shildi: <b>{amt} so‘m</b>"
+        if add
+        else f"🟢 To‘lov (qarz ayirildi): <b>{amt} so‘m</b>"
+    )
+    lines = [f"👤 <b>{esc(debtor.name)}</b>", head, bal_line]
+    if (entry.note or "").strip():
+        lines.append(f"📝 {esc(entry.note.strip())}")
+    meta = _fmt_dt(entry.created_at)
+    if entry.created_by:
+        meta += f" · {esc(entry.created_by)}"
+    lines.append(f"🕒 {meta}")
+    return "\n".join(lines)
+
+
+def _notify_group(shop: str, debtor: ClientDebtor, entry: ClientDebtorLedger | None) -> None:
+    """Qarz qo‘shilsa/ayirilsa — Shablonda saqlangan Telegram guruhga."""
+    if entry is None:
+        return
+    try:
+        link = (
+            DebtSmsTemplate.objects.filter(shop_key=shop)
+            .values_list("telegram_group_link", flat=True)
+            .first()
+            or ""
+        ).strip()
+        if not link or not parse_group_link(link) or not telethon_configured():
+            return
+        text = _group_notice_text(debtor, entry, debtor.balance())
+        transaction.on_commit(lambda: enqueue_group_message(link, text))
+    except Exception:
+        pass
 
 
 def _maybe_resolve_telegram(row: ClientDebtor) -> None:
@@ -408,14 +464,16 @@ def _list_payload(shop: str) -> dict:
     }
 
 
-def _apply_balance_target(row: ClientDebtor, target: Decimal, *, who: str, note: str = "") -> None:
+def _apply_balance_target(
+    row: ClientDebtor, target: Decimal, *, who: str, note: str = ""
+) -> ClientDebtorLedger | None:
     cur = row.balance()
     diff = (target - cur).quantize(Decimal("0.01"))
     if diff == 0:
-        return
+        return None
     kind = ClientDebtorLedger.KIND_ADD if diff > 0 else ClientDebtorLedger.KIND_SUB
     amt = abs(diff)
-    ClientDebtorLedger.objects.create(
+    return ClientDebtorLedger.objects.create(
         debtor=row,
         kind=kind,
         amount=amt,
@@ -444,6 +502,7 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
         "preview": preview,
         "preview_credit": preview_credit,
         "placeholders": ["{shop}", "{amount}", "{balance}", "{check_link}"],
+        "telegram_group_link": row.telegram_group_link or "",
     }
 
 
@@ -610,7 +669,7 @@ def cabinet_client_debtor_save(request):
     # Ixtiyoriy: birinchi qarz summasi
     amount = _dec(body.get("amount"))
     if amount > 0 and not sid:
-        ClientDebtorLedger.objects.create(
+        first = ClientDebtorLedger.objects.create(
             debtor=row,
             kind=ClientDebtorLedger.KIND_ADD,
             amount=amount,
@@ -618,10 +677,11 @@ def cabinet_client_debtor_save(request):
             note=note,
             created_by=str(who)[:180],
         )
+        _notify_group(shop, row, first)
 
     if "debt" in body or "balance" in body:
         target = _dec(body.get("debt", body.get("balance")))
-        _apply_balance_target(row, target, who=who)
+        _notify_group(shop, row, _apply_balance_target(row, target, who=who))
 
     _apply_due_date(row, body)
 
@@ -715,6 +775,7 @@ def cabinet_client_debt_adjust(request):
         )
         bal = debtor.balance()
         _apply_due_date(debtor, body, kind=kind)
+    _notify_group(shop, debtor, entry)
 
     sms_res = None
     check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
@@ -790,6 +851,64 @@ def cabinet_sms_template_save(request):
             "moderation_credit": credit_tpl_res,
             "sample_sms": sample,
             "sample_sms_credit": credit_sample,
+        }
+    )
+
+
+@login_required
+@require_POST
+def cabinet_client_debts_telegram_group(request):
+    """Guruh havolasini tekshiradi (sinov xabari) va faqat muvaffaqiyatli bo‘lsa saqlaydi."""
+    shop = _shop(request)
+    tenant = _tenant(request)
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
+
+    tpl = _get_or_create_template(shop, tenant)
+    raw = str(body.get("link") or "").strip()
+    if not raw:
+        tpl.telegram_group_link = ""
+        tpl.save(update_fields=["telegram_group_link", "updated_at"])
+        return JsonResponse({"ok": True, "link": "", "message": "Guruh havolasi o‘chirildi."})
+
+    info = parse_group_link(raw)
+    if not info:
+        return JsonResponse(
+            {"error": "Havola noto‘g‘ri. Masalan: https://t.me/c/4446533637/3"},
+            status=400,
+        )
+    link = info["normalized"]
+    if not telethon_configured():
+        return JsonResponse({"error": "Telegram (Telethon) serverda sozlanmagan"}, status=400)
+
+    label = _canonical_shop_label(tpl.shop_label or tenant.business_name or "TezPOS")
+    test = send_group_message(
+        link,
+        f"✅ <b>{html.escape(label)}</b>\n"
+        "Qarz qo‘shilganda va ayirilganda xabarlar shu guruhga yuboriladi.",
+    )
+    if not test.get("ok"):
+        return JsonResponse(
+            {
+                "error": "Guruhga yuborib bo‘lmadi: "
+                + str(test.get("error") or "noma’lum xato")
+                + ". Telegram akkaunt guruh a’zosi ekanini tekshiring."
+            },
+            status=400,
+        )
+    tpl.telegram_group_link = link
+    tpl.save(update_fields=["telegram_group_link", "updated_at"])
+    title = test.get("title") or ""
+    return JsonResponse(
+        {
+            "ok": True,
+            "link": link,
+            "title": title,
+            "message": "Saqlandi. Guruhga sinov xabari yuborildi"
+            + (f" ({title})" if title else "")
+            + ".",
         }
     )
 
@@ -922,7 +1041,7 @@ def api_client_debtor_save(request):
         )
     amount = _dec(body.get("amount"))
     if amount > 0 and not sid:
-        ClientDebtorLedger.objects.create(
+        first = ClientDebtorLedger.objects.create(
             debtor=row,
             kind=ClientDebtorLedger.KIND_ADD,
             amount=amount,
@@ -932,9 +1051,14 @@ def api_client_debtor_save(request):
             note=note,
             created_by=who[:180],
         )
+        _notify_group(shop, row, first)
     if "debt" in body or "balance" in body:
-        _apply_balance_target(
-            row, _dec(body.get("debt", body.get("balance"))), who=who
+        _notify_group(
+            shop,
+            row,
+            _apply_balance_target(
+                row, _dec(body.get("debt", body.get("balance"))), who=who
+            ),
         )
     _apply_due_date(row, body)
     sms_res = None
@@ -1006,6 +1130,7 @@ def api_client_debt_adjust(request):
         )
         bal = debtor.balance()
         _apply_due_date(debtor, body, kind=kind)
+    _notify_group(shop, debtor, entry)
     sms_res = None
     check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
     if send_sms and debtor.phone:

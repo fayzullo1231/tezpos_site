@@ -1300,6 +1300,17 @@
         <p class="cabinet-empty" id="cd-empty" hidden>Mijoz yo‘q. «+ Mijoz / qarz» bilan qo‘shing.</p>
       </div>
       <div id="cd-sms-wrap" hidden>
+        <form id="cd-tg-form" class="sup-form cd-tg-form">
+          <label class="sup-field">
+            <span>Telegram guruh havolasi</span>
+            <input type="text" id="cd-tg-link" maxlength="255" inputmode="url" autocomplete="off" placeholder="https://t.me/c/4446533637/3">
+            <p class="cabinet-hint">Qarz qo‘shilsa yoki ayirilsa, shu guruhga mijoz nomi, summa va qoldiq yuboriladi (ortiqcha to‘lov bo‘lsa <b>+summa</b>). Telegram akkaunt guruh a’zosi bo‘lishi kerak. Saqlashda sinov xabari yuboriladi — faqat ishlagan havola saqlanadi. Bo‘sh qoldirsangiz, yuborish o‘chadi.</p>
+          </label>
+          <p class="cabinet-hint cd-tg-msg" id="cd-tg-msg" hidden></p>
+          <div class="sup-modal-actions">
+            <button type="submit" class="btn-save" id="cd-tg-save">Tekshirish va saqlash</button>
+          </div>
+        </form>
         <form id="cd-sms-form" class="sup-form">
           <label class="sup-field">
             <span>Do‘kon nomi</span>
@@ -1893,6 +1904,7 @@
     debtorPayUrl: "{% url 'accounts:cabinet_debtor_pay' %}",
     clientDebtsUrl: "{% url 'accounts:cabinet_client_debts' %}",
     clientDebtsCalendarUrl: "{% url 'accounts:cabinet_client_debts_calendar' %}",
+    clientDebtsTelegramGroupUrl: "{% url 'accounts:cabinet_client_debts_telegram_group' %}",
     clientDebtorSaveUrl: "{% url 'accounts:cabinet_client_debtor_save' %}",
     clientDebtorDeleteUrl: "{% url 'accounts:cabinet_client_debtor_delete' %}",
     clientDebtAdjustUrl: "{% url 'accounts:cabinet_client_debt_adjust' %}",
@@ -1972,5 +1984,5 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20260929-cd-picker" defer></script>
+<script src="/static/cabinet.js?v=20260929-cd-tg-group" defer></script>
 {% endblock %}

@@ -8145,6 +8145,8 @@
     if (!tpl) return;
     const shop = document.getElementById("cd-sms-shop");
     if (shop) shop.value = tpl.shop_label || "";
+    const tgLink = document.getElementById("cd-tg-link");
+    if (tgLink && document.activeElement !== tgLink) tgLink.value = tpl.telegram_group_link || "";
     const sampleEl = document.getElementById("cd-sms-sample");
     if (sampleEl && tpl.preview) {
       const credit = tpl.preview_credit
@@ -8749,6 +8751,33 @@
       await loadList();
     } catch (e) {
       alert(e.message || "O‘chirilmadi");
+    }
+  });
+
+  document.getElementById("cd-tg-form")?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById("cd-tg-msg");
+    const btn = document.getElementById("cd-tg-save");
+    const input = document.getElementById("cd-tg-link");
+    const show = (text, ok) => {
+      if (!msg) return;
+      msg.hidden = false;
+      msg.textContent = text;
+      msg.classList.toggle("is-ok", !!ok);
+      msg.classList.toggle("is-err", !ok);
+    };
+    if (btn) btn.disabled = true;
+    show("Tekshirilmoqda…", true);
+    try {
+      const json = await postJson(data.clientDebtsTelegramGroupUrl, {
+        link: input?.value || "",
+      });
+      if (input) input.value = json.link || "";
+      show(json.message || "Saqlandi.", true);
+    } catch (e) {
+      show(e.message || "Saqlanmadi", false);
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 

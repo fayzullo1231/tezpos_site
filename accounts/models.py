@@ -315,6 +315,12 @@ class DebtSmsTemplate(models.Model):
         )
     )
     is_approved = models.BooleanField(default=True)
+    telegram_group_link = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Qarz qo‘shilsa/ayirilsa xabar boradigan guruh: https://t.me/c/<id>/<topic>",
+    )
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
