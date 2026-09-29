@@ -476,36 +476,64 @@ def cabinet_client_debts_calendar(request):
         debtor__shop_key=shop, debtor__is_active=True
     )
 
-    day_raw = (request.GET.get("date") or "").strip()
-    if day_raw:
+    def _parse_day(raw):
         try:
-            day = datetime.strptime(day_raw, "%Y-%m-%d").date()
+            return datetime.strptime(str(raw or "").strip(), "%Y-%m-%d").date()
         except ValueError:
+            return None
+
+    day_raw = (request.GET.get("date") or "").strip()
+    from_raw = (request.GET.get("from") or day_raw).strip()
+    to_raw = (request.GET.get("to") or from_raw).strip()
+    if from_raw:
+        start = _parse_day(from_raw)
+        end = _parse_day(to_raw)
+        if not start or not end:
             return JsonResponse({"error": "Sana noto‘g‘ri"}, status=400)
-        entries = base.filter(created_at__date=day).select_related("debtor").order_by(
-            "-created_at", "-id"
+        if end < start:
+            start, end = end, start
+        entries = (
+            base.filter(created_at__date__gte=start, created_at__date__lte=end)
+            .select_related("debtor")
+            .order_by("-created_at", "-id")
         )
         out = []
+        days: dict[str, dict] = {}
         add_sum = Decimal("0")
         sub_sum = Decimal("0")
         for e in entries:
+            local = timezone.localtime(e.created_at)
             item = _serialize_ledger(e)
             item["debtor_id"] = e.debtor_id
             item["debtor_name"] = e.debtor.name
-            item["time_display"] = timezone.localtime(e.created_at).strftime("%H:%M")
+            item["day"] = local.date().isoformat()
+            item["time_display"] = local.strftime("%H:%M")
             out.append(item)
+            d = days.setdefault(
+                item["day"],
+                {"count": 0, "add": 0, "sub": 0, "add_total": 0.0, "sub_total": 0.0},
+            )
+            d["count"] += 1
             if e.kind == ClientDebtorLedger.KIND_ADD:
                 add_sum += e.amount
+                d["add"] += 1
+                d["add_total"] += float(e.amount)
             else:
                 sub_sum += e.amount
+                d["sub"] += 1
+                d["sub_total"] += float(e.amount)
         return JsonResponse(
             {
                 "ok": True,
-                "date": day.isoformat(),
-                "date_display": day.strftime("%d.%m.%Y"),
+                "from": start.isoformat(),
+                "to": end.isoformat(),
+                "date_display": start.strftime("%d.%m.%Y")
+                if start == end
+                else f"{start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}",
                 "count": len(out),
                 "add_total": float(add_sum),
                 "sub_total": float(sub_sum),
+                "days": days,
                 "entries": out,
             }
         )

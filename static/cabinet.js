@@ -8282,132 +8282,334 @@
   );
 
   const calWrap = document.getElementById("cd-cal-wrap");
-  const calGrid = document.getElementById("cd-cal-grid");
-  const calTitle = document.getElementById("cd-cal-title");
-  const calTotal = document.getElementById("cd-cal-total");
-  const calDay = document.getElementById("cd-cal-day");
+  const calPicker = document.getElementById("cd-date-picker");
+  const calTrigger = document.getElementById("cd-date-trigger");
+  const calLabel = document.getElementById("cd-date-label");
+  const calPop = document.getElementById("cd-calendar");
+  const calBanner = document.getElementById("cd-calendar-banner");
+  const calGrid = document.getElementById("cd-calendar-grid");
+  const calMonthSel = document.getElementById("cd-cal-month");
+  const calYearSel = document.getElementById("cd-cal-year");
+  const calDaysEl = document.getElementById("cd-cal-days");
+  const calListEl = document.getElementById("cd-cal-list");
   const monthNames = [
     "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
     "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr",
   ];
+  const monthShort = [
+    "yan.", "fev.", "mar.", "apr.", "may", "iyun",
+    "iyul", "avg.", "sen.", "okt.", "noy.", "dek.",
+  ];
   const pad2 = (n) => String(n).padStart(2, "0");
-  const isoDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-  let calMonth = new Date();
-  calMonth.setDate(1);
-  let calDays = {};
-  let calSelected = "";
+  const toIsoDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const parseDay = (s) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+  };
+  const dayUz = (d) => `${d.getDate()} ${monthShort[d.getMonth()]} ${d.getFullYear()} y.`;
+  const rangeUz = (a, b) =>
+    !b || toIsoDay(a) === toIsoDay(b) ? dayUz(a) : `${dayUz(a)} — ${dayUz(b)}`;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
-  const paintCalendar = () => {
+  let calFrom = new Date(today);
+  let calTo = new Date(today);
+  let draftStart = null;
+  let draftEnd = null;
+  let pickMode = "start";
+  let viewYear = today.getFullYear();
+  let viewMonth = today.getMonth();
+  let calHome = null;
+  let calEntries = [];
+  let calDayFilter = "";
+
+  const syncSelects = () => {
+    if (!calMonthSel || !calYearSel) return;
+    if (!calMonthSel.options.length) {
+      monthNames.forEach((name, i) => {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = name;
+        calMonthSel.appendChild(opt);
+      });
+    }
+    if (!calYearSel.options.length) {
+      for (let y = today.getFullYear() - 5; y <= today.getFullYear() + 1; y += 1) {
+        const opt = document.createElement("option");
+        opt.value = String(y);
+        opt.textContent = String(y);
+        calYearSel.appendChild(opt);
+      }
+    }
+    calMonthSel.value = String(viewMonth);
+    calYearSel.value = String(viewYear);
+  };
+
+  const paintPicker = () => {
     if (!calGrid) return;
-    const y = calMonth.getFullYear();
-    const m = calMonth.getMonth();
-    if (calTitle) calTitle.textContent = `${monthNames[m]} ${y}`;
-    const firstDow = (new Date(y, m, 1).getDay() + 6) % 7;
-    const daysInMonth = new Date(y, m + 1, 0).getDate();
-    const today = isoDay(new Date());
-    const cells = ["Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya"].map(
-      (d) => `<div class="cd-cal-dow">${d}</div>`
-    );
-    for (let i = 0; i < firstDow; i += 1) cells.push('<div class="cd-cal-cell is-pad"></div>');
-    for (let d = 1; d <= daysInMonth; d += 1) {
-      const key = `${y}-${pad2(m + 1)}-${pad2(d)}`;
-      const info = calDays[key];
-      const cls = [
-        "cd-cal-cell",
-        info ? "has-tx" : "",
-        key === today ? "is-today" : "",
-        key === calSelected ? "is-selected" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const badge = info
-        ? `<span class="cd-cal-count">${info.count} ta</span>
-           <span class="cd-cal-mini">${info.add ? `<i class="is-add">+${info.add}</i>` : ""}${info.sub ? `<i class="is-sub">−${info.sub}</i>` : ""}</span>`
-        : "";
+    syncSelects();
+    if (calBanner) {
+      if (!draftStart) calBanner.textContent = "Boshlanish sanasini tanlang";
+      else if (!draftEnd) calBanner.textContent = `${dayUz(draftStart)} → tugash sanasini tanlang`;
+      else calBanner.textContent = rangeUz(draftStart, draftEnd);
+    }
+    const startPad = new Date(viewYear, viewMonth, 1).getDay();
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < startPad; i += 1) cells.push('<span class="sales-cal-pad"></span>');
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const d = new Date(viewYear, viewMonth, day);
+      const t = d.getTime();
+      const isStart = draftStart && t === draftStart.getTime();
+      const isEnd = draftEnd && t === draftEnd.getTime();
+      const cls = ["sales-cal-day"];
+      if (draftStart && draftEnd && t >= draftStart.getTime() && t <= draftEnd.getTime()) {
+        cls.push("is-in-range");
+      }
+      if (isStart) cls.push("is-start");
+      if (isEnd || (isStart && !draftEnd)) cls.push("is-end");
+      if (isStart && isEnd) cls.push("is-single");
+      if (t === today.getTime()) cls.push("is-today");
+      const iso = toIsoDay(d);
       cells.push(
-        `<button type="button" class="${cls}" data-cal-day="${key}"><span class="cd-cal-num">${d}</span>${badge}</button>`
+        `<button type="button" class="${cls.join(" ")}" data-date="${iso}" aria-label="${iso}">${day}</button>`
       );
     }
     calGrid.innerHTML = cells.join("");
   };
 
-  const loadCalendar = async () => {
-    if (!data.clientDebtsCalendarUrl) return;
-    const key = `${calMonth.getFullYear()}-${pad2(calMonth.getMonth() + 1)}`;
+  const positionPicker = () => {
+    if (!calPop || !calTrigger || calPop.hidden) return;
+    const rect = calTrigger.getBoundingClientRect();
+    const width = Math.min(320, window.innerWidth - 16);
+    let left = rect.right - width;
+    if (left < 8) left = 8;
+    if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
+    let top = rect.bottom + 8;
+    const estHeight = 420;
+    if (top + estHeight > window.innerHeight - 8 && rect.top > estHeight) {
+      top = rect.top - estHeight - 8;
+    }
+    Object.assign(calPop.style, {
+      position: "fixed",
+      left: `${Math.round(left)}px`,
+      top: `${Math.round(top)}px`,
+      right: "auto",
+      width: `${width}px`,
+      zIndex: "13000",
+    });
+  };
+
+  const openPicker = () => {
+    if (!calPop || !calTrigger) return;
+    draftStart = new Date(calFrom);
+    draftEnd = new Date(calTo);
+    pickMode = "start";
+    viewYear = calTo.getFullYear();
+    viewMonth = calTo.getMonth();
+    if (!calHome) calHome = calPop.parentElement;
+    if (calPop.parentElement !== document.body) {
+      document.body.appendChild(calPop);
+      calPop.classList.add("is-portal");
+    }
+    calPop.hidden = false;
+    calTrigger.setAttribute("aria-expanded", "true");
+    calPicker?.classList.add("is-open");
+    paintPicker();
+    positionPicker();
+  };
+
+  const closePicker = () => {
+    if (!calPop || !calTrigger) return;
+    calPop.hidden = true;
+    calTrigger.setAttribute("aria-expanded", "false");
+    calPicker?.classList.remove("is-open");
+    if (calHome && calPop.parentElement === document.body) {
+      calHome.appendChild(calPop);
+      calPop.classList.remove("is-portal");
+    }
+  };
+
+  const entryHtml = (e) => {
+    const tone = e.tone || "red";
+    const sms = e.sms_sent ? " · SMS" : "";
+    const when = calFrom.getTime() === calTo.getTime()
+      ? e.time_display
+      : `${(e.day || "").split("-").reverse().join(".")} ${e.time_display}`;
+    return `<article class="sup-tl-item is-${esc(tone)}">
+      <span class="sup-tl-dot"></span>
+      <div>
+        <h5><span class="cd-name-open" data-id="${e.debtor_id}" role="button" tabindex="0">${esc(e.debtor_name)}</span> · ${esc(e.kind_label)}${sms}</h5>
+        <p>${esc(when)}${e.note ? ` · ${esc(e.note)}` : ""}${e.created_by ? ` · ${esc(e.created_by)}` : ""}</p>
+      </div>
+      <div class="sup-tl-amt">${esc(e.amount_display)} so‘m</div>
+    </article>`;
+  };
+
+  const paintEntries = () => {
+    if (!calListEl) return;
+    const list = calDayFilter ? calEntries.filter((e) => e.day === calDayFilter) : calEntries;
+    calListEl.innerHTML = list.length
+      ? list.map(entryHtml).join("")
+      : '<p class="cabinet-hint">Bu davrda tranzaksiya yo‘q.</p>';
+    calDaysEl?.querySelectorAll("[data-cd-day]").forEach((b) => {
+      b.classList.toggle("is-active", b.getAttribute("data-cd-day") === calDayFilter);
+    });
+  };
+
+  const loadRange = async () => {
+    if (!data.clientDebtsCalendarUrl || !calListEl) return;
+    if (calLabel) calLabel.textContent = rangeUz(calFrom, calTo);
+    calListEl.innerHTML = '<p class="cabinet-hint">Yuklanmoqda…</p>';
+    if (calDaysEl) calDaysEl.innerHTML = "";
     try {
-      const res = await fetch(`${data.clientDebtsCalendarUrl}?month=${key}`, {
+      const qs = new URLSearchParams({ from: toIsoDay(calFrom), to: toIsoDay(calTo) });
+      const res = await fetch(`${data.clientDebtsCalendarUrl}?${qs}`, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Yuklanmadi");
-      calDays = json.days || {};
-      if (calTotal) calTotal.textContent = `Oy bo‘yicha: ${json.total_count || 0} ta tranzaksiya`;
+      document.getElementById("cd-cal-title").textContent = json.date_display;
+      document.getElementById("cd-cal-count").textContent = `${json.count} ta tranzaksiya`;
+      document.getElementById("cd-cal-add").textContent = `Qarz qo‘shildi: ${fmt(json.add_total)} so‘m`;
+      document.getElementById("cd-cal-sub").textContent = `To‘lov: ${fmt(json.sub_total)} so‘m`;
+      calEntries = Array.isArray(json.entries) ? json.entries : [];
+      calDayFilter = "";
+      const dayKeys = Object.keys(json.days || {}).sort().reverse();
+      if (calDaysEl && dayKeys.length > 1) {
+        calDaysEl.innerHTML = dayKeys
+          .map((k) => {
+            const info = json.days[k];
+            const d = parseDay(k);
+            return `<button type="button" class="cd-cal-chip" data-cd-day="${k}">
+              <strong>${d ? `${d.getDate()} ${monthShort[d.getMonth()]}` : esc(k)}</strong>
+              <span>${info.count} ta</span>
+              ${info.add ? `<i class="is-add">+${info.add}</i>` : ""}${info.sub ? `<i class="is-sub">−${info.sub}</i>` : ""}
+            </button>`;
+          })
+          .join("");
+      }
+      paintEntries();
     } catch (e) {
-      calDays = {};
-      if (calTotal) calTotal.textContent = e.message || "Yuklanmadi";
-    }
-    paintCalendar();
-  };
-
-  const loadCalendarDay = async (day) => {
-    if (!data.clientDebtsCalendarUrl || !calDay) return;
-    calSelected = day;
-    paintCalendar();
-    const listBox = document.getElementById("cd-cal-day-list");
-    calDay.hidden = false;
-    if (listBox) listBox.innerHTML = '<p class="cabinet-hint">Yuklanmoqda…</p>';
-    try {
-      const res = await fetch(`${data.clientDebtsCalendarUrl}?date=${day}`, {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Yuklanmadi");
-      document.getElementById("cd-cal-day-title").textContent =
-        `${json.date_display} — ${json.count} ta tranzaksiya`;
-      document.getElementById("cd-cal-day-add").textContent =
-        `Qarz qo‘shildi: ${fmt(json.add_total)} so‘m`;
-      document.getElementById("cd-cal-day-sub").textContent =
-        `To‘lov: ${fmt(json.sub_total)} so‘m`;
-      const entries = json.entries || [];
-      listBox.innerHTML = entries.length
-        ? entries
-            .map((e) => {
-              const tone = e.tone || "red";
-              const sms = e.sms_sent ? " · SMS" : "";
-              return `<article class="sup-tl-item is-${esc(tone)}">
-                <span class="sup-tl-dot"></span>
-                <div>
-                  <h5><span class="cd-name-open" data-id="${e.debtor_id}" role="button" tabindex="0">${esc(e.debtor_name)}</span> · ${esc(e.kind_label)}${sms}</h5>
-                  <p>${esc(e.time_display)}${e.note ? ` · ${esc(e.note)}` : ""}${e.created_by ? ` · ${esc(e.created_by)}` : ""}</p>
-                </div>
-                <div class="sup-tl-amt">${esc(e.amount_display)} so‘m</div>
-              </article>`;
-            })
-            .join("")
-        : '<p class="cabinet-hint">Bu kunda tranzaksiya yo‘q.</p>';
-    } catch (e) {
-      if (listBox) listBox.innerHTML = `<p class="cabinet-hint">${esc(e.message || "Yuklanmadi")}</p>`;
+      calEntries = [];
+      calListEl.innerHTML = `<p class="cabinet-hint">${esc(e.message || "Yuklanmadi")}</p>`;
     }
   };
 
-  calGrid?.addEventListener("click", (ev) => {
-    const cell = ev.target.closest("[data-cal-day]");
-    if (cell) loadCalendarDay(cell.getAttribute("data-cal-day"));
+  const showCalendarTab = () => {
+    document.querySelector('[data-cd-tab="calendar"]')?.click();
+  };
+
+  const applyDraft = () => {
+    if (!draftStart) return;
+    let a = draftStart;
+    let b = draftEnd || draftStart;
+    if (b < a) [a, b] = [b, a];
+    calFrom = new Date(a);
+    calTo = new Date(b);
+    closePicker();
+    showCalendarTab();
+  };
+
+  const pickDay = (d) => {
+    if (pickMode === "start" || !draftStart) {
+      draftStart = d;
+      draftEnd = null;
+      pickMode = "end";
+    } else {
+      if (d < draftStart) {
+        draftEnd = draftStart;
+        draftStart = d;
+      } else {
+        draftEnd = d;
+      }
+      pickMode = "start";
+    }
+    paintPicker();
+  };
+
+  if (calLabel) calLabel.textContent = rangeUz(calFrom, calTo);
+  calTrigger?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (calPop?.hidden) openPicker();
+    else closePicker();
   });
-  calDay?.addEventListener("click", (ev) => {
-    const name = ev.target.closest(".cd-name-open");
+  calPop?.addEventListener("click", (e) => e.stopPropagation());
+  calPop?.addEventListener("mousedown", (e) => e.stopPropagation());
+  document.getElementById("cd-cal-prev")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    viewMonth -= 1;
+    if (viewMonth < 0) {
+      viewMonth = 11;
+      viewYear -= 1;
+    }
+    paintPicker();
+  });
+  document.getElementById("cd-cal-next")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    viewMonth += 1;
+    if (viewMonth > 11) {
+      viewMonth = 0;
+      viewYear += 1;
+    }
+    paintPicker();
+  });
+  calMonthSel?.addEventListener("change", () => {
+    viewMonth = Number(calMonthSel.value);
+    paintPicker();
+  });
+  calYearSel?.addEventListener("change", () => {
+    viewYear = Number(calYearSel.value);
+    paintPicker();
+  });
+  calGrid?.addEventListener("click", (e) => {
+    const btn = e.target.closest(".sales-cal-day");
+    const d = btn && parseDay(btn.dataset.date);
+    if (d) pickDay(d);
+  });
+  calGrid?.addEventListener("dblclick", (e) => {
+    const btn = e.target.closest(".sales-cal-day");
+    const d = btn && parseDay(btn.dataset.date);
+    if (!d) return;
+    draftStart = d;
+    draftEnd = d;
+    pickMode = "start";
+    applyDraft();
+  });
+  document.getElementById("cd-cal-cancel")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    closePicker();
+  });
+  document.getElementById("cd-cal-apply")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    applyDraft();
+  });
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      if (!calPop || calPop.hidden) return;
+      if (calPicker?.contains(e.target) || calPop.contains(e.target)) return;
+      closePicker();
+    },
+    true
+  );
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && calPop && !calPop.hidden) closePicker();
+  });
+  window.addEventListener("resize", positionPicker);
+  calDaysEl?.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-cd-day]");
+    if (!chip) return;
+    const k = chip.getAttribute("data-cd-day");
+    calDayFilter = calDayFilter === k ? "" : k;
+    paintEntries();
+  });
+  calListEl?.addEventListener("click", (e) => {
+    const name = e.target.closest(".cd-name-open");
     if (name) openDetail(name.getAttribute("data-id"));
   });
-  const shiftMonth = (delta) => {
-    calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + delta, 1);
-    calSelected = "";
-    if (calDay) calDay.hidden = true;
-    loadCalendar();
-  };
-  document.getElementById("cd-cal-prev")?.addEventListener("click", () => shiftMonth(-1));
-  document.getElementById("cd-cal-next")?.addEventListener("click", () => shiftMonth(1));
 
   document.querySelectorAll("[data-cd-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -8418,10 +8620,7 @@
       if (smsWrap) smsWrap.hidden = tab !== "sms";
       if (calWrap) calWrap.hidden = tab !== "calendar";
       if (tab === "sms") loadSms();
-      if (tab === "calendar") {
-        loadCalendar();
-        if (calSelected) loadCalendarDay(calSelected);
-      }
+      if (tab === "calendar") loadRange();
     });
   });
 

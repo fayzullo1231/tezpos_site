@@ -1231,6 +1231,35 @@
           <h3>Mijoz qarzlari</h3>
         </div>
         <div class="debtors-toolbar">
+          <div class="sales-date-picker" id="cd-date-picker">
+            <button type="button" class="sales-date-trigger" id="cd-date-trigger" aria-expanded="false" aria-haspopup="dialog">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M3 9h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+              <span id="cd-date-label">Kalendar</span>
+            </button>
+            <div class="sales-calendar" id="cd-calendar" hidden role="dialog" aria-label="Sana tanlash">
+              <div class="sales-calendar-banner" id="cd-calendar-banner">Sana tanlang</div>
+              <div class="sales-calendar-nav">
+                <button type="button" class="sales-cal-nav-btn" id="cd-cal-prev" aria-label="Oldingi oy">‹</button>
+                <div class="sales-cal-selects">
+                  <select id="cd-cal-month" aria-label="Oy"></select>
+                  <select id="cd-cal-year" aria-label="Yil"></select>
+                </div>
+                <button type="button" class="sales-cal-nav-btn" id="cd-cal-next" aria-label="Keyingi oy">›</button>
+              </div>
+              <div class="sales-calendar-weekdays" aria-hidden="true">
+                <span>Ya</span><span>Du</span><span>Se</span><span>Ch</span><span>Pa</span><span>Ju</span><span>Sh</span>
+              </div>
+              <div class="sales-calendar-grid" id="cd-calendar-grid"></div>
+              <p class="sales-calendar-hint">Bir kun: 2 marta bosing. Oraliq: boshlanish → tugash, so‘ng Qo‘llash.</p>
+              <div class="sales-calendar-actions">
+                <button type="button" class="sales-cal-btn sales-cal-btn--ghost" id="cd-cal-cancel">Bekor qilish</button>
+                <button type="button" class="sales-cal-btn sales-cal-btn--primary" id="cd-cal-apply">Qo‘llash</button>
+              </div>
+            </div>
+          </div>
           <button type="button" class="btn-soft" id="cd-refresh">Yangilash</button>
           <button type="button" class="btn-save" id="cd-add-btn">+ Mijoz / qarz</button>
         </div>
@@ -1249,22 +1278,17 @@
         <button type="button" class="sup-tab" data-cd-tab="sms">Shablon</button>
       </div>
       <div id="cd-cal-wrap" class="cd-cal" hidden>
-        <div class="cd-cal-head">
-          <button type="button" class="btn-soft cd-cal-nav" id="cd-cal-prev" aria-label="Oldingi oy">‹</button>
-          <strong id="cd-cal-title">—</strong>
-          <button type="button" class="btn-soft cd-cal-nav" id="cd-cal-next" aria-label="Keyingi oy">›</button>
-          <span class="cd-cal-total" id="cd-cal-total"></span>
-        </div>
-        <div class="cd-cal-grid" id="cd-cal-grid"></div>
-        <div class="cd-cal-day" id="cd-cal-day" hidden>
+        <div class="cd-cal-day">
           <div class="cd-cal-day-head">
-            <h4 id="cd-cal-day-title">—</h4>
+            <h4 id="cd-cal-title">—</h4>
             <div class="cd-cal-day-sums">
-              <span class="is-add" id="cd-cal-day-add"></span>
-              <span class="is-sub" id="cd-cal-day-sub"></span>
+              <span id="cd-cal-count"></span>
+              <span class="is-add" id="cd-cal-add"></span>
+              <span class="is-sub" id="cd-cal-sub"></span>
             </div>
           </div>
-          <div class="sup-timeline" id="cd-cal-day-list"></div>
+          <div class="cd-cal-days" id="cd-cal-days"></div>
+          <div class="sup-timeline" id="cd-cal-list"></div>
         </div>
       </div>
       <div id="cd-list-wrap">
@@ -1948,5 +1972,5 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20260929-cd-calendar" defer></script>
+<script src="/static/cabinet.js?v=20260929-cd-picker" defer></script>
 {% endblock %}
