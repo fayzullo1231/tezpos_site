@@ -33,7 +33,9 @@ from .telethon_debt import (
 
 
 def _group_notice_text(debtor: ClientDebtor, entry: ClientDebtorLedger, bal) -> str:
-    esc = html.escape
+    def esc(s):
+        return html.escape(s, quote=False)
+
     add = entry.kind == ClientDebtorLedger.KIND_ADD
     amt = _fmt_money(abs(entry.amount))
     try:
@@ -50,6 +52,76 @@ def _group_notice_text(debtor: ClientDebtor, entry: ClientDebtorLedger, bal) -> 
         lines.append(f"Izoh: {esc(entry.note.strip())}")
     lines.append(_fmt_dt(entry.created_at))
     return "\n".join(lines)
+
+
+def debt_group_link(shop: str) -> str:
+    link = (
+        DebtSmsTemplate.objects.filter(shop_key=(shop or "").strip().lower())
+        .values_list("telegram_group_link", flat=True)
+        .first()
+        or ""
+    ).strip()
+    return link if parse_group_link(link) else ""
+
+
+def debtors_summary_chunks(shop: str, limit: int = 3800) -> list[str]:
+    """Birinchi qator — sof jami, keyin har bir qarzdor (ortiqcha to‘lov +summa)."""
+    rows = [r for r in _debtors_qs(shop) if Decimal(str(r.bal or 0)) != 0]
+    rows.sort(key=lambda r: r.pk)
+    total = sum((Decimal(str(r.bal or 0)) for r in rows), Decimal("0"))
+    lines = []
+    for r in rows:
+        bal = Decimal(str(r.bal or 0))
+        amt = f"+{_fmt_money(abs(bal))}" if bal < 0 else _fmt_money(bal)
+        lines.append(f"{html.escape(r.name, quote=False)}  {amt}")
+    chunks: list[str] = []
+    cur = f"<b>{_fmt_money(total)}</b>"
+    for line in lines:
+        if len(cur) + len(line) + 1 > limit:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur += "\n" + line
+    chunks.append(cur)
+    return chunks
+
+
+def send_shift_debt_summary(shop: str, shift_id: str) -> dict:
+    """Smena yopilganda guruhga qarzdorlar ro‘yxati — har smenaga bir marta."""
+    shop = (shop or "").strip().lower()
+    key = str(shift_id or "").strip()
+    link = debt_group_link(shop)
+    if not key or not link or not telethon_configured():
+        return {"ok": False, "skipped": True}
+    with transaction.atomic():
+        row = DebtSmsTemplate.objects.select_for_update().filter(shop_key=shop).first()
+        if row is None:
+            return {"ok": False, "skipped": True}
+        sent = dict(row.group_notified or {})
+        if key in sent:
+            return {"ok": True, "duplicate": True}
+        sent[key] = timezone.now().isoformat()
+        if len(sent) > 60:
+            sent = dict(sorted(sent.items(), key=lambda x: x[1])[-40:])
+        row.group_notified = sent
+        row.save(update_fields=["group_notified"])
+
+    err = ""
+    for chunk in debtors_summary_chunks(shop):
+        res = send_group_message(link, chunk)
+        if not res.get("ok"):
+            err = str(res.get("error") or "yuborilmadi")
+            break
+    if err:
+        with transaction.atomic():
+            row = DebtSmsTemplate.objects.select_for_update().filter(shop_key=shop).first()
+            if row is not None:
+                sent = dict(row.group_notified or {})
+                sent.pop(key, None)
+                row.group_notified = sent
+                row.save(update_fields=["group_notified"])
+        return {"ok": False, "error": err}
+    return {"ok": True}
 
 
 def _notify_group(shop: str, debtor: ClientDebtor, entry: ClientDebtorLedger | None) -> None:

@@ -321,6 +321,11 @@ class DebtSmsTemplate(models.Model):
         default="",
         help_text="Qarz qo‘shilsa/ayirilsa xabar boradigan guruh: https://t.me/c/<id>/<topic>",
     )
+    group_notified = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Smena yopilganda qarzdorlar ro‘yxati yuborilgan smenalar",
+    )
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

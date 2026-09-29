@@ -7934,6 +7934,14 @@ def telegram_shift_ping(request):
             .first()
         )
     if not tenant:
+        from .client_debts import debt_group_link
+
+        if debt_group_link(server):
+            tenant = (
+                TenantProfile.objects.filter(tezpos_server_name__iexact=server).first()
+                or TenantProfile.objects.filter(tezpos_api_token=token).first()
+            )
+    if not tenant:
         return _cors({"ok": False, "error": "bot_not_configured", "server": server}, status=404)
 
     TenantProfile.objects.filter(pk=tenant.pk).update(
@@ -7967,6 +7975,30 @@ def _tg_any_ok(results: list | None) -> bool:
     return any(bool(r.get("ok")) for r in (results or []) if isinstance(r, dict))
 
 
+def _send_debt_group_summaries(server: str, shifts: list, sent: list) -> None:
+    """Yaqinda yopilgan smenalar uchun qarzdorlar ro‘yxati — qarz guruhiga."""
+    from .client_debts import send_shift_debt_summary
+
+    now = timezone.now()
+    for sh in shifts[:12]:
+        sid = str(sh.get("id") or "").strip()
+        if not sid or sid.startswith("session-"):
+            continue
+        if (sh.get("status") or "closed") != "closed" or not sh.get("closed_at"):
+            continue
+        closed_dt = _parse_dt(sh.get("closed_at"))
+        if not closed_dt or now - closed_dt > timedelta(hours=3):
+            continue
+        try:
+            res = send_shift_debt_summary(server, sid)
+        except Exception as exc:  # noqa: BLE001
+            tg_logger.exception("debt group summary failed server=%s shift=%s", server, sid)
+            res = {"ok": False, "error": str(exc)}
+        if res.get("skipped") or res.get("duplicate"):
+            continue
+        sent.append({"shift_id": sid, "event": "debts", **res})
+
+
 def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
     """
     Smena ochilish/yopilishni tekshiradi.
@@ -7996,8 +8028,12 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
         tenant.save(update_fields=["telegram_notified_events", "telegram_last_sync"])
         db_s += time.time() - tdb
 
-    recipients = tg.parse_recipients(tenant.telegram_recipients)
-    if not recipients:
+    from .client_debts import debt_group_link
+
+    bot_on = bool(tenant.telegram_enabled and tenant.telegram_bot_token)
+    recipients = tg.parse_recipients(tenant.telegram_recipients) if bot_on else []
+    has_debt_group = bool(debt_group_link(server))
+    if not recipients and not has_debt_group:
         result = {"ok": True, "skipped": True, "reason": "no_recipients"}
         tenant.telegram_last_sync = {**result, "at": timezone.now().isoformat()}
         tenant.save(update_fields=["telegram_last_sync"])
@@ -8041,8 +8077,12 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
     notified = dict(tenant.telegram_notified_events or {})
     sent: list[dict] = []
     heavy_used = 0
+
+    if has_debt_group:
+        _send_debt_group_summaries(server, shifts, sent)
+
     # Birinchi sync: mavjud smenalarni faqat belgilash (spam bo‘lmasin)
-    seed_only = "__seeded__" in notified and len(notified) <= 2
+    seed_only = bool(recipients) and "__seeded__" in notified and len(notified) <= 2
     if seed_only:
         for sh in shifts[:20]:
             sid = str(sh.get("id") or "").strip()
@@ -8058,9 +8098,10 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
         notified.pop("__seeded__", None)
         tenant.telegram_notified_events = notified
         _persist_meta({"checked": len(shifts), "seeded": True, "sent": 0})
-        return {"ok": True, "sent": [], "checked": len(shifts), "seeded": True}
+        return {"ok": True, "sent": sent, "checked": len(shifts), "seeded": True}
 
-    for sh in shifts[:12]:
+    bot_shifts = shifts[:12] if recipients else []
+    for sh in bot_shifts:
         if time.time() >= deadline:
             break
         sid = str(sh.get("id") or "").strip()
@@ -8198,7 +8239,7 @@ def sync_telegram_shifts_for_tenant(tenant, token: str, server: str) -> dict:
 
     # Yopilgan smenalar uchun Excel hali ketmagan bo‘lsa — alohida urinish
     if tenant.telegram_notify_close:
-        for sh in shifts[:12]:
+        for sh in bot_shifts:
             if time.time() >= deadline or heavy_used >= max_heavy:
                 break
             sid = str(sh.get("id") or "").strip()

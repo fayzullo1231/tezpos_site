@@ -7,8 +7,9 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.db.models import Q
 
-from accounts.models import TenantProfile
+from accounts.models import DebtSmsTemplate, TenantProfile
 from accounts.views import sync_telegram_shifts_for_tenant
 
 logger = logging.getLogger("tezpos.telegram")
@@ -27,15 +28,27 @@ class Command(BaseCommand):
                 logger.info("telegram sync skipped (lock held)")
                 return
             t0 = time.time()
+            bot_q = Q(telegram_enabled=True) & ~Q(telegram_bot_token="")
+            group_q = Q(pk__in=[])
+            for shop in (
+                DebtSmsTemplate.objects.exclude(telegram_group_link="")
+                .values_list("shop_key", flat=True)
+            ):
+                group_q |= Q(tezpos_server_name__iexact=shop)
             tenants = (
-                TenantProfile.objects.filter(telegram_enabled=True)
-                .exclude(telegram_bot_token="")
+                TenantProfile.objects.filter(bot_q | group_q)
                 .exclude(tezpos_api_token="")
                 .exclude(tezpos_server_name="")
             )
             total_sent = 0
             errors = 0
+            seen_group_only: set[str] = set()
             for tenant in tenants:
+                server_key = tenant.tezpos_server_name.strip().lower()
+                if not (tenant.telegram_enabled and tenant.telegram_bot_token):
+                    if server_key in seen_group_only:
+                        continue
+                    seen_group_only.add(server_key)
                 try:
                     result = sync_telegram_shifts_for_tenant(
                         tenant,
