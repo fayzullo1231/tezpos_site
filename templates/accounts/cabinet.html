@@ -1866,6 +1866,7 @@
 {% endif %}
 <script>
   window.TEZPOS_CHARTS = {
+    cacheScope: "{{ request.session.tezpos_server_name|default:''|lower|escapejs }}|{{ request.user.pk }}",
     labels: {{ chart_labels_json|safe }},
     totals: {{ chart_totals_json|safe }},
     counts: {{ chart_counts_json|safe }},
@@ -1926,7 +1927,7 @@
     fastNav: {{ fast_nav|default:False|yesno:"true,false" }}
   };
   (function () {
-    var P = "tezpos_v13_";
+    var P = "tezpos_v13_" + String((window.TEZPOS_CHARTS || {}).cacheScope || "").replace(/[^a-z0-9_|:-]/gi, "") + "__";
     function g(k) {
       try {
         var s = sessionStorage.getItem(P + k);
@@ -1984,5 +1985,5 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20260929-cd-tg-group" defer></script>
+<script src="/static/cabinet.js?v=20261001-cache-scope" defer></script>
 {% endblock %}

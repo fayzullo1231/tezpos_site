@@ -10,7 +10,16 @@
   ];
 
   // Brauzer kesh — sahifadan sahifaga loading ko‘rinmasin
-  const CACHE_P = "tezpos_v13_";
+  const CACHE_BASE = "tezpos_v13_";
+  const CACHE_P = `${CACHE_BASE}${String(data.cacheScope || "").replace(/[^a-z0-9_|:-]/gi, "")}__`;
+  try {
+    for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
+      const k = sessionStorage.key(i);
+      if (k && k.startsWith("tezpos_v") && !k.startsWith(CACHE_P)) sessionStorage.removeItem(k);
+    }
+  } catch (_e) {
+    /* storage yo‘q */
+  }
   const cacheGet = (key) => {
     try {
       const raw = sessionStorage.getItem(CACHE_P + key);
