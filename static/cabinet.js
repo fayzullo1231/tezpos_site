@@ -6877,7 +6877,42 @@
     return qty > 0;
   };
 
-  const productQty = (p) => Number(p.stock_qty ?? p.quantity ?? p.stock ?? 0);
+  const WEIGHT_UNITS = new Set(["kg", "кг", "килограмм", "kilogramm", "gramm", "грамм", "gr", "г"]);
+  const isWeighable = (p) =>
+    Boolean(p.weighable) || WEIGHT_UNITS.has(String(p.unit || "").trim().toLowerCase());
+  const rawQty = (p) => Number(p.stock_qty ?? p.quantity ?? p.stock ?? 0);
+  const kgModeEl = document.getElementById("sv-kg-mode");
+  const KG_MODE_KEY = `tezpos_sv_kg_${String(data.cacheScope || "")}`;
+  try {
+    const saved = localStorage.getItem(KG_MODE_KEY);
+    if (kgModeEl && saved && ["auto", "gram", "kg"].includes(saved)) kgModeEl.value = saved;
+  } catch (_e) {
+    /* storage yo‘q */
+  }
+  // Ba’zi serverlarda kg mahsulot qoldig‘i grammda kiritilgan (4000 = 4 kg), narx esa 1 kg uchun
+  const autoGrams = () => {
+    const products = Array.isArray(data.products) ? data.products : [];
+    const vals = products
+      .filter(isWeighable)
+      .map((p) => Math.abs(rawQty(p)))
+      .filter((v) => v > 0)
+      .sort((a, b) => a - b);
+    if (!vals.length) return false;
+    return vals[Math.floor(vals.length / 2)] >= 100;
+  };
+  const gramMode = () => {
+    const mode = kgModeEl?.value || "auto";
+    if (mode === "gram") return true;
+    if (mode === "kg") return false;
+    return autoGrams();
+  };
+  let useGrams = false;
+  const productQty = (p) => {
+    const q = rawQty(p);
+    return useGrams && isWeighable(p) ? q / 1000 : q;
+  };
+  const fmtKg = (n) =>
+    Number(n || 0).toLocaleString("uz-UZ", { maximumFractionDigits: 3 });
   const productCost = (p) =>
     Number(p.cost_price || p.purchase_price || p.buy_price || p.cost || 0);
   const productSell = (p) =>
@@ -6885,6 +6920,7 @@
 
   const collectRows = ({ applySearch = true, applyFilter = true } = {}) => {
     const products = Array.isArray(data.products) ? data.products : [];
+    useGrams = gramMode();
     const extraLists = getExtraLists();
     const q = applySearch
       ? String(searchEl?.value || "")
@@ -6961,6 +6997,7 @@
         category,
         brand,
         qty,
+        weighable: isWeighable(p),
         cost,
         sell,
         costVal,
@@ -7124,7 +7161,7 @@
             '<td class="col-num ' +
             stockCls +
             '">' +
-            fmtQty(r.qty) +
+            (r.weighable ? fmtKg(r.qty) + " kg" : fmtQty(r.qty)) +
             "</td>" +
             '<td class="col-num">' +
             fmtMoney(r.cost) +
@@ -7221,8 +7258,8 @@
           r.barcode,
           r.category,
           r.brand,
-          r.unit || "dona",
-          Math.round(r.qty),
+          r.weighable ? "kg" : r.unit || "dona",
+          r.weighable ? Math.round(r.qty * 1000) / 1000 : Math.round(r.qty),
           Math.round(r.cost),
           Math.round(r.costVal),
           Math.round(r.sell),
@@ -7292,6 +7329,14 @@
   searchEl?.addEventListener("input", paint);
   filterEl?.addEventListener("change", paint);
   sortEl?.addEventListener("change", paint);
+  kgModeEl?.addEventListener("change", () => {
+    try {
+      localStorage.setItem(KG_MODE_KEY, kgModeEl.value);
+    } catch (_e) {
+      /* storage yo‘q */
+    }
+    paint();
+  });
   exportBtn?.addEventListener("click", () => {
     downloadStockValueExcel();
   });

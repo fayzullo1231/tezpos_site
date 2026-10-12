@@ -1399,7 +1399,7 @@
       <div class="cabinet-card-head">
         <div>
           <h3>Ombor qiymati</h3>
-          <p class="cabinet-hint">Tannarx jami = barcha ombor qoldig‘i × TezPOS sotib olish narxi. Sotuv jami va narx ro‘yxatlari ham shu qoldiqdan. Farq = sotuv jami − tannarx jami (katalog to‘liq yuklangach).</p>
+          <p class="cabinet-hint">Tannarx jami = barcha ombor qoldig‘i × TezPOS sotib olish narxi. Sotuv jami va narx ro‘yxatlari ham shu qoldiqdan. Farq = sotuv jami − tannarx jami (katalog to‘liq yuklangach). Kg mahsulotlar: qoldiq kg da, narx 1 kg uchun.</p>
         </div>
         <button type="button" class="btn-export" id="sv-export-btn" title="Barcha mahsulotlar qoldig‘i va qiymatini Excelga yuklash">
           <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 3v10.2l3.2-3.2 1.4 1.4L12 17l-4.6-4.6 1.4-1.4L11 13.2V3h1zM5 19h14v2H5v-2z"/></svg>
@@ -1438,6 +1438,14 @@
             <option value="sell_desc">Sotuv jami: ko‘p → kam</option>
             <option value="sell_asc">Sotuv jami: kam → ko‘p</option>
             <option value="name_asc">Nomi: A → Z</option>
+          </select>
+        </label>
+        <label class="sv-filter" title="Kg mahsulot qoldig‘i TezPOS da grammda kiritilgan bo‘lsa (4000 = 4 kg), 1000 ga bo‘lib hisoblanadi">
+          <span>Kg qoldig‘i</span>
+          <select id="sv-kg-mode">
+            <option value="auto" selected>Avto</option>
+            <option value="gram">Grammda (÷1000)</option>
+            <option value="kg">Kilogrammda</option>
           </select>
         </label>
       </div>
@@ -1985,5 +1993,5 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20261001-cache-scope" defer></script>
+<script src="/static/cabinet.js?v=20261012-sv-kg" defer></script>
 {% endblock %}

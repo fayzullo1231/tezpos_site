@@ -511,6 +511,7 @@ def _products_payload_list(products: list, *, lite: bool = False) -> list[dict]:
             "wholesale_price": float(p.wholesale_price or 0),
             "cost_price": float(p.cost_price or 0),
             "stock_qty": float(p.stock_qty or 0),
+            "weighable": bool(getattr(p, "weighable", False)),
             "min_stock": float(p.min_stock or 0),
             "is_favorite": bool(p.is_favorite),
         }
@@ -1820,6 +1821,9 @@ def _map_product(raw: dict) -> SimpleNamespace:
         barcodes=codes,
         barcode_list=codes,
         unit=(raw.get("unit") or "dona").strip() or "dona",
+        weighable=bool(raw.get("unit_is_weighable"))
+        or str(raw.get("unit") or "").strip().lower()
+        in ("kg", "кг", "килограмм", "kilogramm", "gramm", "грамм", "gr", "г"),
         category=category,
         brand=brand,
         selling_price=selling,
@@ -5081,6 +5085,7 @@ def cabinet_view(request):
                 str(k): float(v) for k, v in (p.list_prices or {}).items()
             },
             "stock_qty": float(p.stock_qty or 0),
+            "weighable": bool(getattr(p, "weighable", False)),
             "min_stock": float(p.min_stock or 0),
             "is_favorite": bool(p.is_favorite),
             "image": p.display_image,
