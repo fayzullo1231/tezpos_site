@@ -3140,6 +3140,8 @@ def _fetch_sale_details(
                 continue
             if data:
                 out[sid] = data
+    if out:
+        tezpos_api._with_sale_costs(list(out.values()), token, server)
     return out
 
 

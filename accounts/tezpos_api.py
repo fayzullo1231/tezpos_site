@@ -833,7 +833,39 @@ def _sale_total_hint(payload) -> int:
         return 0
 
 
+def _with_sale_costs(sales, token: str, server_name: str):
+    try:
+        from .cost_history import annotate_sales
+
+        return annotate_sales(sales, token, server_name)
+    except Exception:
+        return sales
+
+
 def get_sales(
+    token: str,
+    server_name: str,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    timeout: float = 18,
+    max_pages: int = 60,
+    try_all: bool = True,
+) -> list:
+    """Sotuvlar + har bir qatorga sotuv paytidagi tannarx (kirimlar tarixidan)."""
+    rows = _get_sales_raw(
+        token,
+        server_name,
+        date_from=date_from,
+        date_to=date_to,
+        timeout=timeout,
+        max_pages=max_pages,
+        try_all=try_all,
+    )
+    return _with_sale_costs(rows, token, server_name)
+
+
+def _get_sales_raw(
     token: str,
     server_name: str,
     *,
@@ -991,13 +1023,14 @@ def get_daily_stats(token: str, server_name: str) -> dict:
 
 
 def get_sale(token: str, server_name: str, sale_id: str) -> dict:
-    return api_request(
+    data = api_request(
         "GET",
         f"/api/sales/{sale_id}/",
         token=token,
         server_name=server_name,
         timeout=5,
     )
+    return _with_sale_costs(data, token, server_name)
 
 
 def get_price_lists(token: str, server_name: str) -> list:
