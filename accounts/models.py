@@ -321,6 +321,12 @@ class DebtSmsTemplate(models.Model):
         default="",
         help_text="Qarz qo‘shilsa/ayirilsa xabar boradigan guruh: https://t.me/c/<id>/<topic>",
     )
+    supplier_telegram_group_link = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Taminotchi kirim/qarz xabarlari: https://t.me/c/<id>/<topic>",
+    )
     group_notified = models.JSONField(
         default=dict,
         blank=True,

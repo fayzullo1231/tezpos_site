@@ -43,10 +43,15 @@ def _group_notice_text(debtor: ClientDebtor, entry: ClientDebtorLedger, bal) -> 
     except (InvalidOperation, TypeError, ValueError):
         b = Decimal("0")
     if b < 0:
-        bal_line = f"Qoldiq: +{_fmt_money(abs(b))} so‘m"
+        bal_line = f"🟢 Qoldiq: <b>+{_fmt_money(abs(b))}</b> so‘m"
+    elif b > 0:
+        bal_line = f"🔴 Qoldiq: <b>{_fmt_money(b)}</b> so‘m"
     else:
-        bal_line = f"Qoldiq: {_fmt_money(b)} so‘m"
-    head = f"Qarz: {amt} so‘m" if add else f"To‘lov: {amt} so‘m"
+        bal_line = "Qoldiq: <b>0</b> so‘m"
+    if add:
+        head = f"🔴 Qarz: <b>{amt}</b> so‘m"
+    else:
+        head = f"🟢 To‘lov: <b>{amt}</b> so‘m"
     lines = [f"<b>{esc(debtor.name)}</b>", head, bal_line]
     if (entry.note or "").strip():
         lines.append(f"Izoh: {esc(entry.note.strip())}")

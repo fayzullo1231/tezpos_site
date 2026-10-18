@@ -1105,6 +1105,17 @@
         <div class="debtors-kpi"><span>Biz qarzdamiz</span><strong class="is-debt" id="sup-we-owe">—</strong></div>
         <div class="debtors-kpi"><span>Ular bizdan qarz</span><strong class="is-profit" id="sup-they-owe">—</strong></div>
       </div>
+      <form id="sup-tg-form" class="sup-form cd-tg-form" style="margin:12px 0 18px;padding:14px 16px;border:1px solid #e2e8f0;border-radius:14px;background:#f8fafc">
+        <label class="sup-field">
+          <span>Telegram guruh havolasi (taminotchilar)</span>
+          <input type="text" id="sup-tg-link" maxlength="255" inputmode="url" autocomplete="off" placeholder="https://t.me/c/4446533637/3">
+          <p class="cabinet-hint">POS da tovar <b>qarzga</b> yoki <b>naqdga</b> kirim qilinsa va shu yerda qarz/to‘lov yozilsa — guruhga xabar ketadi. Qarz: 🔴 qizil; +qoldiq / naqd: 🟢 yashil. Saqlashda sinov xabari yuboriladi. Bo‘sh qoldirsangiz, yuborish o‘chadi.</p>
+        </label>
+        <p class="cabinet-hint cd-tg-msg" id="sup-tg-msg" hidden></p>
+        <div class="sup-modal-actions">
+          <button type="submit" class="btn-save" id="sup-tg-save">Tekshirish va saqlash</button>
+        </div>
+      </form>
       <label class="products-search debtors-search">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 104.47 10l4.26 4.27 1.42-1.42-4.27-4.26A6 6 0 0010 4zm0 2a4 4 0 110 8 4 4 0 010-8z"/></svg>
         <input type="search" id="sup-search" placeholder="Qidiruv: taminotchi yoki mahsulot…" autocomplete="off">
@@ -1927,6 +1938,7 @@
     supplierDeleteUrl: "{% url 'accounts:cabinet_supplier_delete' %}",
     supplierProductUrl: "{% url 'accounts:cabinet_supplier_product' %}",
     supplierLedgerUrl: "{% url 'accounts:cabinet_supplier_ledger' %}",
+    suppliersTelegramGroupUrl: "{% url 'accounts:cabinet_suppliers_telegram_group' %}",
     botSettings: {{ bot_settings_json|default:"{}"|safe }},
     labelTemplate: {{ label_template_json|default:"{}"|safe }},
     daySales: {{ day_sales_json|default:"[]"|safe }},

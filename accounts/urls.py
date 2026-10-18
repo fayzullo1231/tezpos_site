@@ -14,6 +14,7 @@ from .client_debts import (
     cabinet_sms_template_save,
 )
 from .suppliers import (
+    api_supplier_kirim,
     cabinet_supplier_delete,
     cabinet_supplier_ledger,
     cabinet_supplier_product,
@@ -22,6 +23,7 @@ from .suppliers import (
     cabinet_suppliers_export,
     cabinet_suppliers_history,
     cabinet_suppliers_summary,
+    cabinet_suppliers_telegram_group,
 )
 from .views import (
     cabinet_abc,
@@ -106,4 +108,10 @@ urlpatterns = [
     path("cabinet/suppliers/delete/", cabinet_supplier_delete, name="cabinet_supplier_delete"),
     path("cabinet/suppliers/product/", cabinet_supplier_product, name="cabinet_supplier_product"),
     path("cabinet/suppliers/ledger/", cabinet_supplier_ledger, name="cabinet_supplier_ledger"),
+    path(
+        "cabinet/suppliers/telegram-group/",
+        cabinet_suppliers_telegram_group,
+        name="cabinet_suppliers_telegram_group",
+    ),
+    path("api/suppliers/kirim/", api_supplier_kirim, name="api_supplier_kirim"),
 ]

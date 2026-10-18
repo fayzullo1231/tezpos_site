@@ -8052,6 +8052,50 @@
     if (prodSearch && !prodResults?.hidden) paintProdResults(prodSearch.value);
   });
 
+  (async () => {
+    if (!data.suppliersTelegramGroupUrl) return;
+    const input = document.getElementById("sup-tg-link");
+    try {
+      const res = await fetch(data.suppliersTelegramGroupUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const json = await res.json();
+      if (res.ok && input) input.value = json.link || "";
+    } catch (_) {}
+  })();
+
+  document.getElementById("sup-tg-form")?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById("sup-tg-msg");
+    const btn = document.getElementById("sup-tg-save");
+    const input = document.getElementById("sup-tg-link");
+    const show = (text, ok) => {
+      if (!msg) return;
+      msg.hidden = false;
+      msg.textContent = text;
+      msg.classList.toggle("is-ok", !!ok);
+      msg.classList.toggle("is-err", !ok);
+    };
+    if (!data.suppliersTelegramGroupUrl) {
+      show("URL topilmadi", false);
+      return;
+    }
+    if (btn) btn.disabled = true;
+    show("Tekshirilmoqda…", true);
+    try {
+      const json = await postJson(data.suppliersTelegramGroupUrl, {
+        link: input?.value || "",
+      });
+      if (input) input.value = json.link || "";
+      show(json.message || "Saqlandi.", true);
+    } catch (e) {
+      show(e.message || "Saqlanmadi", false);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
   syncExportHref();
   loadList();
 })();
