@@ -1938,7 +1938,7 @@
     supplierDeleteUrl: "{% url 'accounts:cabinet_supplier_delete' %}",
     supplierProductUrl: "{% url 'accounts:cabinet_supplier_product' %}",
     supplierLedgerUrl: "{% url 'accounts:cabinet_supplier_ledger' %}",
-    suppliersTelegramGroupUrl: "{% url 'accounts:cabinet_suppliers_telegram_group' %}",
+    suppliersTelegramGroupUrl: "/accounts/cabinet/suppliers/telegram-group/",
     botSettings: {{ bot_settings_json|default:"{}"|safe }},
     labelTemplate: {{ label_template_json|default:"{}"|safe }},
     daySales: {{ day_sales_json|default:"[]"|safe }},

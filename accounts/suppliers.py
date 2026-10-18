@@ -16,12 +16,23 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from .auth_views import session_has_tezpos
 from .models import DebtSmsTemplate, Supplier, SupplierLedger, SupplierProduct
-from .telethon_debt import (
-    enqueue_group_message,
-    parse_group_link,
-    send_group_message,
-    telethon_configured,
-)
+
+
+def _tg():
+    """Lazy import — Telethon yo‘q bo‘lsa ham kabinet ochilsin."""
+    from .telethon_debt import (
+        enqueue_group_message,
+        parse_group_link,
+        send_group_message,
+        telethon_configured,
+    )
+
+    return {
+        "enqueue_group_message": enqueue_group_message,
+        "parse_group_link": parse_group_link,
+        "send_group_message": send_group_message,
+        "telethon_configured": telethon_configured,
+    }
 
 
 def _label_shop_key(request) -> str:
@@ -74,13 +85,17 @@ def _shop(request) -> str:
 
 
 def _supplier_group_link(shop: str) -> str:
-    link = (
-        DebtSmsTemplate.objects.filter(shop_key=(shop or "").strip().lower())
-        .values_list("supplier_telegram_group_link", flat=True)
-        .first()
-        or ""
-    ).strip()
-    return link if parse_group_link(link) else ""
+    try:
+        link = (
+            DebtSmsTemplate.objects.filter(shop_key=(shop or "").strip().lower())
+            .values_list("supplier_telegram_group_link", flat=True)
+            .first()
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+    tg = _tg()
+    return link if tg["parse_group_link"](link) else ""
 
 
 def _supplier_notice_text(
@@ -131,8 +146,9 @@ def _notify_supplier_group(
     is_debt: bool = True,
 ) -> None:
     try:
+        tg = _tg()
         link = _supplier_group_link(shop)
-        if not link or not telethon_configured():
+        if not link or not tg["telethon_configured"]():
             return
         text = _supplier_notice_text(
             supplier,
@@ -142,7 +158,8 @@ def _notify_supplier_group(
             note=note,
             is_debt=is_debt,
         )
-        transaction.on_commit(lambda: enqueue_group_message(link, text))
+        enqueue = tg["enqueue_group_message"]
+        transaction.on_commit(lambda: enqueue(link, text))
     except Exception:
         pass
 
@@ -712,19 +729,20 @@ def cabinet_suppliers_telegram_group(request):
             {"ok": True, "link": "", "message": "Taminotchi guruh havolasi o‘chirildi."}
         )
 
-    info = parse_group_link(raw)
+    tg = _tg()
+    info = tg["parse_group_link"](raw)
     if not info:
         return JsonResponse(
             {"error": "Havola noto‘g‘ri. Masalan: https://t.me/c/4446533637/3"},
             status=400,
         )
     link = info["normalized"]
-    if not telethon_configured():
+    if not tg["telethon_configured"]():
         return JsonResponse(
             {"error": "Telegram (Telethon) serverda sozlanmagan"}, status=400
         )
 
-    test = send_group_message(
+    test = tg["send_group_message"](
         link,
         "<b>Taminotchilar</b>\n"
         "Tovar kirim (qarz/naqd) va qarz o‘zgarishlari shu guruhga yuboriladi.\n"
