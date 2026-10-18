@@ -4431,6 +4431,13 @@ body.cabinet-body {
   .cabinet-kpi { grid-template-columns: 1fr; }
 }
 
+.sup-list-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: .55rem .75rem; margin: 0 0 .65rem;
+}
+.sup-list-toolbar .sup-select-hint { margin: 0; }
+.sup-sort-wrap { margin-left: auto; flex: 0 0 auto; }
+.sup-sort-wrap .cabinet-select { min-width: 9.5rem; }
 .sup-select-hint {
   margin: 0 0 .65rem; color: #64748b; font-size: .82rem; font-weight: 600;
   display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;

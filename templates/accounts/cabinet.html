@@ -1115,10 +1115,14 @@
         <button type="button" class="sup-tab" data-tab="telegram" id="sup-tab-telegram">Telegram</button>
       </div>
       <div id="sup-list-wrap">
-        <p class="sup-select-hint"><label><input type="checkbox" id="sup-select-all"> Excel uchun belgilash</label> <span id="sup-selected-count"></span></p>
-        <div class="sup-hist-filters" id="sup-sort-filters" aria-label="Summa bo‘yicha saralash">
-          <button type="button" class="sup-chip-btn is-active" data-sup-sort="amt_desc">Ko‘p → kam</button>
-          <button type="button" class="sup-chip-btn" data-sup-sort="amt_asc">Kam → ko‘p</button>
+        <div class="sup-list-toolbar">
+          <p class="sup-select-hint"><label><input type="checkbox" id="sup-select-all"> Excel uchun belgilash</label> <span id="sup-selected-count"></span></p>
+          <label class="cabinet-select-wrap sup-sort-wrap">
+            <select id="sup-sort-select" class="cabinet-select" aria-label="Summa bo‘yicha saralash">
+              <option value="amt_desc" selected>Ko‘p → kam</option>
+              <option value="amt_asc">Kam → ko‘p</option>
+            </select>
+          </label>
         </div>
         <div class="debtors-list" id="suppliers-list">
           <div class="cab-inline-skel cab-inline-skel--lines" aria-hidden="true">

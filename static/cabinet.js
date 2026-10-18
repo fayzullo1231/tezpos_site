@@ -7883,15 +7883,15 @@
     paintList();
   });
 
-  document.getElementById("sup-sort-filters")?.addEventListener("click", (ev) => {
-    const btn = ev.target.closest("[data-sup-sort]");
-    if (!btn) return;
-    listSort = btn.getAttribute("data-sup-sort") || "amt_desc";
-    document.querySelectorAll("#sup-sort-filters .sup-chip-btn").forEach((el) => {
-      el.classList.toggle("is-active", el === btn);
+  const sortSelect = document.getElementById("sup-sort-select");
+  if (sortSelect) {
+    sortSelect.value = "amt_desc";
+    listSort = "amt_desc";
+    sortSelect.addEventListener("change", () => {
+      listSort = sortSelect.value || "amt_desc";
+      paintList();
     });
-    paintList();
-  });
+  }
 
   selectAll?.addEventListener("change", () => {
     const rows = filtered();
