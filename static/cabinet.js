@@ -7526,6 +7526,7 @@
   let detailHistFilter = "all";
   let historyRows = [];
   let prodPick = null;
+  let listSort = "amt_desc";
 
   const countEl = document.getElementById("sup-count");
   const weEl = document.getElementById("sup-we-owe");
@@ -7604,18 +7605,34 @@
     </article>`;
   };
 
+  const balanceAmt = (row) => {
+    const we = Number(row.we_owe) || 0;
+    const they = Number(row.they_owe) || 0;
+    if (row.status === "they_owe") return they;
+    if (row.status === "we_owe") return we;
+    return Math.max(we, they);
+  };
+
   const filtered = () => {
     const q = query.trim().toLowerCase();
-    if (!q) return suppliers;
-    return suppliers.filter((s) => {
-      const name = String(s.name || "").toLowerCase();
-      const phone = String(s.phone || "").toLowerCase();
-      const note = String(s.note || "").toLowerCase();
-      const prods = (s.products || [])
-        .map((p) => String(p.name || "").toLowerCase())
-        .join(" ");
-      return name.includes(q) || phone.includes(q) || note.includes(q) || prods.includes(q);
+    let rows = !q
+      ? suppliers.slice()
+      : suppliers.filter((s) => {
+          const name = String(s.name || "").toLowerCase();
+          const phone = String(s.phone || "").toLowerCase();
+          const note = String(s.note || "").toLowerCase();
+          const prods = (s.products || [])
+            .map((p) => String(p.name || "").toLowerCase())
+            .join(" ");
+          return name.includes(q) || phone.includes(q) || note.includes(q) || prods.includes(q);
+        });
+    const dir = listSort === "amt_asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const d = (balanceAmt(a) - balanceAmt(b)) * dir;
+      if (d !== 0) return d;
+      return String(a.name || "").localeCompare(String(b.name || ""), "uz");
     });
+    return rows;
   };
 
   const paintList = () => {
@@ -7863,6 +7880,16 @@
 
   searchEl?.addEventListener("input", () => {
     query = searchEl.value || "";
+    paintList();
+  });
+
+  document.getElementById("sup-sort-filters")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-sup-sort]");
+    if (!btn) return;
+    listSort = btn.getAttribute("data-sup-sort") || "amt_desc";
+    document.querySelectorAll("#sup-sort-filters .sup-chip-btn").forEach((el) => {
+      el.classList.toggle("is-active", el === btn);
+    });
     paintList();
   });
 
