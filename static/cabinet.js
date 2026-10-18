@@ -7535,6 +7535,8 @@
   const searchEl = document.getElementById("sup-search");
   const listWrap = document.getElementById("sup-list-wrap");
   const historyWrap = document.getElementById("sup-history-wrap");
+  const tgWrap = document.getElementById("sup-tg-wrap");
+  const searchWrap = document.getElementById("sup-search-wrap");
   const historyList = document.getElementById("sup-history-list");
   const historyEmpty = document.getElementById("sup-history-empty");
   const modal = document.getElementById("sup-modal");
@@ -7908,6 +7910,8 @@
       const tab = btn.getAttribute("data-tab");
       if (listWrap) listWrap.hidden = tab !== "list";
       if (historyWrap) historyWrap.hidden = tab !== "history";
+      if (tgWrap) tgWrap.hidden = tab !== "telegram";
+      if (searchWrap) searchWrap.hidden = tab === "telegram";
       if (tab === "history") loadHistory();
     });
   });
