@@ -107,29 +107,26 @@ def _supplier_notice_text(
     note: str = "",
     is_debt: bool = True,
 ) -> str:
-    """Telegram: qarz — 🔴, ortiqcha/oldindan — 🟢 +summa."""
+    """Telegram: nomi, amal, qoldiq, sana — emoji yo‘q."""
 
     def esc(s):
         return html.escape(s, quote=False)
 
     amt = _fmt_money(abs(amount))
-    if is_debt:
-        head = f"🔴 {esc(payment_label)}: <b>{amt}</b> so‘m"
-    else:
-        head = f"🟢 {esc(payment_label)}: <b>{amt}</b> so‘m"
+    head = f"{esc(payment_label)}: {amt} so‘m"
 
     try:
         b = Decimal(str(balance or 0))
     except (InvalidOperation, TypeError, ValueError):
         b = Decimal("0")
     if b < 0:
-        bal_line = f"🟢 Qoldiq: <b>+{_fmt_money(abs(b))}</b> so‘m"
+        bal_line = f"Qoldiq: +{_fmt_money(abs(b))} so‘m"
     elif b > 0:
-        bal_line = f"🔴 Qoldiq (biz qarzdamiz): <b>{_fmt_money(b)}</b> so‘m"
+        bal_line = f"Qoldiq (biz qarzdamiz): {_fmt_money(b)} so‘m"
     else:
-        bal_line = "Qoldiq: <b>0</b> so‘m"
+        bal_line = "Qoldiq: 0 so‘m"
 
-    lines = [f"<b>{esc(supplier.name)}</b>", head, bal_line]
+    lines = [esc(supplier.name), head, bal_line]
     if (note or "").strip():
         lines.append(f"Izoh: {esc(note.strip())}")
     lines.append(_fmt_dt(timezone.now()))
@@ -676,7 +673,6 @@ def cabinet_supplier_ledger(request):
         )
 
     labels = dict(SupplierLedger.KIND_CHOICES)
-    # Biz qarz oldik / ular to‘ladi → qizil; ular qarz / biz to‘ladik → yashil
     is_debt = kind in (SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_PAY)
     _notify_supplier_group(
         shop,
@@ -744,9 +740,8 @@ def cabinet_suppliers_telegram_group(request):
 
     test = tg["send_group_message"](
         link,
-        "<b>Taminotchilar</b>\n"
-        "Tovar kirim (qarz/naqd) va qarz o‘zgarishlari shu guruhga yuboriladi.\n"
-        "🔴 qarz · 🟢 oldindan / +qoldiq",
+        "Taminotchilar\n"
+        "Tovar kirim (qarz/naqd) va qarz o‘zgarishlari shu guruhga yuboriladi.",
     )
     if not test.get("ok"):
         return JsonResponse(
@@ -791,8 +786,8 @@ def _api_json_body(request) -> dict:
 def api_supplier_kirim(request):
     """
     POS kirim: payment_type=credit|cash.
-    credit → biz qarz (we_owe) + Telegram 🔴
-    cash → faqat Telegram 🟢 (qarz yozilmaydi)
+    credit → biz qarz (we_owe) + Telegram
+    cash → faqat Telegram (qarz yozilmaydi)
     Auth: Token + X-Server-Name (mijoz qarzlari API kabi).
     """
     if request.method == "OPTIONS":
