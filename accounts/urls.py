@@ -15,6 +15,8 @@ from .client_debts import (
 )
 from .suppliers import (
     api_supplier_kirim,
+    api_supplier_ledger,
+    api_suppliers,
     cabinet_supplier_delete,
     cabinet_supplier_ledger,
     cabinet_supplier_product,
@@ -114,4 +116,6 @@ urlpatterns = [
         name="cabinet_suppliers_telegram_group",
     ),
     path("api/suppliers/kirim/", api_supplier_kirim, name="api_supplier_kirim"),
+    path("api/suppliers/ledger/", api_supplier_ledger, name="api_supplier_ledger"),
+    path("api/suppliers/", api_suppliers, name="api_suppliers"),
 ]

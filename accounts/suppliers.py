@@ -860,3 +860,172 @@ def api_supplier_kirim(request):
             }
         )
     )
+
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def api_suppliers(request):
+    """
+    POS: barcha taminotchilar + qoldiq (bitta so‘rov).
+    ?id=<pk> — bitta taminotchi + to‘liq tarix.
+    Auth: Token + X-Server-Name.
+    """
+    if request.method == "OPTIONS":
+        return _cors(JsonResponse({"ok": True}))
+    from django.db.models import Max, Q, Sum
+
+    from .client_debts import _token_shop
+
+    try:
+        shop = _token_shop(request)
+    except Exception as exc:
+        return _cors(JsonResponse({"error": str(exc)}, status=401))
+
+    one = (request.GET.get("id") or "").strip()
+    if one:
+        try:
+            row = Supplier.objects.get(pk=int(one), shop_key=shop, is_active=True)
+        except (Supplier.DoesNotExist, TypeError, ValueError):
+            return _cors(JsonResponse({"error": "Taminotchi topilmadi"}, status=404))
+        return _cors(
+            JsonResponse(
+                {
+                    "ok": True,
+                    "supplier": _serialize_supplier(
+                        row, with_products=False, with_ledger=True, ledger_limit=500
+                    ),
+                }
+            )
+        )
+
+    qs = (
+        Supplier.objects.filter(shop_key=shop, is_active=True)
+        .annotate(
+            bal=Sum("ledger__signed_amount"),
+            last_in=Max(
+                "ledger__created_at",
+                filter=Q(ledger__kind__in=[SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_PAY]),
+            ),
+            last_pay=Max(
+                "ledger__created_at",
+                filter=Q(ledger__kind__in=[SupplierLedger.KIND_WE_PAY, SupplierLedger.KIND_THEY_OWE]),
+            ),
+        )
+        .order_by("name")
+    )
+    rows = []
+    we_owe = Decimal("0")
+    they_owe = Decimal("0")
+    for s in qs:
+        bal = s.bal if s.bal is not None else Decimal("0")
+        if bal > 0:
+            we_owe += bal
+        elif bal < 0:
+            they_owe += -bal
+        rows.append(
+            {
+                "id": s.pk,
+                "name": s.name,
+                "phone": s.phone or "",
+                "balance": float(bal),
+                "last_in": s.last_in.isoformat() if s.last_in else "",
+                "last_pay": s.last_pay.isoformat() if s.last_pay else "",
+            }
+        )
+    return _cors(
+        JsonResponse(
+            {
+                "ok": True,
+                "suppliers": rows,
+                "summary": {
+                    "suppliers_count": len(rows),
+                    "we_owe": float(we_owe),
+                    "they_owe": float(they_owe),
+                },
+            }
+        )
+    )
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def api_supplier_ledger(request):
+    """
+    POS: taminotchi qarz/to‘lov yozuvi (cabinet_supplier_ledger kabi).
+    body: supplier_id | supplier_name, kind, amount, note.
+    """
+    if request.method == "OPTIONS":
+        return _cors(JsonResponse({"ok": True}))
+    from datetime import timedelta
+
+    from .client_debts import _token_shop
+
+    try:
+        shop = _token_shop(request)
+    except Exception as exc:
+        return _cors(JsonResponse({"error": str(exc)}, status=401))
+
+    body = _api_json_body(request)
+    kind = str(body.get("kind") or "").strip()
+    if kind not in {c[0] for c in SupplierLedger.KIND_CHOICES}:
+        return _cors(JsonResponse({"error": "Amal turi noto‘g‘ri"}, status=400))
+    amount = _dec(body.get("amount"))
+    if amount <= 0:
+        return _cors(JsonResponse({"error": "Summa 0 dan katta bo‘lishi kerak"}, status=400))
+    note = str(body.get("note") or "").strip()[:255]
+
+    supplier = None
+    sid = body.get("supplier_id")
+    if sid not in (None, ""):
+        try:
+            supplier = Supplier.objects.get(pk=int(sid), shop_key=shop, is_active=True)
+        except (Supplier.DoesNotExist, TypeError, ValueError):
+            supplier = None
+    if supplier is None:
+        name = str(body.get("supplier_name") or "").strip()
+        if not name:
+            return _cors(JsonResponse({"error": "Taminotchi topilmadi"}, status=404))
+        supplier = _ensure_supplier(shop, name, str(body.get("phone") or "").strip()[:40])
+
+    dup = (
+        SupplierLedger.objects.filter(
+            supplier=supplier,
+            kind=kind,
+            amount=amount,
+            note=note,
+            created_at__gte=timezone.now() - timedelta(minutes=10),
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if dup:
+        return _cors(
+            JsonResponse(
+                {"ok": True, "duplicate": True, "entry": _serialize_ledger(dup), "balance": float(supplier.balance())}
+            )
+        )
+
+    with transaction.atomic():
+        entry = SupplierLedger.objects.create(
+            supplier=supplier,
+            kind=kind,
+            amount=amount,
+            signed_amount=SupplierLedger.sign_for(kind, amount),
+            note=note,
+            created_by=shop[:180],
+            created_at=timezone.now(),
+        )
+        labels = dict(SupplierLedger.KIND_CHOICES)
+        _notify_supplier_group(
+            shop,
+            supplier,
+            payment_label=labels.get(kind, kind),
+            amount=amount,
+            note=note,
+            is_debt=kind in (SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_PAY),
+        )
+    return _cors(
+        JsonResponse(
+            {"ok": True, "entry": _serialize_ledger(entry), "balance": float(supplier.balance())}
+        )
+    )
