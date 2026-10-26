@@ -32,6 +32,7 @@ from .telethon_debt import (
     ensure_telegram_resolved,
     parse_group_link,
     send_group_message,
+    send_text_by_phone,
     telethon_configured,
     telethon_public_status,
     uses_shared_telethon,
@@ -212,7 +213,13 @@ def _deliver_debt_notice(
             enqueue_text_by_phone(debtor, msg)
             tg_ok = True
         except Exception as exc:
-            tg_err = str(exc)[:200]
+            logger.warning("Telegram navbat yozilmadi, to'g'ridan yuboriladi: %s", exc)
+            try:
+                res = send_text_by_phone(debtor.phone, msg, debtor=debtor)
+                tg_ok = bool(res.get("ok"))
+                tg_err = "" if tg_ok else str(res.get("error") or exc)[:200]
+            except Exception as exc2:
+                tg_err = str(exc2)[:200]
     else:
         tg_err = "Telethon sozlanmagan"
 
@@ -307,7 +314,9 @@ def _fetch_sale_check_items(shop: str, ref: str) -> list[dict]:
     return _normalize_ledger_items(data.get("items"))
 
 
-def _resolve_sale_items(shop: str, body: dict, note: str) -> tuple[list[dict], str]:
+def _resolve_sale_items(
+    shop: str, body: dict, note: str, *, fetch_remote: bool = False
+) -> tuple[list[dict], str]:
     items = _normalize_ledger_items((body or {}).get("items"))
     ref = str(
         (body or {}).get("sale_ref")
@@ -317,7 +326,8 @@ def _resolve_sale_items(shop: str, body: dict, note: str) -> tuple[list[dict], s
     if not ref:
         ref = _chek_ref_from_note(note)
     link = str((body or {}).get("check_link") or "").strip()
-    if not items and ref:
+    # Yuborishni to‘xtatmaslik: backend chekni so‘ramaymiz (timeout/500)
+    if fetch_remote and not items and ref:
         items = _fetch_sale_check_items(shop, ref)
     if not link and ref:
         link = f"https://tez-pos.uz/check/{shop}/{ref}/"
@@ -325,11 +335,18 @@ def _resolve_sale_items(shop: str, body: dict, note: str) -> tuple[list[dict], s
 
 
 def _attach_entry_items(shop: str, entry: ClientDebtorLedger, body: dict, note: str) -> tuple[list[dict], str]:
-    items, link = _resolve_sale_items(shop, body or {}, note)
-    if items:
-        entry.items = items
-        entry.save(update_fields=["items"])
-    return items, link
+    try:
+        items, link = _resolve_sale_items(shop, body or {}, note, fetch_remote=False)
+        if items:
+            try:
+                entry.items = items
+                entry.save(update_fields=["items"])
+            except Exception:
+                logger.warning("ledger items saqlanmadi shop=%s", shop, exc_info=True)
+        return items, link
+    except Exception:
+        logger.exception("attach items xato shop=%s", shop)
+        return [], ""
 
 
 def _maybe_deliver_personal(
@@ -356,31 +373,47 @@ def _maybe_deliver_personal(
     if not allow_sms and not allow_tg:
         _maybe_resolve_telegram(debtor)
         return None
-    tpl = _get_or_create_template(shop, tenant)
-    text = _render_sms(
-        tpl,
-        amount=amount,
-        balance=balance,
-        name=name,
-        note=note,
-        check_link=check_url,
-        request=request,
-        kind=kind,
-        due=getattr(debtor, "due_date", None),
-        items=items if items is not None else list(getattr(entry, "items", None) or []),
-    )
-    logger.info(
-        "Qarz xabari: shop=%s phone=%s tg=%s sms=%s",
-        shop,
-        debtor.phone,
-        allow_tg,
-        allow_sms,
-    )
-    res = _deliver_debt_notice(debtor, text, allow_sms=allow_sms)
-    if res.get("ok") and entry is not None:
-        entry.sms_sent = True
-        entry.save(update_fields=["sms_sent"])
-    return res
+    try:
+        raw_items = items
+        if raw_items is None:
+            try:
+                raw_items = list(getattr(entry, "items", None) or [])
+            except Exception:
+                raw_items = []
+        tpl = _get_or_create_template(shop, tenant)
+        text = _render_sms(
+            tpl,
+            amount=amount,
+            balance=balance,
+            name=name,
+            note=note,
+            check_link=check_url,
+            request=request,
+            kind=kind,
+            due=getattr(debtor, "due_date", None),
+            items=raw_items,
+        )
+        if len(text) > 3900:
+            text = text[:3890] + "\n…"
+        logger.info(
+            "Qarz xabari: shop=%s phone=%s tg=%s sms=%s items=%s",
+            shop,
+            debtor.phone,
+            allow_tg,
+            allow_sms,
+            len(raw_items or []),
+        )
+        res = _deliver_debt_notice(debtor, text, allow_sms=allow_sms)
+        if res.get("ok") and entry is not None:
+            try:
+                entry.sms_sent = True
+                entry.save(update_fields=["sms_sent"])
+            except Exception:
+                pass
+        return res
+    except Exception:
+        logger.exception("qarz xabari yuborilmadi shop=%s", shop)
+        return {"ok": False, "error": "Xabar yuborilmadi", "channel": "none"}
 
 
 def _shop(request) -> str:
