@@ -30,20 +30,6 @@ KIND_SOON = "soon"
 KIND_DUE_TODAY = "due_today"
 KIND_OVERDUE = "overdue"
 
-MSG_DUE_TODAY = (
-    "Assalomu alaykum! Hurmatli mijoz, {shop}dagi {amount} so‘mlik qarzingizni "
-    "bugun, {date} kuni qaytarish muddati belgilangan. Iltimos, qarzingizni "
-    "o‘z vaqtida to‘lashni unutmang."
-)
-MSG_SOON = (
-    "Eslatma! Hurmatli mijoz, {shop}dagi {amount} so‘mlik qarzingizni qaytarish "
-    "muddati {date} kuni. To‘lovni o‘z vaqtida amalga oshirishingizni so‘raymiz."
-)
-MSG_OVERDUE = (
-    "Hurmatli mijoz! Sizning {shop}dagi {amount} so‘mlik qarzingizni to‘lash "
-    "muddati {date} kuni tugagan. Hozirda to‘lov {days} kun kechikkan. "
-    "Iltimos, qarzingizni imkon qadar tezroq to‘lashingizni so‘raymiz."
-)
 PLACEHOLDER_NAMES = {"tezpos", "qarz", "mijoz", "tp"}
 
 # Telegram: resolvePhone — max 1 so‘rov ~3 soniyada
@@ -119,6 +105,12 @@ def _shop_short(shop_key: str) -> str:
     return label
 
 
+def _shop_template_label(shop_key: str) -> str:
+    tpl = DebtSmsTemplate.objects.filter(shop_key=shop_key).first()
+    label = ((tpl.shop_label if tpl else "") or "").strip()
+    return label or "Kulol Optom"
+
+
 def build_reminder_text(
     *,
     kind: str,
@@ -127,15 +119,20 @@ def build_reminder_text(
     due: date,
     overdue_days: int = 0,
 ) -> str:
-    amount_s = _fmt_amount(amount)
-    date_s = due.strftime("%d.%m.%Y")
-    shop_s = (shop or "Kulol Optom").strip()
+    days = max(1, int(overdue_days or 0))
     if kind == KIND_DUE_TODAY:
-        return MSG_DUE_TODAY.format(shop=shop_s, amount=amount_s, date=date_s)
-    if kind == KIND_SOON:
-        return MSG_SOON.format(shop=shop_s, amount=amount_s, date=date_s)
-    return MSG_OVERDUE.format(
-        shop=shop_s, amount=amount_s, date=date_s, days=max(1, int(overdue_days))
+        reminder = "Eslatma: qarzni qaytarish muddati bugun."
+    elif kind == KIND_SOON:
+        reminder = "Eslatma: qarzni qaytarish 1 kun qoldi."
+    else:
+        reminder = f"Eslatma: qarzni qaytarish {days} kun kechikkan."
+    return devsms.build_client_debt_message(
+        shop=(shop or "Kulol Optom").strip() or "Kulol Optom",
+        transaction_amount=amount,
+        balance=amount,
+        check_link=devsms.DEFAULT_CLIENT_CHECK,
+        due_date=due,
+        reminder=reminder,
     )
 
 
@@ -882,34 +879,72 @@ def send_group_message(
         return {"ok": False, "error": str(exc)[:200]}
 
 
-_group_queue: "queue.Queue[tuple[str, str, str]]" = queue.Queue()
-_group_worker: threading.Thread | None = None
-_group_lock = threading.Lock()
+_JOB_GROUP = "group"
+_JOB_DM = "dm"
+_tg_queue: "queue.Queue[tuple]" = queue.Queue()
+_tg_worker: threading.Thread | None = None
+_tg_lock = threading.Lock()
 
 
-def _group_loop() -> None:
+def _tg_loop() -> None:
     while True:
-        shop_key, link, text = _group_queue.get()
+        job = _tg_queue.get()
         try:
-            res = send_group_message(link, text, shop_key=shop_key)
-            if not res.get("ok"):
-                logger.warning("Guruhga qarz xabari yuborilmadi link=%s err=%s", link, res.get("error"))
+            kind = job[0] if job else ""
+            if kind == _JOB_GROUP:
+                _shop, link, text = job[1], job[2], job[3]
+                res = send_group_message(link, text, shop_key=_shop)
+                if not res.get("ok"):
+                    logger.warning(
+                        "Guruhga qarz xabari yuborilmadi link=%s err=%s",
+                        link,
+                        res.get("error"),
+                    )
+            elif kind == _JOB_DM:
+                debtor_id, text = job[1], job[2]
+                try:
+                    debtor = ClientDebtor.objects.filter(pk=int(debtor_id)).first()
+                except Exception:
+                    debtor = None
+                if debtor is None:
+                    logger.warning("Telegram DM: qarzdor %s topilmadi", debtor_id)
+                else:
+                    res = send_text_by_phone(debtor.phone, text, debtor=debtor)
+                    if not res.get("ok"):
+                        logger.warning(
+                            "Telegram DM yuborilmadi name=%s phone=%s err=%s",
+                            debtor.name,
+                            debtor.phone,
+                            res.get("error"),
+                        )
         except Exception:
-            logger.exception("Guruhga qarz xabari xato")
+            logger.exception("Telegram navbat xato")
         finally:
-            _group_queue.task_done()
+            _tg_queue.task_done()
+
+
+def _ensure_tg_worker() -> None:
+    global _tg_worker
+    with _tg_lock:
+        if _tg_worker is None or not _tg_worker.is_alive():
+            _tg_worker = threading.Thread(
+                target=_tg_loop, name="tg-debt-notify", daemon=True
+            )
+            _tg_worker.start()
 
 
 def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
     """Javobni kutmasdan fon oqimida ketma-ket yuboradi."""
-    global _group_worker
-    _group_queue.put(((shop_key or "").strip().lower(), link, text))
-    with _group_lock:
-        if _group_worker is None or not _group_worker.is_alive():
-            _group_worker = threading.Thread(
-                target=_group_loop, name="tg-group-notify", daemon=True
-            )
-            _group_worker.start()
+    _tg_queue.put((_JOB_GROUP, (shop_key or "").strip().lower(), link, text))
+    _ensure_tg_worker()
+
+
+def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
+    """Qarzdor telefoniga userbot orqali (navbat, sessionni buzmaslik)."""
+    if debtor is None or not (text or "").strip():
+        return
+    _tg_queue.put((_JOB_DM, int(debtor.pk), (text or "").strip()))
+    _ensure_tg_worker()
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:
@@ -943,7 +978,7 @@ def send_debt_reminder(debtor: ClientDebtor, kind: str) -> dict[str, Any]:
     overdue_days = max(0, (timezone.localdate() - debtor.due_date).days)
     text = build_reminder_text(
         kind=kind,
-        shop=_shop_short(debtor.shop_key),
+        shop=_shop_template_label(debtor.shop_key),
         amount=bal,
         due=debtor.due_date,
         overdue_days=overdue_days,
@@ -966,7 +1001,7 @@ def send_debt_reminders_batch(jobs: list[tuple[ClientDebtor, str]]) -> list[dict
         overdue_days = max(0, (timezone.localdate() - debtor.due_date).days)
         text = build_reminder_text(
             kind=kind,
-            shop=_shop_short(debtor.shop_key),
+            shop=_shop_template_label(debtor.shop_key),
             amount=bal,
             due=debtor.due_date,
             overdue_days=overdue_days,

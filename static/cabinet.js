@@ -8924,11 +8924,15 @@
         msg.hidden = false;
         const sms = json.sms;
         msg.textContent =
-          sms && !sms.ok
-            ? `Saqlandi, SMS: ${sms.error || "xato"}`
-            : sms && sms.ok
-              ? "Saqlandi · SMS yuborildi"
-              : "Saqlandi";
+          sms && sms.telegram_ok && sms.sms_ok
+            ? "Saqlandi · Telegram va SMS yuborildi"
+            : sms && sms.telegram_ok
+              ? "Saqlandi · Telegram yuborildi"
+              : sms && sms.sms_ok
+                ? "Saqlandi · SMS yuborildi"
+                : sms && !sms.ok && sms.error
+                  ? `Saqlandi, xabar: ${sms.error}`
+                  : "Saqlandi";
       }
       document.getElementById("cd-adj-amount").value = "";
       document.getElementById("cd-adj-note").value = "";

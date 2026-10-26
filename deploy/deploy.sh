@@ -85,6 +85,12 @@ systemctl restart tezpos-site
 if [[ -f /etc/systemd/system/tezpos-telegram-sync.timer ]]; then
   systemctl enable --now tezpos-telegram-sync.timer || true
 fi
+if [[ -f "$APP_DIR/deploy/tezpos-debt-telegram.service" ]]; then
+  cp -f "$APP_DIR/deploy/tezpos-debt-telegram.service" /etc/systemd/system/
+  cp -f "$APP_DIR/deploy/tezpos-debt-telegram.timer" /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now tezpos-debt-telegram.timer || true
+fi
 systemctl reload nginx || true
 
 echo "OK: http://tez-pos.uz (nginx + gunicorn :8001)"

@@ -71,6 +71,27 @@ def _normalize_sms_text(text: str) -> str:
 DEFAULT_CLIENT_CHECK = "https://tez-pos.uz/"
 
 
+def _fmt_due(value) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "strftime"):
+        try:
+            return value.strftime("%d.%m.%Y")
+        except Exception:
+            return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        try:
+            from datetime import datetime
+
+            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+        except ValueError:
+            return s
+    return s
+
+
 def build_client_debt_message(
     *,
     shop: str,
@@ -78,6 +99,8 @@ def build_client_debt_message(
     transaction_amount,
     balance,
     check_link: str = "",
+    due_date=None,
+    reminder: str = "",
 ) -> str:
     """
     Mijoz qarzlari (kabinet) — DevSMS shabloni:
@@ -113,15 +136,15 @@ def build_client_debt_message(
         qarz_line = f"Qarz: {_fmt_som(tx)} so'm"
         qoldiq_line = f"Qoldiq: {_fmt_som(abs(bal))} so'm"
 
-    text = (
-        f"{head}\n"
-        f"\n"
-        f"{qarz_line}\n"
-        f"\n"
-        f"{qoldiq_line}\n"
-        f"\n"
-        f"Chek : {link}"
-    )
+    parts = [head, "", qarz_line, "", qoldiq_line]
+    due_s = _fmt_due(due_date)
+    if due_s:
+        parts += ["", f"Qaytarish: {due_s}"]
+    rem = (reminder or "").strip()
+    if rem:
+        parts += ["", rem]
+    parts += ["", f"Chek : {link}"]
+    text = "\n".join(parts)
     return _normalize_sms_text(text)
 
 

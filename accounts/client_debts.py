@@ -27,10 +27,10 @@ from .auth_views import SESSION_DISPLAY, SESSION_SERVER
 from .models import ClientDebtor, ClientDebtorLedger, DebtSmsTemplate, TenantProfile
 from .telethon_debt import (
     enqueue_group_message,
+    enqueue_text_by_phone,
     ensure_telegram_resolved,
     parse_group_link,
     send_group_message,
-    send_text_by_phone,
     telethon_configured,
     telethon_public_status,
     uses_shared_telethon,
@@ -189,9 +189,11 @@ def _sms_enabled_for(shop: str) -> bool:
     )
 
 
-def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
+def _deliver_debt_notice(
+    debtor: ClientDebtor, text: str, *, allow_sms: bool | None = None
+) -> dict:
     """
-    Qarz matni: Telegram va DevSMS — ikkalasiga ham yuboriladi.
+    Qarz matni: Telegram userbot (raqam) doim — Dev SMS faqat sayt yoqiq bo‘lsa.
     Kontaktga saqlanmaydi — raqam bo‘yicha resolvePhone.
     """
     msg = (text or "").strip()
@@ -206,16 +208,8 @@ def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     tg_id = ""
     if telethon_configured(shop):
         try:
-            res = send_text_by_phone(debtor.phone, msg, debtor=debtor)
-            if res.get("ok"):
-                tg_ok = True
-                tg_id = str(res.get("telegram_id") or "")
-                try:
-                    debtor.refresh_from_db()
-                except Exception:
-                    pass
-            else:
-                tg_err = str(res.get("error") or "Telegram yuborilmadi")
+            enqueue_text_by_phone(debtor, msg)
+            tg_ok = True
         except Exception as exc:
             tg_err = str(exc)[:200]
     else:
@@ -224,7 +218,9 @@ def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     sms: dict = {"ok": False, "skipped": True}
     sms_ok = False
     sms_err = ""
-    if _sms_enabled_for(shop):
+    if allow_sms is None:
+        allow_sms = _sms_enabled_for(shop)
+    if allow_sms and _sms_enabled_for(shop):
         sms = devsms.send_dev_sms(phone=debtor.phone, message=msg)
         sms_ok = bool(sms.get("ok"))
         sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
@@ -258,6 +254,48 @@ def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
         "error": "" if ok and tg_ok and sms_ok else (" | ".join(err_parts) or ""),
         "id": sms.get("id") if isinstance(sms, dict) else None,
     }
+
+
+def _maybe_deliver_personal(
+    *,
+    shop: str,
+    debtor: ClientDebtor,
+    amount,
+    balance,
+    name: str,
+    note: str,
+    check_url: str,
+    request,
+    kind: str,
+    tenant: TenantProfile | None = None,
+    send_sms: bool = False,
+    entry: ClientDebtorLedger | None = None,
+) -> dict | None:
+    """Userbot orqali raqamga Dev SMS shabloni; SMS faqat sayt yoqiq bo‘lsa."""
+    if not (debtor.phone or "").strip():
+        return None
+    allow_sms = bool(send_sms) and _sms_enabled_for(shop)
+    allow_tg = telethon_configured(shop)
+    if not allow_sms and not allow_tg:
+        _maybe_resolve_telegram(debtor)
+        return None
+    tpl = _get_or_create_template(shop, tenant)
+    text = _render_sms(
+        tpl,
+        amount=amount,
+        balance=balance,
+        name=name,
+        note=note,
+        check_link=check_url,
+        request=request,
+        kind=kind,
+        due=getattr(debtor, "due_date", None),
+    )
+    res = _deliver_debt_notice(debtor, text, allow_sms=allow_sms)
+    if res.get("ok") and entry is not None:
+        entry.sms_sent = True
+        entry.save(update_fields=["sms_sent"])
+    return res
 
 
 def _shop(request) -> str:
@@ -439,6 +477,7 @@ def _render_sms(
     check_link: str = "",
     request=None,
     kind: str = "add",
+    due=None,
 ) -> str:
     shop, branch = _resolve_sms_shop_branch(tpl, note=note, request=request)
     # To'lov (sub) → minusli summa; qarz qo'shish → musbat
@@ -459,6 +498,7 @@ def _render_sms(
         transaction_amount=tx,
         balance=balance if balance is not None else amount,
         check_link=check_link or devsms.DEFAULT_CLIENT_CHECK,
+        due_date=due,
     )
 
 
@@ -789,31 +829,30 @@ def cabinet_client_debtor_save(request):
 
     _apply_due_date(row, body)
 
-    # Yangi mijoz + boshlang‘ich qarz: Telegram/SMS
+    # Yangi mijoz + boshlang‘ich qarz: Telegram (raqam) + ixtiyoriy DevSMS
     sms_res = None
-    send_sms = bool(body.get("send_sms", False)) and _sms_enabled_for(shop)
-    if send_sms and not sid and amount > 0 and row.phone:
+    send_sms = bool(body.get("send_sms", False))
+    if not sid and amount > 0 and row.phone:
         entry = row.ledger.order_by("-id").first()
         check_url = (
             f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
             if entry
             else "https://tez-pos.uz/"
         )
-        tpl = _get_or_create_template(shop, tenant)
-        text = _render_sms(
-            tpl,
+        sms_res = _maybe_deliver_personal(
+            shop=shop,
+            debtor=row,
             amount=amount,
             balance=row.balance(),
             name=row.name,
             note=note,
-            check_link=check_url,
+            check_url=check_url,
             request=request,
             kind=ClientDebtorLedger.KIND_ADD,
+            tenant=tenant,
+            send_sms=send_sms,
+            entry=entry,
         )
-        sms_res = _deliver_debt_notice(row, text)
-        if sms_res.get("ok") and entry:
-            entry.sms_sent = True
-            entry.save(update_fields=["sms_sent"])
     else:
         _maybe_resolve_telegram(row)
 
@@ -865,7 +904,7 @@ def cabinet_client_debt_adjust(request):
         return JsonResponse({"error": "Mijoz topilmadi"}, status=404)
 
     note = str(body.get("note") or "").strip()[:255]
-    send_sms = bool(body.get("send_sms")) and _sms_enabled_for(shop)
+    send_sms = bool(body.get("send_sms"))
     who = tenant.business_name or request.user.username
 
     with transaction.atomic():
@@ -883,24 +922,20 @@ def cabinet_client_debt_adjust(request):
 
     sms_res = None
     check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
-    if send_sms and debtor.phone:
-        tpl = _get_or_create_template(shop, tenant)
-        text = _render_sms(
-            tpl,
-            amount=amount,
-            balance=bal,
-            name=debtor.name,
-            note=note or debtor.note,
-            check_link=check_url,
-            request=request,
-            kind=kind,
-        )
-        sms_res = _deliver_debt_notice(debtor, text)
-        if sms_res.get("ok"):
-            entry.sms_sent = True
-            entry.save(update_fields=["sms_sent"])
-    elif not send_sms:
-        _maybe_resolve_telegram(debtor)
+    sms_res = _maybe_deliver_personal(
+        shop=shop,
+        debtor=debtor,
+        amount=amount,
+        balance=bal,
+        name=debtor.name,
+        note=note or debtor.note,
+        check_url=check_url,
+        request=request,
+        kind=kind,
+        tenant=tenant,
+        send_sms=send_sms,
+        entry=entry,
+    )
 
     return JsonResponse(
         {
@@ -1327,29 +1362,27 @@ def api_client_debtor_save(request):
         )
     _apply_due_date(row, body)
     sms_res = None
-    send_sms = bool(body.get("send_sms", False)) and _sms_enabled_for(shop)
-    if send_sms and not sid and amount > 0 and row.phone:
+    send_sms = bool(body.get("send_sms", False))
+    if not sid and amount > 0 and row.phone:
         entry = row.ledger.order_by("-id").first()
         check_url = (
             f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
             if entry
             else "https://tez-pos.uz/"
         )
-        tpl = _get_or_create_template(shop)
-        text = _render_sms(
-            tpl,
+        sms_res = _maybe_deliver_personal(
+            shop=shop,
+            debtor=row,
             amount=amount,
             balance=row.balance(),
             name=row.name,
             note=note,
-            check_link=check_url,
+            check_url=check_url,
             request=request,
             kind=ClientDebtorLedger.KIND_ADD,
+            send_sms=send_sms,
+            entry=entry,
         )
-        sms_res = _deliver_debt_notice(row, text)
-        if sms_res.get("ok") and entry:
-            entry.sms_sent = True
-            entry.save(update_fields=["sms_sent"])
     else:
         _maybe_resolve_telegram(row)
     payload = {"ok": True, "debtor": _serialize_debtor(row, with_ledger=True)}
@@ -1383,7 +1416,7 @@ def api_client_debt_adjust(request):
     except (ClientDebtor.DoesNotExist, TypeError, ValueError):
         return _cors(JsonResponse({"error": "Mijoz topilmadi"}, status=404))
     note = str(body.get("note") or "").strip()[:255]
-    send_sms = bool(body.get("send_sms")) and _sms_enabled_for(shop)
+    send_sms = bool(body.get("send_sms"))
     with transaction.atomic():
         entry = ClientDebtorLedger.objects.create(
             debtor=debtor,
@@ -1398,24 +1431,19 @@ def api_client_debt_adjust(request):
     _notify_group(shop, debtor, entry)
     sms_res = None
     check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
-    if send_sms and debtor.phone:
-        tpl = _get_or_create_template(shop)
-        text = _render_sms(
-            tpl,
-            amount=amount,
-            balance=bal,
-            name=debtor.name,
-            note=note or debtor.note,
-            check_link=check_url,
-            request=request,
-            kind=kind,
-        )
-        sms_res = _deliver_debt_notice(debtor, text)
-        if sms_res.get("ok"):
-            entry.sms_sent = True
-            entry.save(update_fields=["sms_sent"])
-    elif not send_sms:
-        _maybe_resolve_telegram(debtor)
+    sms_res = _maybe_deliver_personal(
+        shop=shop,
+        debtor=debtor,
+        amount=amount,
+        balance=bal,
+        name=debtor.name,
+        note=note or debtor.note,
+        check_url=check_url,
+        request=request,
+        kind=kind,
+        send_sms=send_sms,
+        entry=entry,
+    )
     return _cors(
         JsonResponse(
             {

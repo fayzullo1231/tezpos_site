@@ -28,5 +28,12 @@ if [ -f deploy/tezpos-debt-listener.service ]; then
   systemctl restart tezpos-debt-listener
   systemctl --no-pager is-active tezpos-debt-listener || true
 fi
+if [ -f deploy/tezpos-debt-telegram.service ] && [ -f deploy/tezpos-debt-telegram.timer ]; then
+  cp deploy/tezpos-debt-telegram.service /etc/systemd/system/
+  cp deploy/tezpos-debt-telegram.timer /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now tezpos-debt-telegram.timer >/dev/null 2>&1 || true
+  systemctl --no-pager is-active tezpos-debt-telegram.timer || true
+fi
 git rev-parse --short HEAD
 echo "OK: yangilandi"
