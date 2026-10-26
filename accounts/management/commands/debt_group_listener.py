@@ -23,7 +23,7 @@ from accounts.telethon_debt import (
     send_group_on_client,
     session_groups,
 )
-from accounts.tg_outbox import claim_job, mark_done, mark_fail, take_jobs
+from accounts.tg_outbox import mark_done, mark_fail, take_jobs
 
 logger = logging.getLogger("tezpos.telegram")
 
@@ -74,6 +74,22 @@ def _norm_shops(shops) -> set[str]:
     return {str(s or "").strip().lower() for s in (shops or []) if str(s or "").strip()}
 
 
+def _pick_sender(shop: str, senders: dict):
+    if shop and shop in senders:
+        return senders[shop]
+    if shop:
+        for key, val in senders.items():
+            if shop.startswith(key) or key.startswith(shop):
+                return val
+        if shop == "usmon" or shop.startswith("usmon"):
+            for key, val in senders.items():
+                if key == "usmon" or str(key).startswith("usmon"):
+                    return val
+    if len(senders) == 1:
+        return next(iter(senders.values()))
+    return None
+
+
 class Command(BaseCommand):
     help = "Telegram guruhda /qarz + HTTP orqali shaxsiy qarz xabari"
 
@@ -118,50 +134,28 @@ class Command(BaseCommand):
                     self.wfile.write(b'{"ok":false,"error":"json"}')
                     return
                 shop = str((job or {}).get("shop") or "").strip().lower()
-                fn = senders.get(shop) if shop else None
-                if fn is None and shop:
-                    for key, val in senders.items():
-                        if shop.startswith(key) or key.startswith(shop):
-                            fn = val
-                            break
-                if fn is None and len(senders) == 1:
-                    fn = next(iter(senders.values()))
+                fn = _pick_sender(shop, senders)
                 if fn is None:
                     self.send_response(404)
                     self.end_headers()
                     self.wfile.write(b'{"ok":false,"error":"shop","offline":true}')
                     return
-                claimed = None
-                try:
-                    claimed = claim_job(str((job or {}).get("file") or ""))
-                except Exception:
-                    claimed = None
-                if (job or {}).get("file") and claimed is None:
-                    payload = b'{"ok":true,"queued":true}'
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
+                holder: dict = {}
+                done = threading.Event()
 
                 async def _run():
-                    err = ""
                     try:
-                        res = await fn(job or {})
-                        if not res.get("ok"):
-                            err = str(res.get("error") or "yuborilmadi")
+                        holder["res"] = await fn(job or {})
                     except Exception as exc:
-                        err = str(exc)[:200]
-                    if claimed is not None:
-                        if err:
-                            await sync_to_async(mark_fail)(claimed, err)
-                        else:
-                            await sync_to_async(mark_done)(claimed)
+                        holder["res"] = {"ok": False, "error": str(exc)[:200]}
+                    finally:
+                        done.set()
 
                 asyncio.run_coroutine_threadsafe(_run(), loop)
-                payload = b'{"ok":true,"queued":true}'
-                self.send_response(200)
+                done.wait(timeout=45)
+                res = holder.get("res") or {"ok": False, "error": "timeout"}
+                payload = json.dumps(res, ensure_ascii=False).encode("utf-8")
+                self.send_response(200 if res.get("ok") else 500)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -181,15 +175,35 @@ class Command(BaseCommand):
                 pass
 
     async def _listen_one(self, group: dict, senders: dict):
+        while True:
+            try:
+                await self._run_one(group, senders)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "userbot uzildi shops=%s, 12s dan keyin qayta",
+                    ",".join(group.get("shops") or []),
+                )
+            await asyncio.sleep(12)
+
+    async def _run_one(self, group: dict, senders: dict):
         from telethon import events
 
-        client = await _client_from_creds(
-            group["api_id"], group["api_hash"], group["session"]
-        )
         allowed = _norm_shops(group.get("shops"))
         last_reply: dict[int, float] = {}
+        ready = asyncio.Event()
+        box: dict = {"client": None}
 
         async def _send_dm_job(job: dict) -> dict:
+            if not ready.is_set():
+                try:
+                    await asyncio.wait_for(ready.wait(), timeout=25)
+                except asyncio.TimeoutError:
+                    return {"ok": False, "error": "Userbot hali ulanmagan"}
+            client = box.get("client")
+            if client is None:
+                return {"ok": False, "error": "Userbot yo‘q"}
             phone = await sync_to_async(devsms.normalize_phone)(job.get("phone") or "")
             debtor = None
             pk = job.get("debtor_id")
@@ -224,6 +238,18 @@ class Command(BaseCommand):
 
         for shop in allowed:
             senders[shop] = _send_dm_job
+        if any(s == "usmon" or s.startswith("usmon") for s in allowed):
+            senders["usmon"] = _send_dm_job
+
+        client = await _client_from_creds(
+            group["api_id"], group["api_hash"], group["session"]
+        )
+        box["client"] = client
+        ready.set()
+        print(
+            "debt_group_listener shops=" + ",".join(sorted(allowed)),
+            flush=True,
+        )
 
         @client.on(events.NewMessage(pattern=COMMAND_RE))
         async def _on_qarz(event):
@@ -271,6 +297,8 @@ class Command(BaseCommand):
                     allowed = await sync_to_async(_refresh)()
                     for shop in allowed:
                         senders[shop] = _send_dm_job
+                    if any(s == "usmon" or s.startswith("usmon") for s in allowed):
+                        senders["usmon"] = _send_dm_job
                     jobs = await sync_to_async(take_jobs)(allowed)
                     for path, job in jobs:
                         err = ""
@@ -282,7 +310,7 @@ class Command(BaseCommand):
                                     err = str(res.get("error") or "yuborilmadi")
                             elif kind == "group":
                                 res = await send_group_on_client(
-                                    client,
+                                    box["client"],
                                     str(job.get("link") or ""),
                                     str(job.get("text") or ""),
                                 )
@@ -310,10 +338,14 @@ class Command(BaseCommand):
                     logger.exception("outbox drain xato")
                 await asyncio.sleep(0.8)
 
-        print("debt_group_listener shops=" + ",".join(sorted(allowed)), flush=True)
         outbox_task = asyncio.create_task(_drain_outbox())
         try:
             await client.run_until_disconnected()
         finally:
             outbox_task.cancel()
-            await client.disconnect()
+            ready.clear()
+            box["client"] = None
+            try:
+                await client.disconnect()
+            except Exception:
+                pass

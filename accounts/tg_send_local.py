@@ -30,9 +30,15 @@ def send_via_listener(job: dict[str, Any], timeout: float = 40) -> dict[str, Any
     except urllib.error.HTTPError as exc:
         err = ""
         try:
-            err = exc.read().decode("utf-8", errors="replace")[:200]
+            err = exc.read().decode("utf-8", errors="replace")[:400]
         except Exception:
             err = str(exc)
+        try:
+            data = json.loads(err) if err else {}
+            if isinstance(data, dict) and (data.get("error") or "ok" in data):
+                return data
+        except Exception:
+            pass
         return {"ok": False, "error": err or str(exc)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:200], "offline": True}

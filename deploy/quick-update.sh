@@ -26,7 +26,12 @@ if [ -f deploy/tezpos-debt-listener.service ]; then
   systemctl daemon-reload
   systemctl enable tezpos-debt-listener >/dev/null 2>&1 || true
   systemctl restart tezpos-debt-listener
+  sleep 2
   systemctl --no-pager is-active tezpos-debt-listener || true
+  echo "--- listener log ---"
+  journalctl -u tezpos-debt-listener -n 30 --no-pager || true
+  echo "--- :18765 ---"
+  ss -lntp 2>/dev/null | grep 18765 || netstat -lntp 2>/dev/null | grep 18765 || true
 fi
 if [ -f deploy/tezpos-debt-telegram.service ] && [ -f deploy/tezpos-debt-telegram.timer ]; then
   cp deploy/tezpos-debt-telegram.service /etc/systemd/system/

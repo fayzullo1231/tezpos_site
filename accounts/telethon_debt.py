@@ -917,10 +917,10 @@ def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
     )
 
 
-def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
-    """Avval fayl navbati — gunicorn Telegram kutib timeout bo‘lmasin."""
+def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
+    """Listener orqali yuboradi. Listener o‘chiq bo‘lsa navbatga yozadi."""
     if debtor is None or not (text or "").strip():
-        return
+        return {"ok": False, "error": "Matn yoki mijoz yo‘q"}
     job = {
         "type": "dm",
         "shop": (getattr(debtor, "shop_key", "") or "").strip().lower(),
@@ -929,15 +929,34 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
         "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
         "text": (text or "").strip(),
     }
-    from .tg_outbox import write_job
     from .tg_send_local import send_via_listener
+    from .tg_outbox import write_job
 
-    path = write_job(job)
-    job["file"] = str(path)
-    try:
-        send_via_listener(job, timeout=2)
-    except Exception:
-        pass
+    res = send_via_listener(job, timeout=18)
+    if res.get("ok"):
+        logger.info(
+            "Telegram DM ketdi shop=%s phone=%s",
+            job["shop"],
+            job["phone"],
+        )
+        return res
+    if res.get("offline"):
+        write_job(job)
+        logger.warning(
+            "Telegram listener o‘chiq shop=%s — navbatga yozildi",
+            job["shop"],
+        )
+        return {
+            "ok": False,
+            "queued": True,
+            "error": "Telegram listener o‘chiq. Serverda tezpos-debt-listener ni yoqing.",
+        }
+    logger.warning(
+        "Telegram DM xato shop=%s err=%s",
+        job["shop"],
+        res.get("error"),
+    )
+    return res
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:

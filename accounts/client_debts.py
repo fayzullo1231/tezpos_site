@@ -217,10 +217,11 @@ def _deliver_debt_notice(
     tg_id = ""
     if telethon_configured(shop) or shop_blocks_devsms(shop):
         try:
-            enqueue_text_by_phone(debtor, msg)
-            tg_ok = True
+            tg_res = enqueue_text_by_phone(debtor, msg)
+            tg_ok = bool(tg_res.get("ok"))
+            tg_err = "" if tg_ok else str(tg_res.get("error") or "Telegram yuborilmadi")
         except Exception as exc:
-            logger.warning("Telegram navbat yozilmadi: %s", exc)
+            logger.warning("Telegram yuborilmadi: %s", exc)
             tg_err = str(exc)[:200]
     else:
         tg_err = "Telethon sozlanmagan"
