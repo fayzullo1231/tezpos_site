@@ -171,10 +171,14 @@ def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
     )
     if not tpl:
         return ("", "", "")
+
+    def _clean(v: str) -> str:
+        return (v or "").strip().strip('"').strip("'")
+
     return (
-        (tpl.telethon_api_id or "").strip(),
-        (tpl.telethon_api_hash or "").strip(),
-        (tpl.telethon_session or "").strip(),
+        _clean(tpl.telethon_api_id),
+        _clean(tpl.telethon_api_hash),
+        _clean(tpl.telethon_session),
     )
 
 
@@ -901,21 +905,36 @@ def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
 
 
 def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
-    """Qarzdor telefoniga userbot — listener orqali."""
+    """Avval listener HTTP, bo‘lmasa fayl navbati."""
     if debtor is None or not (text or "").strip():
         return
+    job = {
+        "type": "dm",
+        "shop": (getattr(debtor, "shop_key", "") or "").strip().lower(),
+        "phone": debtor.phone or "",
+        "debtor_id": int(debtor.pk),
+        "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
+        "text": (text or "").strip(),
+    }
+    from .tg_send_local import send_via_listener
+
+    res = send_via_listener(job)
+    if res.get("ok"):
+        logger.info(
+            "Telegram HTTP DM ketdi shop=%s phone=%s",
+            job["shop"],
+            job["phone"],
+        )
+        return
+    if not res.get("offline"):
+        logger.warning(
+            "Telegram HTTP DM xato shop=%s err=%s — navbatga yoziladi",
+            job["shop"],
+            res.get("error"),
+        )
     from .tg_outbox import write_job
 
-    write_job(
-        {
-            "type": "dm",
-            "shop": (getattr(debtor, "shop_key", "") or "").strip().lower(),
-            "phone": debtor.phone or "",
-            "debtor_id": int(debtor.pk),
-            "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
-            "text": (text or "").strip(),
-        }
-    )
+    write_job(job)
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:
