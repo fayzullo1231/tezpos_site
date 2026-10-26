@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 import time
+
+logger = logging.getLogger(__name__)
 
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
@@ -143,14 +146,22 @@ def _notify_group(shop: str, debtor: ClientDebtor, entry: ClientDebtorLedger | N
             .first()
             or ""
         ).strip()
-        if not link or not parse_group_link(link) or not telethon_configured(shop):
+        if not link or not parse_group_link(link):
+            return
+        if not telethon_configured(shop):
+            logger.warning("Guruh xabari: userbot sozlanmagan shop=%s", shop)
             return
         text = _group_notice_text(debtor, entry, debtor.balance())
-        transaction.on_commit(
-            lambda l=link, t=text, s=shop: enqueue_group_message(l, t, shop_key=s)
-        )
+
+        def _go(l=link, t=text, s=shop):
+            enqueue_group_message(l, t, shop_key=s)
+
+        if transaction.get_connection().in_atomic_block:
+            transaction.on_commit(_go)
+        else:
+            _go()
     except Exception:
-        pass
+        logger.exception("Guruhga qarz xabari yozilmadi shop=%s", shop)
 
 
 def _maybe_resolve_telegram(row: ClientDebtor) -> None:
@@ -210,11 +221,15 @@ def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     else:
         tg_err = "Telethon sozlanmagan"
 
-    sms: dict = {"ok": False, "error": "DevSMS o‘chirilgan"}
+    sms: dict = {"ok": False, "skipped": True}
+    sms_ok = False
+    sms_err = ""
     if _sms_enabled_for(shop):
         sms = devsms.send_dev_sms(phone=debtor.phone, message=msg)
-    sms_ok = bool(sms.get("ok"))
-    sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
+        sms_ok = bool(sms.get("ok"))
+        sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
+    else:
+        sms = {"ok": False, "skipped": True, "error": ""}
 
     if tg_ok and sms_ok:
         channel = "both"
@@ -776,7 +791,7 @@ def cabinet_client_debtor_save(request):
 
     # Yangi mijoz + boshlang‘ich qarz: Telegram/SMS
     sms_res = None
-    send_sms = bool(body.get("send_sms", False))
+    send_sms = bool(body.get("send_sms", False)) and _sms_enabled_for(shop)
     if send_sms and not sid and amount > 0 and row.phone:
         entry = row.ledger.order_by("-id").first()
         check_url = (
@@ -850,7 +865,7 @@ def cabinet_client_debt_adjust(request):
         return JsonResponse({"error": "Mijoz topilmadi"}, status=404)
 
     note = str(body.get("note") or "").strip()[:255]
-    send_sms = bool(body.get("send_sms"))
+    send_sms = bool(body.get("send_sms")) and _sms_enabled_for(shop)
     who = tenant.business_name or request.user.username
 
     with transaction.atomic():
@@ -1034,6 +1049,7 @@ def cabinet_telethon_save(request):
     api_id = str(body.get("api_id") or tpl.telethon_api_id or "").strip()
     api_hash = str(body.get("api_hash") or tpl.telethon_api_hash or "").strip()
     session = str(body.get("session") or tpl.telethon_session or "").strip()
+    session = session.strip('"').strip("'")
     if not api_id or not api_id.isdigit():
         return JsonResponse({"error": "API ID raqam bo‘lishi kerak (my.telegram.org)."}, status=400)
     if not api_hash:
@@ -1064,13 +1080,31 @@ def cabinet_telethon_save(request):
             "updated_at",
         ]
     )
+    group_ok = ""
+    link = (tpl.telegram_group_link or "").strip()
+    if link:
+        test = send_group_message(
+            link,
+            f"<b>{html.escape(tpl.telethon_user or shop)}</b>\n"
+            "Userbot guruhga ulandi. Qarz qo‘shilganda/ayirilganda xabar shu yerga keladi.",
+            shop_key=shop,
+        )
+        if test.get("ok"):
+            group_ok = " Guruhga sinov xabari yuborildi."
+        else:
+            group_ok = (
+                " Userbot saqlandi, lekin guruhga yozilmadi: "
+                + str(test.get("error") or "akkaunt guruh a’zosi emas")
+                + "."
+            )
     return JsonResponse(
         {
             "ok": True,
             "template": _serialize_template(tpl),
             "message": "Kirildi"
             + (f" ({tpl.telethon_user})" if tpl.telethon_user else "")
-            + ".",
+            + "."
+            + group_ok,
         }
     )
 
@@ -1293,7 +1327,7 @@ def api_client_debtor_save(request):
         )
     _apply_due_date(row, body)
     sms_res = None
-    send_sms = bool(body.get("send_sms", True))
+    send_sms = bool(body.get("send_sms", False)) and _sms_enabled_for(shop)
     if send_sms and not sid and amount > 0 and row.phone:
         entry = row.ledger.order_by("-id").first()
         check_url = (
@@ -1349,7 +1383,7 @@ def api_client_debt_adjust(request):
     except (ClientDebtor.DoesNotExist, TypeError, ValueError):
         return _cors(JsonResponse({"error": "Mijoz topilmadi"}, status=404))
     note = str(body.get("note") or "").strip()[:255]
-    send_sms = bool(body.get("send_sms"))
+    send_sms = bool(body.get("send_sms")) and _sms_enabled_for(shop)
     with transaction.atomic():
         entry = ClientDebtorLedger.objects.create(
             debtor=debtor,

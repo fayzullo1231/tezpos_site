@@ -815,21 +815,40 @@ def parse_group_link(link: str) -> dict | None:
     return None
 
 
+async def _resolve_group_entity(client, info: dict):
+    from telethon.tl.types import PeerChannel
+
+    chat = info["chat"]
+    if isinstance(chat, int):
+        candidates: list = [PeerChannel(chat), int(f"-100{chat}"), chat]
+    else:
+        candidates = [chat]
+    last: Exception | None = None
+    for target in candidates:
+        try:
+            return await client.get_entity(target)
+        except Exception as exc:
+            last = exc
+    try:
+        await client.get_dialogs(limit=800)
+    except Exception as exc:
+        last = exc
+    for target in candidates:
+        try:
+            return await client.get_entity(target)
+        except Exception as exc:
+            last = exc
+    raise last or RuntimeError("Guruh topilmadi")
+
+
 async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[str, Any]:
     info = parse_group_link(link)
     if not info:
         return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
-    from telethon.tl.types import PeerChannel
 
     client = await _client(shop_key or None)
     try:
-        target = PeerChannel(info["chat"]) if isinstance(info["chat"], int) else info["chat"]
-        try:
-            entity = await client.get_entity(target)
-        except ValueError:
-            # Session keshida yo‘q — dialoglarni yuklab qayta urinamiz
-            await client.get_dialogs(limit=500)
-            entity = await client.get_entity(target)
+        entity = await _resolve_group_entity(client, info)
         kwargs: dict[str, Any] = {"parse_mode": "html", "link_preview": False}
         if info["topic"] and getattr(entity, "forum", False):
             kwargs["reply_to"] = info["topic"]
@@ -840,6 +859,7 @@ async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[st
             "title": getattr(entity, "title", "") or "",
         }
     except Exception as exc:
+        logger.exception("send_group_async failed shop=%s", shop_key)
         return {"ok": False, "error": str(exc)[:200]}
     finally:
         try:

@@ -9074,6 +9074,22 @@
       });
       if (json.template) paintSms(json.template);
       showChannelMsg("cd-tg-acc-msg", json.message || "Saqlandi.", true);
+      const linkEl = document.getElementById("cd-tg-link");
+      if (linkEl && (linkEl.value || "").trim() && data.clientDebtsTelegramGroupUrl) {
+        try {
+          const g = await postJson(data.clientDebtsTelegramGroupUrl, {
+            link: linkEl.value,
+          });
+          if (g.link) linkEl.value = g.link;
+          showChannelMsg(
+            "cd-tg-msg",
+            g.message || "Guruh saqlandi.",
+            true,
+          );
+        } catch (ge) {
+          showChannelMsg("cd-tg-msg", ge.message || "Guruhga yozilmadi", false);
+        }
+      }
     } catch (e) {
       showChannelMsg("cd-tg-acc-msg", e.message || "Kirilmadi", false);
     } finally {
