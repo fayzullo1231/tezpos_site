@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -256,6 +257,81 @@ def _deliver_debt_notice(
     }
 
 
+def _normalize_ledger_items(raw) -> list[dict]:
+    out: list[dict] = []
+    if not isinstance(raw, list):
+        return out
+    for it in raw[:40]:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or it.get("product") or "").strip()[:180]
+        if not name:
+            continue
+        qty = it.get("qty")
+        if qty in (None, ""):
+            qty = it.get("quantity")
+        price = it.get("price") if it.get("price") not in (None, "") else it.get("unit_price")
+        total = it.get("total") if it.get("total") not in (None, "") else it.get("sum")
+        row = {"name": name}
+        if qty not in (None, ""):
+            row["qty"] = qty
+            row["quantity"] = qty
+        if price not in (None, ""):
+            row["price"] = price
+        if total not in (None, ""):
+            row["total"] = total
+        out.append(row)
+    return out
+
+
+def _chek_ref_from_note(note: str) -> str:
+    m = re.search(r"(?i)(?:chek|чек)\s*[:#№]?\s*(\d+)", str(note or ""))
+    return m.group(1) if m else ""
+
+
+def _fetch_sale_check_items(shop: str, ref: str) -> list[dict]:
+    ref = str(ref or "").strip()
+    shop = (shop or "").strip().lower()
+    if not ref or not shop:
+        return []
+    try:
+        data = tezpos_api.api_request(
+            "GET",
+            f"/api/public/check/{shop}/{ref}/",
+            timeout=8,
+        )
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        return []
+    return _normalize_ledger_items(data.get("items"))
+
+
+def _resolve_sale_items(shop: str, body: dict, note: str) -> tuple[list[dict], str]:
+    items = _normalize_ledger_items((body or {}).get("items"))
+    ref = str(
+        (body or {}).get("sale_ref")
+        or (body or {}).get("receipt_number")
+        or ""
+    ).strip()
+    if not ref:
+        ref = _chek_ref_from_note(note)
+    link = str((body or {}).get("check_link") or "").strip()
+    if not items and ref:
+        items = _fetch_sale_check_items(shop, ref)
+    if not link and ref:
+        link = f"https://tez-pos.uz/check/{shop}/{ref}/"
+    return items, link
+
+
+def _attach_entry_items(shop: str, entry: ClientDebtorLedger, body: dict, note: str) -> tuple[list[dict], str]:
+    items, link = _resolve_sale_items(shop, body or {}, note)
+    if items:
+        entry.items = items
+        entry.save(update_fields=["items"])
+    return items, link
+
+
 def _maybe_deliver_personal(
     *,
     shop: str,
@@ -270,6 +346,7 @@ def _maybe_deliver_personal(
     tenant: TenantProfile | None = None,
     send_sms: bool = False,
     entry: ClientDebtorLedger | None = None,
+    items=None,
 ) -> dict | None:
     """Userbot orqali raqamga Dev SMS shabloni; SMS faqat sayt yoqiq bo‘lsa."""
     if not (debtor.phone or "").strip():
@@ -290,6 +367,7 @@ def _maybe_deliver_personal(
         request=request,
         kind=kind,
         due=getattr(debtor, "due_date", None),
+        items=items if items is not None else list(getattr(entry, "items", None) or []),
     )
     logger.info(
         "Qarz xabari: shop=%s phone=%s tg=%s sms=%s",
@@ -485,6 +563,7 @@ def _render_sms(
     request=None,
     kind: str = "add",
     due=None,
+    items=None,
 ) -> str:
     shop, branch = _resolve_sms_shop_branch(tpl, note=note, request=request)
     # To'lov (sub) → minusli summa; qarz qo'shish → musbat
@@ -506,6 +585,7 @@ def _render_sms(
         balance=balance if balance is not None else amount,
         check_link=check_link or devsms.DEFAULT_CLIENT_CHECK,
         due_date=due,
+        items=items,
     )
 
 
@@ -828,6 +908,7 @@ def cabinet_client_debtor_save(request):
             note=note,
             created_by=str(who)[:180],
         )
+        _attach_entry_items(shop, first, body, note)
         _notify_group(shop, row, first)
 
     if "debt" in body or "balance" in body:
@@ -841,7 +922,10 @@ def cabinet_client_debtor_save(request):
     send_sms = bool(body.get("send_sms", False))
     if not sid and amount > 0 and row.phone:
         entry = row.ledger.order_by("-id").first()
-        check_url = (
+        items, sale_link = ([], "")
+        if entry:
+            items, sale_link = _attach_entry_items(shop, entry, body, note)
+        check_url = sale_link or (
             f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
             if entry
             else "https://tez-pos.uz/"
@@ -859,6 +943,7 @@ def cabinet_client_debtor_save(request):
             tenant=tenant,
             send_sms=send_sms,
             entry=entry,
+            items=items,
         )
     else:
         _maybe_resolve_telegram(row)
@@ -925,10 +1010,11 @@ def cabinet_client_debt_adjust(request):
         )
         bal = debtor.balance()
         _apply_due_date(debtor, body, kind=kind)
+    items, sale_link = _attach_entry_items(shop, entry, body, note or debtor.note)
     _notify_group(shop, debtor, entry)
 
     sms_res = None
-    check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
+    check_url = sale_link or f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
     sms_res = _maybe_deliver_personal(
         shop=shop,
         debtor=debtor,
@@ -942,6 +1028,7 @@ def cabinet_client_debt_adjust(request):
         tenant=tenant,
         send_sms=send_sms,
         entry=entry,
+        items=items,
     )
 
     return JsonResponse(
@@ -1358,6 +1445,7 @@ def api_client_debtor_save(request):
             note=note,
             created_by=who[:180],
         )
+        _attach_entry_items(shop, first, body, note)
         _notify_group(shop, row, first)
     if "debt" in body or "balance" in body:
         _notify_group(
@@ -1372,7 +1460,10 @@ def api_client_debtor_save(request):
     send_sms = bool(body.get("send_sms", False))
     if not sid and amount > 0 and row.phone:
         entry = row.ledger.order_by("-id").first()
-        check_url = (
+        items, sale_link = ([], "")
+        if entry:
+            items, sale_link = _attach_entry_items(shop, entry, body, note)
+        check_url = sale_link or (
             f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
             if entry
             else "https://tez-pos.uz/"
@@ -1389,6 +1480,7 @@ def api_client_debtor_save(request):
             kind=ClientDebtorLedger.KIND_ADD,
             send_sms=send_sms,
             entry=entry,
+            items=items,
         )
     else:
         _maybe_resolve_telegram(row)
@@ -1435,9 +1527,10 @@ def api_client_debt_adjust(request):
         )
         bal = debtor.balance()
         _apply_due_date(debtor, body, kind=kind)
+    items, sale_link = _attach_entry_items(shop, entry, body, note or debtor.note)
     _notify_group(shop, debtor, entry)
     sms_res = None
-    check_url = f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
+    check_url = sale_link or f"https://tez-pos.uz/check/debt/{shop}/{entry.pk}/"
     sms_res = _maybe_deliver_personal(
         shop=shop,
         debtor=debtor,
@@ -1450,6 +1543,7 @@ def api_client_debt_adjust(request):
         kind=kind,
         send_sms=send_sms,
         entry=entry,
+        items=items,
     )
     return _cors(
         JsonResponse(
@@ -1496,15 +1590,32 @@ def public_client_debt_check(request, shop, pk):
     debtor = entry.debtor
     bal = debtor.balance()
     add = entry.kind == ClientDebtorLedger.KIND_ADD
+    raw_items = _normalize_ledger_items(getattr(entry, "items", None) or [])
+    if not raw_items:
+        ref = _chek_ref_from_note(entry.note)
+        if ref:
+            raw_items = _fetch_sale_check_items(shop, ref)
+    view_items = []
+    for it in raw_items:
+        view_items.append(
+            {
+                "name": it.get("name") or "",
+                "qty": it.get("qty") or it.get("quantity") or "",
+                "price": it.get("price") or "",
+                "total": it.get("total") or "",
+            }
+        )
+    tpl = DebtSmsTemplate.objects.filter(shop_key=shop).only("shop_label").first()
+    store = ((tpl.shop_label if tpl else "") or "").strip() or shop
     return render(
         request,
         "sales/public_check.html",
         {
             "logo_url": logo,
             "title": f"{debtor.name} — qarz",
-            "store_name": shop,
+            "store_name": store,
             "subtitle": "Qarzga " + ("qo'shildi" if add else "to'landi"),
-            "kind": "payment",
+            "kind": "sale" if view_items else "payment",
             "is_payment": True,
             "show_debt": True,
             "meta_rows": [
@@ -1513,9 +1624,9 @@ def public_client_debt_check(request, shop, pk):
                 {"label": "Telefon", "value": debtor.phone or "—"},
                 {"label": "Turi", "value": "Qarz qo'shish" if add else "Qarz to'lovi"},
             ],
-            "items": [],
-            "total": "",
-            "paid": "",
+            "items": view_items,
+            "total": f"{_fmt_money(entry.amount)} so'm",
+            "paid": "0 so'm" if add else f"{_fmt_money(entry.amount)} so'm",
             "debt_amount": _fmt_money(entry.amount if add else -entry.amount),
             "debt_balance": (
                 f"+{_fmt_money(abs(float(bal or 0)))}"

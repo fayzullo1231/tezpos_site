@@ -71,6 +71,29 @@ def _normalize_sms_text(text: str) -> str:
 DEFAULT_CLIENT_CHECK = "https://tez-pos.uz/"
 
 
+def _format_item_lines(items) -> str:
+    if not items:
+        return ""
+    lines = []
+    for i, it in enumerate(list(items)[:40], 1):
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or it.get("product") or "").strip()
+        if not name:
+            continue
+        qty = it.get("qty") if it.get("qty") not in (None, "") else it.get("quantity")
+        price = it.get("price") or it.get("unit_price") or ""
+        qty_s = str(qty).strip() if qty not in (None, "") else ""
+        price_s = str(price).strip()
+        if qty_s and price_s:
+            lines.append(f"{i}) {name}  {qty_s} x {price_s}")
+        elif qty_s:
+            lines.append(f"{i}) {name}  x{qty_s}")
+        else:
+            lines.append(f"{i}) {name}")
+    return "\n".join(lines)
+
+
 def _fmt_due(value) -> str:
     if not value:
         return ""
@@ -101,6 +124,7 @@ def build_client_debt_message(
     check_link: str = "",
     due_date=None,
     reminder: str = "",
+    items=None,
 ) -> str:
     """
     Mijoz qarzlari (kabinet) — DevSMS shabloni:
@@ -136,7 +160,11 @@ def build_client_debt_message(
         qarz_line = f"Qarz: {_fmt_som(tx)} so'm"
         qoldiq_line = f"Qoldiq: {_fmt_som(abs(bal))} so'm"
 
-    parts = [head, "", qarz_line, "", qoldiq_line]
+    item_lines = _format_item_lines(items)
+    parts = [head, ""]
+    if item_lines:
+        parts += [item_lines, ""]
+    parts += [qarz_line, "", qoldiq_line]
     due_s = _fmt_due(due_date)
     if due_s:
         parts += ["", f"Qaytarish: {due_s}"]

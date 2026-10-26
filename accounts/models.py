@@ -273,6 +273,11 @@ class ClientDebtorLedger(models.Model):
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     signed_amount = models.DecimalField(max_digits=14, decimal_places=2)
     note = models.CharField(max_length=255, blank=True, default="")
+    items = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Savatdagi mahsulotlar (POS qarzga savdo)",
+    )
     created_by = models.CharField(max_length=180, blank=True, default="")
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     sms_sent = models.BooleanField(default=False)
