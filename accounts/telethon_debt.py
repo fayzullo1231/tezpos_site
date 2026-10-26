@@ -164,22 +164,35 @@ def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
     shop = (shop_key or "").strip().lower()
     if not shop or uses_shared_telethon(shop):
         return _global_creds()
+    def _clean(v: str) -> str:
+        return (v or "").strip().strip('"').strip("'")
+
+    def _from_tpl(row) -> tuple[str, str, str]:
+        if not row:
+            return ("", "", "")
+        return (
+            _clean(row.telethon_api_id),
+            _clean(row.telethon_api_hash),
+            _clean(row.telethon_session),
+        )
+
     tpl = (
         DebtSmsTemplate.objects.filter(shop_key=shop)
         .only("telethon_api_id", "telethon_api_hash", "telethon_session")
         .first()
     )
-    if not tpl:
-        return ("", "", "")
-
-    def _clean(v: str) -> str:
-        return (v or "").strip().strip('"').strip("'")
-
-    return (
-        _clean(tpl.telethon_api_id),
-        _clean(tpl.telethon_api_hash),
-        _clean(tpl.telethon_session),
-    )
+    creds = _from_tpl(tpl)
+    if _creds_ok(*creds):
+        return creds
+    # Usmon: Komron session boshqa usmon* yozuvida bo‘lishi mumkin
+    if shop == "usmon" or shop.startswith("usmon"):
+        for row in DebtSmsTemplate.objects.filter(shop_key__istartswith="usmon").only(
+            "telethon_api_id", "telethon_api_hash", "telethon_session"
+        ):
+            other = _from_tpl(row)
+            if _creds_ok(*other):
+                return other
+    return creds if any(creds) else ("", "", "")
 
 
 def _creds_ok(api_id: str, api_hash: str, session: str) -> bool:
@@ -917,8 +930,14 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
         "text": (text or "").strip(),
     }
     from .tg_outbox import write_job
+    from .tg_send_local import send_via_listener
 
-    write_job(job)
+    path = write_job(job)
+    job["file"] = str(path)
+    try:
+        send_via_listener(job, timeout=2)
+    except Exception:
+        pass
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:

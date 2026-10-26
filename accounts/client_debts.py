@@ -351,6 +351,15 @@ def _attach_entry_items(shop: str, entry: ClientDebtorLedger, body: dict, note: 
         return [], ""
 
 
+def _ready_text(body: dict | None) -> str:
+    return str(
+        (body or {}).get("message")
+        or (body or {}).get("sms_text")
+        or (body or {}).get("text")
+        or ""
+    ).strip()
+
+
 def _maybe_deliver_personal(
     *,
     shop: str,
@@ -366,6 +375,7 @@ def _maybe_deliver_personal(
     send_sms: bool = False,
     entry: ClientDebtorLedger | None = None,
     items=None,
+    ready_text: str = "",
 ) -> dict | None:
     """Userbot orqali raqamga Dev SMS shabloni; SMS faqat sayt yoqiq bo‘lsa."""
     if not (debtor.phone or "").strip():
@@ -382,19 +392,35 @@ def _maybe_deliver_personal(
                 raw_items = list(getattr(entry, "items", None) or [])
             except Exception:
                 raw_items = []
+        raw_items = _normalize_ledger_items(raw_items)
         tpl = _get_or_create_template(shop, tenant)
-        text = _render_sms(
-            tpl,
-            amount=amount,
-            balance=balance,
-            name=name,
-            note=note,
-            check_link=check_url,
-            request=request,
-            kind=kind,
-            due=getattr(debtor, "due_date", None),
-            items=raw_items,
-        )
+        text = (ready_text or "").strip()
+        if not text:
+            text = _render_sms(
+                tpl,
+                amount=amount,
+                balance=balance,
+                name=name,
+                note=note,
+                check_link=check_url,
+                request=request,
+                kind=kind,
+                due=getattr(debtor, "due_date", None),
+                items=raw_items,
+            )
+        else:
+            item_block = devsms._format_item_lines(raw_items)
+            if item_block and item_block not in text:
+                lines = text.split("\n")
+                out = []
+                inserted = False
+                for ln in lines:
+                    if not inserted and ln.startswith("Qarz:"):
+                        out.extend([item_block, "", ln])
+                        inserted = True
+                    else:
+                        out.append(ln)
+                text = "\n".join(out if inserted else lines + ["", item_block])
         if len(text) > 3900:
             text = text[:3890] + "\n…"
         logger.info(
@@ -987,6 +1013,7 @@ def cabinet_client_debtor_save(request):
             send_sms=send_sms,
             entry=entry,
             items=items,
+            ready_text=_ready_text(body),
         )
     else:
         _maybe_resolve_telegram(row)
@@ -1072,6 +1099,7 @@ def cabinet_client_debt_adjust(request):
         send_sms=send_sms,
         entry=entry,
         items=items,
+        ready_text=_ready_text(body),
     )
 
     return JsonResponse(
@@ -1536,6 +1564,7 @@ def api_client_debtor_save(request):
             send_sms=send_sms,
             entry=entry,
             items=items,
+            ready_text=_ready_text(body),
         )
     else:
         _maybe_resolve_telegram(row)
@@ -1599,6 +1628,7 @@ def api_client_debt_adjust(request):
         send_sms=send_sms,
         entry=entry,
         items=items,
+        ready_text=_ready_text(body),
     )
     return _cors(
         JsonResponse(

@@ -57,6 +57,21 @@ def write_job(job: dict[str, Any]) -> Path:
     return dest
 
 
+def claim_job(path_str: str) -> Path | None:
+    """pending → .run. Drain takrorlamasligi uchun."""
+    if not path_str:
+        return None
+    p = Path(path_str)
+    if not p.exists():
+        return None
+    proc = p.with_suffix(".run")
+    try:
+        p.replace(proc)
+        return proc
+    except OSError:
+        return None
+
+
 def _shop_match(shop: str, allowed: set[str]) -> bool:
     if not shop:
         return False

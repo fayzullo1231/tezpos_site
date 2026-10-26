@@ -82,9 +82,14 @@ def _format_item_lines(items) -> str:
         if not name:
             continue
         qty = it.get("qty") if it.get("qty") not in (None, "") else it.get("quantity")
-        price = it.get("price") or it.get("unit_price") or ""
+        price = it.get("price") if it.get("price") not in (None, "") else it.get("unit_price")
         qty_s = str(qty).strip() if qty not in (None, "") else ""
-        price_s = str(price).strip()
+        price_s = ""
+        if price not in (None, ""):
+            try:
+                price_s = _fmt_som(price)
+            except Exception:
+                price_s = str(price).strip()
         if qty_s and price_s:
             lines.append(f"{i}) {name}  {qty_s} x {price_s}")
         elif qty_s:

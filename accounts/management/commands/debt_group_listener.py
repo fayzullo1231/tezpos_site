@@ -23,7 +23,7 @@ from accounts.telethon_debt import (
     send_group_on_client,
     session_groups,
 )
-from accounts.tg_outbox import mark_done, mark_fail, take_jobs
+from accounts.tg_outbox import claim_job, mark_done, mark_fail, take_jobs
 
 logger = logging.getLogger("tezpos.telegram")
 
@@ -131,22 +131,37 @@ class Command(BaseCommand):
                     self.end_headers()
                     self.wfile.write(b'{"ok":false,"error":"shop","offline":true}')
                     return
-                holder: dict = {}
-                done = threading.Event()
+                claimed = None
+                try:
+                    claimed = claim_job(str((job or {}).get("file") or ""))
+                except Exception:
+                    claimed = None
+                if (job or {}).get("file") and claimed is None:
+                    payload = b'{"ok":true,"queued":true}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
 
                 async def _run():
+                    err = ""
                     try:
-                        holder["res"] = await fn(job or {})
+                        res = await fn(job or {})
+                        if not res.get("ok"):
+                            err = str(res.get("error") or "yuborilmadi")
                     except Exception as exc:
-                        holder["res"] = {"ok": False, "error": str(exc)[:200]}
-                    finally:
-                        done.set()
+                        err = str(exc)[:200]
+                    if claimed is not None:
+                        if err:
+                            await sync_to_async(mark_fail)(claimed, err)
+                        else:
+                            await sync_to_async(mark_done)(claimed)
 
                 asyncio.run_coroutine_threadsafe(_run(), loop)
-                done.wait(timeout=50)
-                res = holder.get("res") or {"ok": False, "error": "timeout"}
-                payload = json.dumps(res, ensure_ascii=False).encode("utf-8")
-                self.send_response(200 if res.get("ok") else 500)
+                payload = b'{"ok":true,"queued":true}'
+                self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
