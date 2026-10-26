@@ -229,11 +229,28 @@ class Command(BaseCommand):
                 await self._run_one(group, senders)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                name = type(exc).__name__
+                msg = str(exc)
+                dead = (
+                    "AuthKeyDuplicated" in name
+                    or "AuthKeyUnregistered" in name
+                    or "o‘chgan" in msg
+                    or "ochgan" in msg
+                )
                 logger.exception(
-                    "userbot uzildi shops=%s, 12s dan keyin qayta",
+                    "userbot uzildi shops=%s",
                     ",".join(group.get("shops") or []),
                 )
+                if dead:
+                    print(
+                        "SESSION O'LDI shops="
+                        + ",".join(group.get("shops") or [])
+                        + " — YANGI String session kerak. 15 daqiqa urinilmaydi.",
+                        flush=True,
+                    )
+                    await asyncio.sleep(900)
+                    continue
             await asyncio.sleep(12)
 
     async def _run_one(self, group: dict, senders: dict):

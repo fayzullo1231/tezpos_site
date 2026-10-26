@@ -35,7 +35,6 @@ from .telethon_debt import (
     telethon_configured,
     telethon_public_status,
     uses_shared_telethon,
-    verify_telethon_session,
 )
 
 
@@ -1270,20 +1269,11 @@ def cabinet_telethon_save(request):
     if not session:
         return JsonResponse({"error": "String session kiriting."}, status=400)
 
-    check = verify_telethon_session(api_id, api_hash, session)
-    if not check.get("ok"):
-        return JsonResponse(
-            {
-                "error": "Kirish muvaffaqiyatsiz: "
-                + str(check.get("error") or "session noto‘g‘ri")
-            },
-            status=400,
-        )
-
     tpl.telethon_api_id = api_id[:32]
     tpl.telethon_api_hash = api_hash[:80]
     tpl.telethon_session = session
-    tpl.telethon_user = str(check.get("user") or "")[:180]
+    if not (tpl.telethon_user or "").strip():
+        tpl.telethon_user = "Komron" if shop_blocks_devsms(shop) else "Userbot"
     tpl.save(
         update_fields=[
             "telethon_api_id",
@@ -1296,28 +1286,19 @@ def cabinet_telethon_save(request):
     group_ok = ""
     link = (tpl.telegram_group_link or "").strip()
     if link:
-        test = send_group_message(
-            link,
-            f"<b>{html.escape(tpl.telethon_user or shop)}</b>\n"
-            "Userbot guruhga ulandi. Qarz qo‘shilganda/ayirilganda xabar shu yerga keladi.",
-            shop_key=shop,
-        )
-        if test.get("ok"):
-            group_ok = " Guruhga sinov xabari yuborildi."
-        else:
-            group_ok = (
-                " Userbot saqlandi, lekin guruhga yozilmadi: "
-                + str(test.get("error") or "akkaunt guruh a’zosi emas")
-                + "."
-            )
+        enqueue_group_message(link, f"{tpl.telethon_user or shop}\nUserbot saqlandi.", shop)
+        group_ok = " Guruh xabari navbatga yozildi."
     return JsonResponse(
         {
             "ok": True,
             "template": _serialize_template(tpl),
-            "message": "Kirildi"
-            + (f" ({tpl.telethon_user})" if tpl.telethon_user else "")
-            + "."
-            + group_ok,
+            "message": (
+                "Saqlandi. Session faqat server listenerda ochiladi. "
+                "Eski session ikki joyda ochilgan bo‘lsa — YANGI String session yozing."
+                + (f" ({tpl.telethon_user})" if tpl.telethon_user else "")
+                + "."
+                + group_ok
+            ),
         }
     )
 
