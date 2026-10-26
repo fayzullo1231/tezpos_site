@@ -905,7 +905,7 @@ def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
 
 
 def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
-    """Avval listener HTTP, bo‘lmasa fayl navbati."""
+    """Avval fayl navbati — gunicorn Telegram kutib timeout bo‘lmasin."""
     if debtor is None or not (text or "").strip():
         return
     job = {
@@ -916,22 +916,6 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
         "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
         "text": (text or "").strip(),
     }
-    from .tg_send_local import send_via_listener
-
-    res = send_via_listener(job)
-    if res.get("ok"):
-        logger.info(
-            "Telegram HTTP DM ketdi shop=%s phone=%s",
-            job["shop"],
-            job["phone"],
-        )
-        return
-    if not res.get("offline"):
-        logger.warning(
-            "Telegram HTTP DM xato shop=%s err=%s — navbatga yoziladi",
-            job["shop"],
-            res.get("error"),
-        )
     from .tg_outbox import write_job
 
     write_job(job)

@@ -32,7 +32,6 @@ from .telethon_debt import (
     ensure_telegram_resolved,
     parse_group_link,
     send_group_message,
-    send_text_by_phone,
     telethon_configured,
     telethon_public_status,
     uses_shared_telethon,
@@ -216,18 +215,13 @@ def _deliver_debt_notice(
     tg_ok = False
     tg_err = ""
     tg_id = ""
-    if telethon_configured(shop):
+    if telethon_configured(shop) or shop_blocks_devsms(shop):
         try:
             enqueue_text_by_phone(debtor, msg)
             tg_ok = True
         except Exception as exc:
-            logger.warning("Telegram navbat yozilmadi, to'g'ridan yuboriladi: %s", exc)
-            try:
-                res = send_text_by_phone(debtor.phone, msg, debtor=debtor)
-                tg_ok = bool(res.get("ok"))
-                tg_err = "" if tg_ok else str(res.get("error") or exc)[:200]
-            except Exception as exc2:
-                tg_err = str(exc2)[:200]
+            logger.warning("Telegram navbat yozilmadi: %s", exc)
+            tg_err = str(exc)[:200]
     else:
         tg_err = "Telethon sozlanmagan"
 
@@ -377,7 +371,7 @@ def _maybe_deliver_personal(
     if not (debtor.phone or "").strip():
         return None
     allow_sms = bool(send_sms) and _sms_enabled_for(shop)
-    allow_tg = telethon_configured(shop)
+    allow_tg = telethon_configured(shop) or shop_blocks_devsms(shop)
     if not allow_sms and not allow_tg:
         _maybe_resolve_telegram(debtor)
         return None

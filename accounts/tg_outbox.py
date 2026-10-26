@@ -57,6 +57,19 @@ def write_job(job: dict[str, Any]) -> Path:
     return dest
 
 
+def _shop_match(shop: str, allowed: set[str]) -> bool:
+    if not shop:
+        return False
+    if shop in allowed:
+        return True
+    for a in allowed:
+        if not a:
+            continue
+        if shop.startswith(a) or a.startswith(shop):
+            return True
+    return False
+
+
 def take_jobs(shops: set[str]) -> list[tuple[Path, dict[str, Any]]]:
     """Shu sessiondagi do‘konlar uchun pending joblarni oladi."""
     close_old_connections()
@@ -81,7 +94,7 @@ def take_jobs(shops: set[str]) -> list[tuple[Path, dict[str, Any]]]:
                 logger.warning("Telegram navbat buzilgan: %s", path.name)
                 continue
             shop = str(data.get("shop") or "").strip().lower()
-            if shop and shop not in allowed:
+            if shop and not _shop_match(shop, allowed):
                 logger.warning(
                     "Telegram navbat shop mos emas file=%s shop=%s allowed=%s",
                     path.name,

@@ -119,6 +119,11 @@ class Command(BaseCommand):
                     return
                 shop = str((job or {}).get("shop") or "").strip().lower()
                 fn = senders.get(shop) if shop else None
+                if fn is None and shop:
+                    for key, val in senders.items():
+                        if shop.startswith(key) or key.startswith(shop):
+                            fn = val
+                            break
                 if fn is None and len(senders) == 1:
                     fn = next(iter(senders.values()))
                 if fn is None:
