@@ -1,4 +1,4 @@
-"""Telegram guruhda /qarz yozilsa — shu guruhga bog‘langan do‘kon qarzdorlari ro‘yxati."""
+"""Telegram guruhda /qarz + qarzdorga shaxsiy xabar (userbot session shu yerda)."""
 from __future__ import annotations
 
 import asyncio
@@ -10,12 +10,17 @@ from asgiref.sync import sync_to_async
 from django.core.management.base import BaseCommand
 
 from accounts.client_debts import debtors_summary_chunks
-from accounts.models import DebtSmsTemplate
+from accounts.models import ClientDebtor, DebtSmsTemplate
+from accounts import devsms
 from accounts.telethon_debt import (
     _client_from_creds,
+    _send_by_phone,
+    apply_telegram_meta,
     parse_group_link,
+    send_group_on_client,
     session_groups,
 )
+from accounts.tg_outbox import mark_done, mark_fail, take_jobs
 
 logger = logging.getLogger("tezpos.telegram")
 
@@ -121,10 +126,90 @@ class Command(BaseCommand):
                     await event.reply(chunk, parse_mode="html", link_preview=False)
             logger.info("/qarz javob berildi chat=%s shops=%s", chat_id, shops)
 
+        async def _drain_outbox():
+            while True:
+                try:
+                    jobs = await sync_to_async(take_jobs)(allowed)
+                    for path, job in jobs:
+                        err = ""
+                        try:
+                            kind = str(job.get("type") or "")
+                            if kind == "dm":
+                                phone = await sync_to_async(devsms.normalize_phone)(
+                                    job.get("phone") or ""
+                                )
+                                debtor = None
+                                pk = job.get("debtor_id")
+                                if pk:
+                                    debtor = await sync_to_async(
+                                        ClientDebtor.objects.filter(pk=int(pk)).first
+                                    )()
+                                    if debtor and not phone:
+                                        phone = await sync_to_async(devsms.normalize_phone)(
+                                            debtor.phone
+                                        )
+                                if not phone:
+                                    err = "Telefon yo‘q"
+                                else:
+                                    prefer = str(
+                                        job.get("telegram_id")
+                                        or getattr(debtor, "telegram_id", "")
+                                        or ""
+                                    )
+                                    res = await _send_by_phone(
+                                        client,
+                                        phone,
+                                        str(job.get("text") or ""),
+                                        prefer_telegram_id=prefer,
+                                    )
+                                    meta = res.get("meta") or {}
+                                    if debtor is not None and meta:
+                                        await apply_telegram_meta(debtor, meta)
+                                    if not res.get("ok"):
+                                        err = str(res.get("error") or "yuborilmadi")
+                                    else:
+                                        logger.info(
+                                            "Telegram DM ketdi shop=%s phone=%s",
+                                            job.get("shop"),
+                                            phone,
+                                        )
+                            elif kind == "group":
+                                res = await send_group_on_client(
+                                    client,
+                                    str(job.get("link") or ""),
+                                    str(job.get("text") or ""),
+                                )
+                                if not res.get("ok"):
+                                    err = str(res.get("error") or "guruhga yozilmadi")
+                                else:
+                                    logger.info(
+                                        "Telegram guruh ketdi shop=%s", job.get("shop")
+                                    )
+                            else:
+                                err = "Noma’lum job"
+                        except Exception as exc:
+                            logger.exception("outbox job xato")
+                            err = str(exc)[:200]
+                        if err:
+                            logger.warning(
+                                "Telegram outbox fail shop=%s type=%s err=%s",
+                                job.get("shop"),
+                                job.get("type"),
+                                err,
+                            )
+                            await sync_to_async(mark_fail)(path, err)
+                        else:
+                            await sync_to_async(mark_done)(path)
+                except Exception:
+                    logger.exception("outbox drain xato")
+                await asyncio.sleep(1.2)
+
         self.stdout.write(
-            "debt_group_listener: /qarz kutilmoqda shops=" + ",".join(sorted(allowed))
+            "debt_group_listener: /qarz + DM shops=" + ",".join(sorted(allowed))
         )
+        outbox_task = asyncio.create_task(_drain_outbox())
         try:
             await client.run_until_disconnected()
         finally:
+            outbox_task.cancel()
             await client.disconnect()

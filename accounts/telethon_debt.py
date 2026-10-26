@@ -9,10 +9,8 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-import queue
 import random
 import re
-import threading
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -228,6 +226,10 @@ def session_groups() -> list[dict]:
     groups: dict[str, dict] = {}
     shops: set[str] = set(
         DebtSmsTemplate.objects.exclude(telegram_group_link="")
+        .values_list("shop_key", flat=True)
+    )
+    shops.update(
+        DebtSmsTemplate.objects.exclude(telethon_session="")
         .values_list("shop_key", flat=True)
     )
     shops.update(SHARED_TELETHON_SHOPS)
@@ -838,23 +840,26 @@ async def _resolve_group_entity(client, info: dict):
     raise last or RuntimeError("Guruh topilmadi")
 
 
-async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[str, Any]:
+async def send_group_on_client(client, link: str, text: str) -> dict[str, Any]:
     info = parse_group_link(link)
     if not info:
         return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
+    entity = await _resolve_group_entity(client, info)
+    kwargs: dict[str, Any] = {"parse_mode": "html", "link_preview": False}
+    if info["topic"] and getattr(entity, "forum", False):
+        kwargs["reply_to"] = info["topic"]
+    msg = await client.send_message(entity, text, **kwargs)
+    return {
+        "ok": True,
+        "message_id": getattr(msg, "id", None),
+        "title": getattr(entity, "title", "") or "",
+    }
 
+
+async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[str, Any]:
     client = await _client(shop_key or None)
     try:
-        entity = await _resolve_group_entity(client, info)
-        kwargs: dict[str, Any] = {"parse_mode": "html", "link_preview": False}
-        if info["topic"] and getattr(entity, "forum", False):
-            kwargs["reply_to"] = info["topic"]
-        msg = await client.send_message(entity, text, **kwargs)
-        return {
-            "ok": True,
-            "message_id": getattr(msg, "id", None),
-            "title": getattr(entity, "title", "") or "",
-        }
+        return await send_group_on_client(client, link, text)
     except Exception as exc:
         logger.exception("send_group_async failed shop=%s", shop_key)
         return {"ok": False, "error": str(exc)[:200]}
@@ -879,72 +884,36 @@ def send_group_message(
         return {"ok": False, "error": str(exc)[:200]}
 
 
-_JOB_GROUP = "group"
-_JOB_DM = "dm"
-_tg_queue: "queue.Queue[tuple]" = queue.Queue()
-_tg_worker: threading.Thread | None = None
-_tg_lock = threading.Lock()
-
-
-def _tg_loop() -> None:
-    while True:
-        job = _tg_queue.get()
-        try:
-            kind = job[0] if job else ""
-            if kind == _JOB_GROUP:
-                _shop, link, text = job[1], job[2], job[3]
-                res = send_group_message(link, text, shop_key=_shop)
-                if not res.get("ok"):
-                    logger.warning(
-                        "Guruhga qarz xabari yuborilmadi link=%s err=%s",
-                        link,
-                        res.get("error"),
-                    )
-            elif kind == _JOB_DM:
-                debtor_id, text = job[1], job[2]
-                try:
-                    debtor = ClientDebtor.objects.filter(pk=int(debtor_id)).first()
-                except Exception:
-                    debtor = None
-                if debtor is None:
-                    logger.warning("Telegram DM: qarzdor %s topilmadi", debtor_id)
-                else:
-                    res = send_text_by_phone(debtor.phone, text, debtor=debtor)
-                    if not res.get("ok"):
-                        logger.warning(
-                            "Telegram DM yuborilmadi name=%s phone=%s err=%s",
-                            debtor.name,
-                            debtor.phone,
-                            res.get("error"),
-                        )
-        except Exception:
-            logger.exception("Telegram navbat xato")
-        finally:
-            _tg_queue.task_done()
-
-
-def _ensure_tg_worker() -> None:
-    global _tg_worker
-    with _tg_lock:
-        if _tg_worker is None or not _tg_worker.is_alive():
-            _tg_worker = threading.Thread(
-                target=_tg_loop, name="tg-debt-notify", daemon=True
-            )
-            _tg_worker.start()
-
-
 def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
-    """Javobni kutmasdan fon oqimida ketma-ket yuboradi."""
-    _tg_queue.put((_JOB_GROUP, (shop_key or "").strip().lower(), link, text))
-    _ensure_tg_worker()
+    """Listener jarayoniga yozadi — gunicorn sessionni ikkinchi marta ochmasin."""
+    from .tg_outbox import write_job
+
+    write_job(
+        {
+            "type": "group",
+            "shop": (shop_key or "").strip().lower(),
+            "link": link,
+            "text": text,
+        }
+    )
 
 
 def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> None:
-    """Qarzdor telefoniga userbot orqali (navbat, sessionni buzmaslik)."""
+    """Qarzdor telefoniga userbot — listener orqali."""
     if debtor is None or not (text or "").strip():
         return
-    _tg_queue.put((_JOB_DM, int(debtor.pk), (text or "").strip()))
-    _ensure_tg_worker()
+    from .tg_outbox import write_job
+
+    write_job(
+        {
+            "type": "dm",
+            "shop": (getattr(debtor, "shop_key", "") or "").strip().lower(),
+            "phone": debtor.phone or "",
+            "debtor_id": int(debtor.pk),
+            "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
+            "text": (text or "").strip(),
+        }
+    )
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:

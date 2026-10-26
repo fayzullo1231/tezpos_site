@@ -291,6 +291,13 @@ def _maybe_deliver_personal(
         kind=kind,
         due=getattr(debtor, "due_date", None),
     )
+    logger.info(
+        "Qarz xabari: shop=%s phone=%s tg=%s sms=%s",
+        shop,
+        debtor.phone,
+        allow_tg,
+        allow_sms,
+    )
     res = _deliver_debt_notice(debtor, text, allow_sms=allow_sms)
     if res.get("ok") and entry is not None:
         entry.sms_sent = True
