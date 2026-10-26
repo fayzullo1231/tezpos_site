@@ -920,6 +920,22 @@ class ProfitMarginRegressionTests(SimpleTestCase):
             selling_list_ids=set(),
         )
 
+    def test_placeholder_cost_one_som_is_not_profit(self):
+        from accounts.views import _map_product
+
+        p = _map_product(
+            {
+                "id": "kilka",
+                "name": "1873 KILKA",
+                "price": 10000,
+                "cost_price": 1,
+            }
+        )
+        qty, rev, cost, profit, _pl = self._line_fin(p, 10000, 1000)
+        self.assertAlmostEqual(float(rev), 10_000_000)
+        self.assertEqual(float(cost), 0)
+        self.assertEqual(float(profit), 0)
+
     def test_1_retail_profit_and_margin(self):
         from accounts.views import _margin_on_revenue
 

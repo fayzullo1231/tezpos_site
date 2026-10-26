@@ -3527,8 +3527,10 @@ def _line_revenue_profit_teZpos(
     selling, wholesale, cat_cost = _product_catalog_prices(
         product, selling_list_ids=selling_list_ids
     )
-    if unit_cost <= 0:
+    if unit_cost <= 0 or _is_placeholder_unit_cost(unit_cost, selling=selling):
         unit_cost = cat_cost
+    if _is_placeholder_unit_cost(unit_cost, selling=selling):
+        unit_cost = Decimal("0")
 
     txn = unit_price
     if txn <= 0 and raw_line_total > 0 and qty > 0:
@@ -3571,12 +3573,40 @@ def _line_revenue_profit_teZpos(
     return line_rev, profit
 
 
+def _is_placeholder_unit_cost(cost: Decimal, *, selling: Decimal | None = None) -> bool:
+    """
+    TezPOS da kiritilmagan sotib olish narxi ba'zan 1.00 qilib saqlanadi.
+    Bunday tannarx bilan foyda ~100% chiqadi — hisobga olinmasin.
+    """
+    if cost <= 0:
+        return True
+    if cost <= Decimal("1"):
+        return True
+    sell = selling or Decimal("0")
+    if sell >= Decimal("500") and cost < Decimal("10") and cost < sell * Decimal("0.02"):
+        return True
+    return False
+
+
 def _resolve_item_unit_cost(
     item: dict,
     products_by_id: dict[str, SimpleNamespace],
     products_by_name: dict[str, SimpleNamespace] | None = None,
 ) -> Decimal:
     """Sotib olish narxi; FIFO batch_allocations > qator > katalog."""
+    pid, name, nested = _item_product_ref(item)
+    p = _find_product(
+        products_by_id,
+        products_by_name,
+        product_id=pid,
+        product_name=name,
+    )
+    selling = Decimal("0")
+    if p:
+        selling = Decimal(str(p.selling_price or 0))
+    if selling <= 0:
+        selling = _item_unit_price(item)
+
     batches = item.get("batch_allocations") or item.get("batches") or []
     if isinstance(batches, list) and batches:
         cost_sum = Decimal("0")
@@ -3586,13 +3616,14 @@ def _resolve_item_unit_cost(
                 continue
             bq = _dec(row.get("quantity") or row.get("qty"))
             bc = _dec(row.get("unit_cost") or row.get("cost_price") or row.get("cost"))
-            if bq > 0 and bc > 0:
+            if bq > 0 and bc > 0 and not _is_placeholder_unit_cost(bc, selling=selling):
                 cost_sum += bq * bc
                 qty_sum += bq
         if qty_sum > 0 and cost_sum > 0:
-            return (cost_sum / qty_sum).quantize(Decimal("0.01"))
+            avg = (cost_sum / qty_sum).quantize(Decimal("0.01"))
+            if not _is_placeholder_unit_cost(avg, selling=selling):
+                return avg
 
-    pid, name, nested = _item_product_ref(item)
     unit_cost = _dec(
         item.get("unit_cost")
         or item.get("cost_price")
@@ -3603,16 +3634,12 @@ def _resolve_item_unit_cost(
         or nested.get("buy_price")
         or nested.get("cost")
     )
-    if unit_cost > 0:
+    if unit_cost > 0 and not _is_placeholder_unit_cost(unit_cost, selling=selling):
         return unit_cost
-    p = _find_product(
-        products_by_id,
-        products_by_name,
-        product_id=pid,
-        product_name=name,
-    )
     if p and (p.cost_price or Decimal("0")) > 0:
-        return p.cost_price
+        cat = Decimal(str(p.cost_price))
+        if not _is_placeholder_unit_cost(cat, selling=selling):
+            return cat
     return Decimal("0")
 
 
