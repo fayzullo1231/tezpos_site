@@ -19,6 +19,7 @@ from accounts.telethon_debt import (
     _client_from_creds,
     _send_by_phone,
     apply_telegram_meta,
+    describe_sessions,
     parse_group_link,
     send_group_on_client,
     session_groups,
@@ -94,6 +95,11 @@ class Command(BaseCommand):
     help = "Telegram guruhda /qarz + HTTP orqali shaxsiy qarz xabari"
 
     def handle(self, *args, **options):
+        try:
+            for line in describe_sessions():
+                print(line, flush=True)
+        except Exception:
+            logger.exception("telegram_diag yozilmadi")
         while True:
             try:
                 groups = session_groups()
@@ -136,9 +142,20 @@ class Command(BaseCommand):
                 shop = str((job or {}).get("shop") or "").strip().lower()
                 fn = _pick_sender(shop, senders)
                 if fn is None:
+                    err = (
+                        "Komron userbot ochilmagan (shop="
+                        + (shop or "-")
+                        + "). python manage.py telegram_diag"
+                    )
+                    payload = json.dumps(
+                        {"ok": False, "error": err, "offline": True},
+                        ensure_ascii=False,
+                    ).encode("utf-8")
                     self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
-                    self.wfile.write(b'{"ok":false,"error":"shop","offline":true}')
+                    self.wfile.write(payload)
                     return
                 holder: dict = {}
                 done = threading.Event()

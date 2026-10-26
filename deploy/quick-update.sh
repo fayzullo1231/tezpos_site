@@ -28,8 +28,10 @@ if [ -f deploy/tezpos-debt-listener.service ]; then
   systemctl restart tezpos-debt-listener
   sleep 2
   systemctl --no-pager is-active tezpos-debt-listener || true
+  echo "--- telegram_diag ---"
+  python manage.py telegram_diag || true
   echo "--- listener log ---"
-  journalctl -u tezpos-debt-listener -n 30 --no-pager || true
+  journalctl -u tezpos-debt-listener -n 40 --no-pager || true
   echo "--- :18765 ---"
   ss -lntp 2>/dev/null | grep 18765 || netstat -lntp 2>/dev/null | grep 18765 || true
 fi

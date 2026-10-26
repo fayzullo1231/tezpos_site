@@ -110,12 +110,6 @@ def take_jobs(shops: set[str]) -> list[tuple[Path, dict[str, Any]]]:
                 continue
             shop = str(data.get("shop") or "").strip().lower()
             if shop and not _shop_match(shop, allowed):
-                logger.warning(
-                    "Telegram navbat shop mos emas file=%s shop=%s allowed=%s",
-                    path.name,
-                    shop,
-                    ",".join(sorted(allowed)),
-                )
                 continue
             if not shop and allowed:
                 continue

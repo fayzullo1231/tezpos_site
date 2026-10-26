@@ -164,14 +164,18 @@ def _clean_cred(v: str) -> str:
 
 
 def _creds_from_tpl(row) -> tuple[str, str, str]:
-    """Do‘kon sessioni + yetishmagan API ID/Hash .env dan."""
+    """Do‘kon sessioni. API juftligi to‘liq bo‘lmasa — .env juftligi."""
     g_id, g_hash, _g_sess = _global_creds()
     if not row:
         return ("", "", "")
-    api_id = _clean_cred(row.telethon_api_id) or g_id
-    api_hash = _clean_cred(row.telethon_api_hash) or g_hash
+    own_id = _clean_cred(row.telethon_api_id)
+    own_hash = _clean_cred(row.telethon_api_hash)
     session = _clean_cred(row.telethon_session)
-    return (api_id, api_hash, session)
+    if own_id and own_hash:
+        return (own_id, own_hash, session)
+    if session and g_id and g_hash and not own_id and not own_hash:
+        return (g_id, g_hash, session)
+    return (own_id, own_hash, session)
 
 
 def _template_for_shop(shop: str):
@@ -267,40 +271,77 @@ def telethon_public_status(shop_key: str | None = None) -> dict:
     }
 
 
+def _add_group(groups: dict, api_id: str, api_hash: str, session: str, shop: str) -> None:
+    if not _creds_ok(api_id, api_hash, session):
+        return
+    shop = (shop or "").strip().lower()
+    if not shop:
+        return
+    fp = f"{api_id}:{session[:32]}"
+    row = groups.setdefault(
+        fp,
+        {"api_id": api_id, "api_hash": api_hash, "session": session, "shops": []},
+    )
+    if shop not in row["shops"]:
+        row["shops"].append(shop)
+
+
 def session_groups() -> list[dict]:
     """Bir xil session = bitta Telethon client (listener uchun)."""
     groups: dict[str, dict] = {}
-    shops: set[str] = set()
-    for raw in DebtSmsTemplate.objects.values_list("shop_key", flat=True):
-        s = (raw or "").strip().lower()
-        if s:
-            shops.add(s)
-    shops.update(SHARED_TELETHON_SHOPS)
-    shops.add("usmon")
-    for shop in sorted(shops):
-        api_id, api_hash, session = telethon_creds(shop)
-        if not _creds_ok(api_id, api_hash, session):
-            logger.warning(
-                "session_groups skip shop=%s api_id=%s hash=%s session=%s",
-                shop,
-                "ha" if api_id else "yoq",
-                "ha" if api_hash else "yoq",
-                "ha" if session else "yoq",
-            )
+    g_id, g_hash, g_sess = _global_creds()
+    if _creds_ok(g_id, g_hash, g_sess):
+        for shop in SHARED_TELETHON_SHOPS:
+            _add_group(groups, g_id, g_hash, g_sess, shop)
+
+    for row in DebtSmsTemplate.objects.all():
+        shop = (row.shop_key or "").strip().lower()
+        if not shop or uses_shared_telethon(shop):
             continue
-        fp = f"{api_id}:{session[:32]}"
-        row = groups.setdefault(
-            fp,
-            {
-                "api_id": api_id,
-                "api_hash": api_hash,
-                "session": session,
-                "shops": [],
-            },
-        )
-        if shop not in row["shops"]:
-            row["shops"].append(shop)
+        api_id, api_hash, session = _creds_from_tpl(row)
+        user = (row.telethon_user or "").lower()
+        if not _creds_ok(api_id, api_hash, session):
+            msg = (
+                f"session_groups skip shop={shop} user={row.telethon_user or '-'} "
+                f"api_id={'ha' if api_id else 'yoq'} "
+                f"hash={'ha' if api_hash else 'yoq'} "
+                f"session={'ha' if session else 'yoq'}"
+            )
+            logger.warning(msg)
+            print(msg, flush=True)
+            continue
+        _add_group(groups, api_id, api_hash, session, shop)
+        if "komron" in user or "kamron" in user or shop.startswith("usmon"):
+            _add_group(groups, api_id, api_hash, session, "usmon")
     return list(groups.values())
+
+
+def describe_sessions() -> list[str]:
+    """Serverda qaysi userbot ochilishini ko‘rsatadi (sir emas)."""
+    lines: list[str] = []
+    g_id, g_hash, g_sess = _global_creds()
+    lines.append(
+        "env TELETHON: api_id="
+        + ("ha" if g_id else "yoq")
+        + " hash="
+        + ("ha" if g_hash else "yoq")
+        + " session="
+        + ("ha" if g_sess else "yoq")
+    )
+    for row in DebtSmsTemplate.objects.order_by("shop_key"):
+        api_id, api_hash, session = _creds_from_tpl(row)
+        lines.append(
+            f"tpl shop={row.shop_key} user={row.telethon_user or '-'} "
+            f"own_api={_clean_cred(row.telethon_api_id) or '-'} "
+            f"own_hash={'ha' if _clean_cred(row.telethon_api_hash) else 'yoq'} "
+            f"own_session={'ha' if _clean_cred(row.telethon_session) else 'yoq'} "
+            f"ok={_creds_ok(api_id, api_hash, session)}"
+        )
+    for g in session_groups():
+        lines.append("GROUP shops=" + ",".join(sorted(g.get("shops") or [])))
+    if not session_groups():
+        lines.append("GROUP yo‘q")
+    return lines
 
 
 def _run(coro, timeout: int = 900):
