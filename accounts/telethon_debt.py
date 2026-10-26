@@ -37,51 +37,47 @@ SEND_PAUSE_SEC = 1.5
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
-def format_text_for_telegram(text: str) -> str:
+def _utf16_len(s: str) -> int:
+    return len((s or "").encode("utf-16-le")) // 2
+
+
+def _clean_http_url(raw: str) -> str:
+    url = (raw or "").rstrip(".,);]")
+    return "".join(ch for ch in url if ord(ch) < 128)
+
+
+def prepare_telegram_dm(text: str) -> tuple[str, list]:
     """
-    DevSMS matnini Telegram HTML ga:
-    - do‘kon nomi qalin
-    - URL lar bosiladigan <a>
-    - qatorlar \\n bilan (br emas — aks holda bir qator bo‘lib ketadi)
+    Userbot HTML <a> ni ko‘k qilmaydi. Chek URL ni alohida qatorda qoldiramiz
+    va MessageEntityUrl qo‘yamiz — Telegram o‘zi bosiladigan qiladi.
     """
+    from telethon.tl.types import MessageEntityBold, MessageEntityUrl
+
     raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     raw = raw.replace("\u200b", "").replace("\u200c", "").replace("\ufeff", "")
-    # "Chek:\nhttps://..." → "Chek : https://..."
-    raw = re.sub(
-        r"(?im)^Chek\s*:\s*\n+(https?://\S+)",
-        r"Chek : \1",
-        raw,
-    )
-    raw = re.sub(r"(?im)^Chek\s*:\s*(https?://)", r"Chek : \1", raw)
+    url = ""
+    m = _URL_RE.search(raw)
+    if m:
+        url = _clean_http_url(m.group(0))
+        before = raw[: m.start()]
+        after = raw[m.end() :]
+        before = re.sub(r"(?im)^Chek\s*:\s*$", "Chek:", before)
+        before = re.sub(r"(?im)Chek\s*:\s*$", "Chek:", before)
+        raw = (before.rstrip() + "\n\n" + url + after).strip() + "\n"
 
-    lines = raw.split("\n")
-    out_lines: list[str] = []
-    headed = False
-    for line in lines:
-        if not headed and line.strip():
-            out_lines.append(f"<b>{html.escape(line.strip())}</b>")
-            headed = True
-            continue
-        m = _URL_RE.search(line)
-        if m:
-            before = line[: m.start()]
-            url = m.group(0).rstrip(".,);]")
-            url_clean = "".join(ch for ch in url if ord(ch) < 128)
-            after = line[m.end() :]
-            chunk = html.escape(before)
-            if url_clean.startswith("http"):
-                chunk += (
-                    f'<a href="{html.escape(url_clean, quote=True)}">'
-                    f"{html.escape(url_clean)}</a>"
-                )
-            else:
-                chunk += html.escape(url)
-            chunk += html.escape(after)
-            out_lines.append(chunk)
-        else:
-            out_lines.append(html.escape(line))
-    # Muhim: <br/> emas — Telethon HTML da \n qator uzadi
-    return "\n".join(out_lines)
+    entities: list = []
+    first = raw.split("\n", 1)[0]
+    if first.strip():
+        entities.append(MessageEntityBold(offset=0, length=_utf16_len(first)))
+    if url and url in raw:
+        off = _utf16_len(raw[: raw.rfind(url)])
+        entities.append(MessageEntityUrl(offset=off, length=_utf16_len(url)))
+    return raw, entities
+
+
+def format_text_for_telegram(text: str) -> str:
+    body, _ents = prepare_telegram_dm(text)
+    return body
 
 
 def _fmt_amount(value) -> str:
@@ -612,12 +608,18 @@ async def _send_by_phone(
     send_err = ""
     while True:
         try:
-            await client.send_message(
-                user,
-                format_text_for_telegram(text),
-                parse_mode="html",
-                link_preview=True,
-            )
+            body, ents = prepare_telegram_dm(text)
+            try:
+                await client.send_message(
+                    user,
+                    body,
+                    formatting_entities=ents or None,
+                    link_preview=True,
+                )
+            except FloodWaitError:
+                raise
+            except Exception:
+                await client.send_message(user, body, link_preview=True)
             send_ok = True
             break
         except FloodWaitError as exc:

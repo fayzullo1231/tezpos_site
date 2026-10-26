@@ -143,7 +143,7 @@ def build_client_debt_message(
     rem = (reminder or "").strip()
     if rem:
         parts += ["", rem]
-    parts += ["", f"Chek : {link}"]
+    parts += ["", "Chek:", "", link]
     text = "\n".join(parts)
     return _normalize_sms_text(text)
 
