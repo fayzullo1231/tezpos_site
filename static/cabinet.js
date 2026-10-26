@@ -8287,7 +8287,7 @@
 
   const paintSms = (tpl) => {
     if (!tpl) return;
-    smsEnabled = !!tpl.sms_enabled && tpl.devsms_ready !== false;
+    smsEnabled = !!tpl.sms_enabled && tpl.devsms_ready !== false && !tpl.devsms_blocked;
     const shop = document.getElementById("cd-sms-shop");
     if (shop) shop.value = tpl.shop_label || "";
     const tgLink = document.getElementById("cd-tg-link");
@@ -8309,13 +8309,34 @@
     );
     const onBtn = document.getElementById("cd-sms-on");
     const offBtn = document.getElementById("cd-sms-off");
-    if (onBtn) {
-      onBtn.hidden = false;
-      onBtn.disabled = smsEnabled || tpl.devsms_ready === false;
-    }
-    if (offBtn) {
-      offBtn.hidden = false;
-      offBtn.disabled = !smsEnabled;
+    const smsHint = document.getElementById("cd-sms-hint");
+    if (tpl.devsms_blocked) {
+      if (smsHint) {
+        smsHint.textContent =
+          "Usmon uchun Dev SMS ishlamaydi. Qarz xabari faqat Telegram userbot (Komron) orqali ketadi.";
+      }
+      if (onBtn) {
+        onBtn.hidden = true;
+        onBtn.disabled = true;
+      }
+      if (offBtn) {
+        offBtn.hidden = true;
+        offBtn.disabled = true;
+      }
+      setPill(document.getElementById("cd-sms-pill"), false, "Yoqilgan", "Ishlamaydi");
+    } else {
+      if (smsHint) {
+        smsHint.textContent =
+          "Qarz qo‘shilganda yoki ayirilganda SMS (devsms.uz). Yoqilmaguncha yuborilmaydi va yonib qolmaydi.";
+      }
+      if (onBtn) {
+        onBtn.hidden = false;
+        onBtn.disabled = smsEnabled || tpl.devsms_ready === false;
+      }
+      if (offBtn) {
+        offBtn.hidden = false;
+        offBtn.disabled = !smsEnabled;
+      }
     }
     const smsWrapAdj = document.getElementById("cd-adj-sms-wrap");
     const smsChk = document.getElementById("cd-adj-sms");

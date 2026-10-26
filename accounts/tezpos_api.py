@@ -1578,15 +1578,17 @@ def pay_customer_debt(
     payment_type: str = "cash",
     note: str = "",
     check_base_url: str | None = None,
+    send_sms: bool = True,
 ) -> dict:
+    allow_sms = bool(send_sms)
     body: dict = {
         "amount": str(amount),
         "payment_type": payment_type or "cash",
         "note": note or "",
-        "send_sms": True,
-        "sms": True,
-        "notify": True,
-        "notify_sms": True,
+        "send_sms": allow_sms,
+        "sms": allow_sms,
+        "notify": allow_sms,
+        "notify_sms": allow_sms,
     }
     # Localhost SMS chekiga yaroqsiz тАФ faqat ochiq domen
     if check_base_url and "127.0.0.1" not in check_base_url and "localhost" not in check_base_url:

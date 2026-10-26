@@ -8496,6 +8496,8 @@ def cabinet_debtor_pay(request):
             check_base = "https://tez-pos.uz"
         else:
             check_base = site_base
+        from .client_debts import _sms_enabled_for
+
         result = tezpos_api.pay_customer_debt(
             token,
             server,
@@ -8504,6 +8506,7 @@ def cabinet_debtor_pay(request):
             payment_type=payment_type,
             note=note,
             check_base_url=check_base,
+            send_sms=_sms_enabled_for(str(server or "")),
         )
     except tezpos_api.TezPosApiError as exc:
         if exc.status in (401, 403):
@@ -8570,11 +8573,10 @@ def cabinet_debtor_pay(request):
     )
     shop_label = ""
     tpl = None
+    shop_key = str(server or "").strip().lower()
     try:
         from .models import DebtSmsTemplate
         from .client_debts import _canonical_shop_label
-
-        shop_key = str(server or "").strip().lower()
         tpl = DebtSmsTemplate.objects.filter(shop_key=shop_key).first()
         if tpl and (tpl.shop_label or "").strip():
             shop_label = _canonical_shop_label(tpl.shop_label)
@@ -8590,7 +8592,9 @@ def cabinet_debtor_pay(request):
         balance=balance,
         check_link=sms_check_url,
     )
-    sms_on = bool(tpl and getattr(tpl, "sms_enabled", False) and devsms.resolve_token())
+    from .client_debts import _sms_enabled_for
+
+    sms_on = _sms_enabled_for(shop_key)
     if sms_on:
         sms_res = devsms.send_dev_sms(phone=phone, message=sms_text)
         sms_sent = bool(sms_res.get("ok"))

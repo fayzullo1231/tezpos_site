@@ -182,9 +182,17 @@ def _maybe_resolve_telegram(row: ClientDebtor) -> None:
         pass
 
 
+def shop_blocks_devsms(shop: str) -> bool:
+    """Usmon: DevSMS yo‘q, qarz xabari faqat Komron userboti orqali."""
+    s = (shop or "").strip().lower()
+    return bool(s) and (s == "usmon" or s.startswith("usmon"))
+
+
 def _sms_enabled_for(shop: str) -> bool:
     shop = (shop or "").strip().lower()
-    if not shop or not devsms.resolve_token():
+    if not shop or shop_blocks_devsms(shop):
+        return False
+    if not devsms.resolve_token():
         return False
     return bool(
         DebtSmsTemplate.objects.filter(shop_key=shop, sms_enabled=True).exists()
@@ -711,6 +719,9 @@ def _list_payload(shop: str) -> dict:
         out.append(item)
     out.sort(key=lambda x: x["balance"], reverse=True)
     tpl = DebtSmsTemplate.objects.filter(shop_key=shop).first()
+    if shop_blocks_devsms(shop) and tpl and tpl.sms_enabled:
+        tpl.sms_enabled = False
+        tpl.save(update_fields=["sms_enabled", "updated_at"])
     shop_label = ""
     if tpl and (tpl.shop_label or "").strip():
         shop_label = _canonical_shop_label(tpl.shop_label)
@@ -721,7 +732,9 @@ def _list_payload(shop: str) -> dict:
         "total_debt": float(total),
         "total_display": _fmt_money(total),
         "shop_label": shop_label,
-        "sms_enabled": bool(tpl and tpl.sms_enabled and devsms.resolve_token()),
+        "sms_enabled": (not shop_blocks_devsms(shop))
+        and bool(tpl and tpl.sms_enabled and devsms.resolve_token()),
+        "devsms_blocked": shop_blocks_devsms(shop),
     }
 
 
@@ -764,8 +777,11 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
         "preview_credit": preview_credit,
         "placeholders": ["{shop}", "{amount}", "{balance}", "{check_link}"],
         "telegram_group_link": row.telegram_group_link or "",
-        "sms_enabled": bool(row.sms_enabled) and bool(devsms.resolve_token()),
-        "devsms_ready": bool(devsms.resolve_token()),
+        "sms_enabled": (not shop_blocks_devsms(row.shop_key))
+        and bool(row.sms_enabled)
+        and bool(devsms.resolve_token()),
+        "devsms_ready": bool(devsms.resolve_token()) and not shop_blocks_devsms(row.shop_key),
+        "devsms_blocked": shop_blocks_devsms(row.shop_key),
         "telethon": telethon_public_status(row.shop_key),
     }
 
@@ -1139,6 +1155,18 @@ def cabinet_sms_toggle(request):
         enabled = bool(raw)
 
     tpl = _get_or_create_template(shop, tenant)
+    if shop_blocks_devsms(shop):
+        tpl.sms_enabled = False
+        tpl.save(update_fields=["sms_enabled", "updated_at"])
+        return JsonResponse(
+            {
+                "ok": True,
+                "sms_enabled": False,
+                "devsms_blocked": True,
+                "template": _serialize_template(tpl),
+                "message": "Usmon uchun Dev SMS o‘chiq. Qarz xabari faqat Telegram (Komron) orqali ketadi.",
+            }
+        )
     if enabled and not devsms.resolve_token():
         tpl.sms_enabled = False
         tpl.save(update_fields=["sms_enabled", "updated_at"])
