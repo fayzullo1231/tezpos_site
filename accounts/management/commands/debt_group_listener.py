@@ -164,9 +164,41 @@ class Command(BaseCommand):
         httpd = ThreadingHTTPServer((HTTP_HOST, HTTP_PORT), _Handler)
         threading.Thread(target=httpd.serve_forever, name="tg-http", daemon=True).start()
         print(f"debt_group_listener HTTP {HTTP_HOST}:{HTTP_PORT}", flush=True)
+        for g in groups:
+            print(
+                "debt_group_listener group shops="
+                + ",".join(sorted(g.get("shops") or [])),
+                flush=True,
+            )
+
+        known = {
+            f"{g['api_id']}:{str(g.get('session') or '')[:32]}" for g in groups
+        }
+
+        async def _watch_new_groups():
+            while True:
+                await asyncio.sleep(12)
+                try:
+                    now = await sync_to_async(session_groups)()
+                except Exception:
+                    logger.exception("session_groups yangilanmadi")
+                    continue
+                for g in now:
+                    fp = f"{g['api_id']}:{str(g.get('session') or '')[:32]}"
+                    if fp in known:
+                        continue
+                    known.add(fp)
+                    print(
+                        "yangi userbot shops="
+                        + ",".join(sorted(g.get("shops") or [])),
+                        flush=True,
+                    )
+                    asyncio.create_task(self._listen_one(g, senders))
+
         try:
             await asyncio.gather(
-                *(self._listen_one(g, senders) for g in groups)
+                _watch_new_groups(),
+                *(self._listen_one(g, senders) for g in groups),
             )
         finally:
             try:

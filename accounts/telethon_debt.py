@@ -159,39 +159,72 @@ def _global_creds() -> tuple[str, str, str]:
     )
 
 
+def _clean_cred(v: str) -> str:
+    return (v or "").strip().strip('"').strip("'")
+
+
+def _creds_from_tpl(row) -> tuple[str, str, str]:
+    """Do‘kon sessioni + yetishmagan API ID/Hash .env dan."""
+    g_id, g_hash, _g_sess = _global_creds()
+    if not row:
+        return ("", "", "")
+    api_id = _clean_cred(row.telethon_api_id) or g_id
+    api_hash = _clean_cred(row.telethon_api_hash) or g_hash
+    session = _clean_cred(row.telethon_session)
+    return (api_id, api_hash, session)
+
+
+def _template_for_shop(shop: str):
+    shop = (shop or "").strip()
+    if not shop:
+        return None
+    return (
+        DebtSmsTemplate.objects.filter(shop_key__iexact=shop)
+        .only(
+            "shop_key",
+            "telethon_api_id",
+            "telethon_api_hash",
+            "telethon_session",
+            "telethon_user",
+        )
+        .first()
+    )
+
+
 def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
     """kuloloptom / kuloloptom-2 — server .env; qolgan do‘konlar o‘z sessioni."""
     shop = (shop_key or "").strip().lower()
     if not shop or uses_shared_telethon(shop):
         return _global_creds()
-    def _clean(v: str) -> str:
-        return (v or "").strip().strip('"').strip("'")
 
-    def _from_tpl(row) -> tuple[str, str, str]:
-        if not row:
-            return ("", "", "")
-        return (
-            _clean(row.telethon_api_id),
-            _clean(row.telethon_api_hash),
-            _clean(row.telethon_session),
-        )
-
-    tpl = (
-        DebtSmsTemplate.objects.filter(shop_key=shop)
-        .only("telethon_api_id", "telethon_api_hash", "telethon_session")
-        .first()
-    )
-    creds = _from_tpl(tpl)
+    tpl = _template_for_shop(shop)
+    creds = _creds_from_tpl(tpl)
     if _creds_ok(*creds):
         return creds
-    # Usmon: Komron session boshqa usmon* yozuvida bo‘lishi mumkin
     if shop == "usmon" or shop.startswith("usmon"):
         for row in DebtSmsTemplate.objects.filter(shop_key__istartswith="usmon").only(
-            "telethon_api_id", "telethon_api_hash", "telethon_session"
+            "telethon_api_id",
+            "telethon_api_hash",
+            "telethon_session",
+            "telethon_user",
         ):
-            other = _from_tpl(row)
+            other = _creds_from_tpl(row)
             if _creds_ok(*other):
                 return other
+        for row in DebtSmsTemplate.objects.exclude(telethon_session="").only(
+            "shop_key",
+            "telethon_api_id",
+            "telethon_api_hash",
+            "telethon_session",
+            "telethon_user",
+        ):
+            if uses_shared_telethon(row.shop_key):
+                continue
+            user = (row.telethon_user or "").strip().lower()
+            if "komron" in user or "kamron" in user:
+                other = _creds_from_tpl(row)
+                if _creds_ok(*other):
+                    return other
     return creds if any(creds) else ("", "", "")
 
 
@@ -222,7 +255,7 @@ def telethon_public_status(shop_key: str | None = None) -> dict:
     if shared:
         user = "Ro‘yxatdan o‘tgan" if configured else "Sozlanmagan"
     else:
-        tpl = DebtSmsTemplate.objects.filter(shop_key=shop).only("telethon_user").first()
+        tpl = _template_for_shop(shop)
         user = (tpl.telethon_user or "").strip() if tpl else ""
     return {
         "shared": shared,
@@ -237,19 +270,24 @@ def telethon_public_status(shop_key: str | None = None) -> dict:
 def session_groups() -> list[dict]:
     """Bir xil session = bitta Telethon client (listener uchun)."""
     groups: dict[str, dict] = {}
-    shops: set[str] = set(
-        DebtSmsTemplate.objects.exclude(telegram_group_link="")
-        .values_list("shop_key", flat=True)
-    )
-    shops.update(
-        DebtSmsTemplate.objects.exclude(telethon_session="")
-        .values_list("shop_key", flat=True)
-    )
+    shops: set[str] = set()
+    for raw in DebtSmsTemplate.objects.values_list("shop_key", flat=True):
+        s = (raw or "").strip().lower()
+        if s:
+            shops.add(s)
     shops.update(SHARED_TELETHON_SHOPS)
-    for shop in shops:
-        if not telethon_configured(shop):
-            continue
+    shops.add("usmon")
+    for shop in sorted(shops):
         api_id, api_hash, session = telethon_creds(shop)
+        if not _creds_ok(api_id, api_hash, session):
+            logger.warning(
+                "session_groups skip shop=%s api_id=%s hash=%s session=%s",
+                shop,
+                "ha" if api_id else "yoq",
+                "ha" if api_hash else "yoq",
+                "ha" if session else "yoq",
+            )
+            continue
         fp = f"{api_id}:{session[:32]}"
         row = groups.setdefault(
             fp,
@@ -260,7 +298,8 @@ def session_groups() -> list[dict]:
                 "shops": [],
             },
         )
-        row["shops"].append(shop)
+        if shop not in row["shops"]:
+            row["shops"].append(shop)
     return list(groups.values())
 
 
