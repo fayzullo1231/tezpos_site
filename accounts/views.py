@@ -8569,6 +8569,7 @@ def cabinet_debtor_pay(request):
         or "TezPOS"
     )
     shop_label = ""
+    tpl = None
     try:
         from .models import DebtSmsTemplate
         from .client_debts import _canonical_shop_label
@@ -8579,6 +8580,7 @@ def cabinet_debtor_pay(request):
             shop_label = _canonical_shop_label(tpl.shop_label)
     except Exception:
         shop_label = ""
+        tpl = None
     if not shop_label:
         shop_label = store
     sms_text = devsms.build_debt_message(
@@ -8588,10 +8590,16 @@ def cabinet_debtor_pay(request):
         balance=balance,
         check_link=sms_check_url,
     )
-    sms_res = devsms.send_dev_sms(phone=phone, message=sms_text)
-    sms_sent = bool(sms_res.get("ok"))
-    if not sms_sent:
-        sms_error = str(sms_res.get("error") or "SMS yuborilmadi (DevSMS).")
+    sms_on = bool(tpl and getattr(tpl, "sms_enabled", False) and devsms.resolve_token())
+    if sms_on:
+        sms_res = devsms.send_dev_sms(phone=phone, message=sms_text)
+        sms_sent = bool(sms_res.get("ok"))
+        if not sms_sent:
+            sms_error = str(sms_res.get("error") or "SMS yuborilmadi (DevSMS).")
+    else:
+        sms_res = {"ok": False, "skipped": True}
+        sms_sent = False
+        sms_error = ""
 
     return JsonResponse(
         {

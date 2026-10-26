@@ -8169,6 +8169,7 @@
   let query = "";
   let activeId = null;
   let active = null;
+  let smsEnabled = false;
 
   const countEl = document.getElementById("cd-count");
   const totalEl = document.getElementById("cd-total");
@@ -8261,6 +8262,13 @@
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "fail");
       rows = Array.isArray(json.debtors) ? json.debtors : [];
+      if (typeof json.sms_enabled === "boolean") {
+        smsEnabled = json.sms_enabled;
+        const smsWrapAdj = document.getElementById("cd-adj-sms-wrap");
+        const smsChk = document.getElementById("cd-adj-sms");
+        if (smsWrapAdj) smsWrapAdj.hidden = !smsEnabled;
+        if (smsChk) smsChk.checked = smsEnabled;
+      }
       paintList();
     } catch (e) {
       if (errorEl) {
@@ -8270,8 +8278,16 @@
     }
   };
 
+  const setPill = (el, on, onText, offText) => {
+    if (!el) return;
+    el.classList.toggle("is-on", !!on);
+    el.classList.toggle("is-off", !on);
+    el.textContent = on ? onText : offText;
+  };
+
   const paintSms = (tpl) => {
     if (!tpl) return;
+    smsEnabled = !!tpl.sms_enabled && tpl.devsms_ready !== false;
     const shop = document.getElementById("cd-sms-shop");
     if (shop) shop.value = tpl.shop_label || "";
     const tgLink = document.getElementById("cd-tg-link");
@@ -8283,6 +8299,71 @@
         : "";
       sampleEl.textContent = `${tpl.preview}${credit}`;
       sampleEl.hidden = false;
+    }
+
+    setPill(
+      document.getElementById("cd-sms-pill"),
+      smsEnabled,
+      "Yoqilgan",
+      tpl.devsms_ready === false ? "Token yo‘q" : "O‘chirilgan"
+    );
+    const onBtn = document.getElementById("cd-sms-on");
+    const offBtn = document.getElementById("cd-sms-off");
+    if (onBtn) {
+      onBtn.hidden = false;
+      onBtn.disabled = smsEnabled || tpl.devsms_ready === false;
+    }
+    if (offBtn) {
+      offBtn.hidden = false;
+      offBtn.disabled = !smsEnabled;
+    }
+    const smsWrapAdj = document.getElementById("cd-adj-sms-wrap");
+    const smsChk = document.getElementById("cd-adj-sms");
+    if (smsWrapAdj) smsWrapAdj.hidden = !smsEnabled;
+    if (smsChk) smsChk.checked = smsEnabled;
+
+    const tg = tpl.telethon || {};
+    const sharedBox = document.getElementById("cd-tg-shared");
+    const accForm = document.getElementById("cd-tg-acc-form");
+    const hint = document.getElementById("cd-tg-acc-hint");
+    setPill(
+      document.getElementById("cd-tg-acc-pill"),
+      !!tg.configured,
+      tg.user || "Ro‘yxatdan o‘tgan",
+      "Kiritilmagan"
+    );
+    if (tg.shared) {
+      if (sharedBox) sharedBox.hidden = false;
+      if (accForm) accForm.hidden = true;
+      const idEl = document.getElementById("cd-tg-shared-id");
+      const hashEl = document.getElementById("cd-tg-shared-hash");
+      const userEl = document.getElementById("cd-tg-shared-user");
+      if (idEl) idEl.textContent = tg.api_id || "—";
+      if (hashEl) hashEl.textContent = tg.api_hash_masked || "—";
+      if (userEl) userEl.textContent = tg.user || (tg.configured ? "Ro‘yxatdan o‘tgan" : "Sozlanmagan");
+      if (hint) {
+        hint.textContent =
+          "Kulol Optom va Kulol Optom-2 hozirgi server akkauntidan foydalanadi.";
+      }
+    } else {
+      if (sharedBox) sharedBox.hidden = true;
+      if (accForm) accForm.hidden = false;
+      const idInp = document.getElementById("cd-tg-api-id");
+      const hashInp = document.getElementById("cd-tg-api-hash");
+      const sessInp = document.getElementById("cd-tg-session");
+      if (idInp && document.activeElement !== idInp) idInp.value = tg.api_id || "";
+      if (hashInp && document.activeElement !== hashInp) {
+        hashInp.value = "";
+        hashInp.placeholder = tg.configured ? "Saqlangan — o‘zgartirish uchun yangisini yozing" : "my.telegram.org dan hash";
+      }
+      if (sessInp && document.activeElement !== sessInp) {
+        sessInp.value = "";
+        sessInp.placeholder = tg.session_set ? "Saqlangan — o‘zgartirish uchun yangisini yozing" : "1BVtsOHwBu…";
+      }
+      if (hint) {
+        hint.textContent =
+          "API ID, API Hash va String session ni o‘zingiz kiriting (my.telegram.org).";
+      }
     }
   };
 
@@ -8354,6 +8435,10 @@
     document.getElementById("cd-detail-ledger").innerHTML = (row.ledger || []).length
       ? timelineHtml(row.ledger)
       : `<p class="cabinet-hint">Hali yozuv yo‘q.</p>`;
+    const smsWrapAdj = document.getElementById("cd-adj-sms-wrap");
+    const smsChk = document.getElementById("cd-adj-sms");
+    if (smsWrapAdj) smsWrapAdj.hidden = !smsEnabled;
+    if (smsChk) smsChk.checked = smsEnabled;
   };
 
   const openDetail = async (id) => {
@@ -8771,6 +8856,7 @@
         note: "",
         amount: document.getElementById("cd-form-amount").value,
         due_date: document.getElementById("cd-form-due")?.value || "",
+        send_sms: smsEnabled,
       });
       closeModal();
       await loadList();
@@ -8948,5 +9034,64 @@
     }
   });
 
+  const showChannelMsg = (id, text, ok) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.hidden = !text;
+    el.textContent = text || "";
+    el.classList.toggle("is-ok", !!ok);
+    el.classList.toggle("is-err", !ok);
+  };
+
+  const postSmsToggle = async (enabled) => {
+    if (!data.smsToggleUrl) return;
+    showChannelMsg("cd-sms-toggle-msg", "Saqlanmoqda…", true);
+    try {
+      const json = await postJson(data.smsToggleUrl, { sms_enabled: enabled });
+      if (json.template) paintSms(json.template);
+      showChannelMsg("cd-sms-toggle-msg", json.message || (enabled ? "Yoqildi." : "O‘chirildi."), true);
+    } catch (e) {
+      showChannelMsg("cd-sms-toggle-msg", e.message || "Saqlanmadi", false);
+      try {
+        await loadSms();
+      } catch (_e) {}
+    }
+  };
+  document.getElementById("cd-sms-on")?.addEventListener("click", () => postSmsToggle(true));
+  document.getElementById("cd-sms-off")?.addEventListener("click", () => postSmsToggle(false));
+
+  document.getElementById("cd-tg-acc-form")?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!data.telethonSaveUrl) return;
+    const btn = document.getElementById("cd-tg-acc-save");
+    if (btn) btn.disabled = true;
+    showChannelMsg("cd-tg-acc-msg", "Tekshirilmoqda…", true);
+    try {
+      const json = await postJson(data.telethonSaveUrl, {
+        api_id: document.getElementById("cd-tg-api-id")?.value,
+        api_hash: document.getElementById("cd-tg-api-hash")?.value,
+        session: document.getElementById("cd-tg-session")?.value,
+      });
+      if (json.template) paintSms(json.template);
+      showChannelMsg("cd-tg-acc-msg", json.message || "Saqlandi.", true);
+    } catch (e) {
+      showChannelMsg("cd-tg-acc-msg", e.message || "Kirilmadi", false);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+  document.getElementById("cd-tg-acc-clear")?.addEventListener("click", async () => {
+    if (!data.telethonSaveUrl) return;
+    if (!window.confirm("Telegram userbot o‘chirilsinmi?")) return;
+    try {
+      const json = await postJson(data.telethonSaveUrl, { clear: true });
+      if (json.template) paintSms(json.template);
+      showChannelMsg("cd-tg-acc-msg", json.message || "O‘chirildi.", true);
+    } catch (e) {
+      showChannelMsg("cd-tg-acc-msg", e.message || "O‘chirilmadi", false);
+    }
+  });
+
   loadList();
+  loadSms();
 })();

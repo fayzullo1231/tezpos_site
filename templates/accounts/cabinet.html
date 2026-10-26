@@ -1311,6 +1311,60 @@
         <p class="cabinet-empty" id="cd-empty" hidden>Mijoz yo‘q. «+ Mijoz / qarz» bilan qo‘shing.</p>
       </div>
       <div id="cd-sms-wrap" hidden>
+        <div class="cd-channel-card">
+          <div class="cd-channel-head">
+            <div>
+              <h4>Dev SMS</h4>
+              <p class="cabinet-hint">Qarz qo‘shilganda yoki ayirilganda SMS (devsms.uz). Yoqilmaguncha yuborilmaydi va yonib qolmaydi.</p>
+            </div>
+            <span class="bot-status-pill is-off" id="cd-sms-pill">O‘chirilgan</span>
+          </div>
+          <div class="bot-actions">
+            <button type="button" class="btn-save" id="cd-sms-on">Yoqish</button>
+            <button type="button" class="btn-soft" id="cd-sms-off">O‘chirish</button>
+          </div>
+          <p class="cabinet-hint cd-tg-msg" id="cd-sms-toggle-msg" hidden></p>
+        </div>
+
+        <div class="cd-channel-card">
+          <div class="cd-channel-head">
+            <div>
+              <h4>Telegram userbot</h4>
+              <p class="cabinet-hint" id="cd-tg-acc-hint">API ID, API Hash va String session — my.telegram.org. Foydalanuvchi o‘zi kiritadi.</p>
+            </div>
+            <span class="bot-status-pill is-off" id="cd-tg-acc-pill">Kiritilmagan</span>
+          </div>
+          <div id="cd-tg-shared" hidden>
+            <dl class="cd-tg-creds">
+              <div><dt>API ID</dt><dd id="cd-tg-shared-id">—</dd></div>
+              <div><dt>API Hash</dt><dd id="cd-tg-shared-hash">—</dd></div>
+              <div><dt>String session</dt><dd>Saqlangan</dd></div>
+              <div><dt>Holat</dt><dd id="cd-tg-shared-user">Ro‘yxatdan o‘tgan</dd></div>
+            </dl>
+            <p class="cabinet-hint">Kulol Optom va Kulol Optom-2 hozirgi server akkauntidan foydalanadi. Boshqa serverlar o‘z API loginlarini kiritadi.</p>
+          </div>
+          <form id="cd-tg-acc-form" class="sup-form" hidden>
+            <label class="sup-field">
+              <span>API ID</span>
+              <input type="text" id="cd-tg-api-id" inputmode="numeric" autocomplete="off" placeholder="12345678">
+            </label>
+            <label class="sup-field">
+              <span>API Hash</span>
+              <input type="password" id="cd-tg-api-hash" autocomplete="off" placeholder="my.telegram.org dan hash">
+            </label>
+            <label class="sup-field">
+              <span>String session</span>
+              <textarea id="cd-tg-session" rows="3" autocomplete="off" placeholder="1BVtsOHwBu…"></textarea>
+              <p class="cabinet-hint">Telethon StringSession. API ID va Hash ni <b>my.telegram.org</b> dan oling, session ni o‘zingiz yarating.</p>
+            </label>
+            <p class="cabinet-hint cd-tg-msg" id="cd-tg-acc-msg" hidden></p>
+            <div class="sup-modal-actions">
+              <button type="submit" class="btn-save" id="cd-tg-acc-save">Kirish va saqlash</button>
+              <button type="button" class="btn-soft" id="cd-tg-acc-clear">O‘chirish</button>
+            </div>
+          </form>
+        </div>
+
         <form id="cd-tg-form" class="sup-form cd-tg-form">
           <label class="sup-field">
             <span>Telegram guruh havolasi</span>
@@ -1392,7 +1446,7 @@
           <input type="text" id="cd-adj-amount" inputmode="decimal" placeholder="5 000 yoki -5 000">
           <input type="date" id="cd-adj-due" title="Qaytarish sanasi">
           <input type="text" id="cd-adj-note" placeholder="Izoh (ixtiyoriy)" hidden>
-          <label class="cd-sms-check"><input type="checkbox" id="cd-adj-sms" checked> SMS yuborish</label>
+          <label class="cd-sms-check" id="cd-adj-sms-wrap" hidden><input type="checkbox" id="cd-adj-sms"> SMS yuborish</label>
           <button type="button" class="btn-save" id="cd-adj-btn">Saqlash</button>
         </div>
         <p class="cabinet-hint" id="cd-adj-msg" hidden></p>
@@ -1930,6 +1984,8 @@
     clientDebtAdjustUrl: "{% url 'accounts:cabinet_client_debt_adjust' %}",
     smsTemplateUrl: "{% url 'accounts:cabinet_sms_template' %}",
     smsTemplateSaveUrl: "{% url 'accounts:cabinet_sms_template_save' %}",
+    smsToggleUrl: "{% url 'accounts:cabinet_sms_toggle' %}",
+    telethonSaveUrl: "{% url 'accounts:cabinet_telethon_save' %}",
     suppliersUrl: "{% url 'accounts:cabinet_suppliers' %}",
     suppliersSummaryUrl: "{% url 'accounts:cabinet_suppliers_summary' %}",
     suppliersHistoryUrl: "{% url 'accounts:cabinet_suppliers_history' %}",
@@ -2005,5 +2061,5 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20261012-sv-kg" defer></script>
+<script src="/static/cabinet.js?v=20261027-sms-ub" defer></script>
 {% endblock %}

@@ -13,7 +13,7 @@ from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from accounts.models import ClientDebtor
+from accounts.models import ClientDebtor, DebtSmsTemplate
 from accounts.telethon_debt import (
     reminder_kind_for,
     resolve_debtors_batch,
@@ -42,14 +42,21 @@ class Command(BaseCommand):
         parser.add_argument("--limit", type=int, default=500)
 
     def handle(self, *args, **options):
-        if not telethon_configured():
+        shop_opt = (options.get("shop") or "").strip()
+        if shop_opt and not telethon_configured(shop_opt):
             self.stderr.write(
-                self.style.ERROR(
-                    "Telethon sozlanmagan. .env ga TELETHON_API_ID, "
-                    "TELETHON_API_HASH, TELETHON_SESSION yozing."
-                )
+                self.style.ERROR(f"Telethon sozlanmagan: {shop_opt}")
             )
             return
+        if not shop_opt and not telethon_configured():
+            has_own = DebtSmsTemplate.objects.exclude(telethon_session="").exists()
+            if not has_own:
+                self.stderr.write(
+                    self.style.ERROR(
+                        "Telethon sozlanmagan. .env yoki do‘kon String session kiriting."
+                    )
+                )
+                return
 
         today = timezone.localdate()
         qs = (

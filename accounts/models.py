@@ -332,6 +332,19 @@ class DebtSmsTemplate(models.Model):
         blank=True,
         help_text="Smena yopilganda qarzdorlar ro‘yxati yuborilgan smenalar",
     )
+    sms_enabled = models.BooleanField(
+        default=False,
+        help_text="DevSMS orqali SMS yuborish. Token bo‘lsa ham avtomatik yoqilmaydi.",
+    )
+    telethon_api_id = models.CharField(blank=True, default="", max_length=32)
+    telethon_api_hash = models.CharField(blank=True, default="", max_length=80)
+    telethon_session = models.TextField(blank=True, default="")
+    telethon_user = models.CharField(
+        blank=True,
+        default="",
+        help_text="Userbot kirgandan keyin Telegram nomi",
+        max_length=180,
+    )
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

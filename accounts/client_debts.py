@@ -29,6 +29,9 @@ from .telethon_debt import (
     send_group_message,
     send_text_by_phone,
     telethon_configured,
+    telethon_public_status,
+    uses_shared_telethon,
+    verify_telethon_session,
 )
 
 
@@ -96,7 +99,7 @@ def send_shift_debt_summary(shop: str, shift_id: str) -> dict:
     shop = (shop or "").strip().lower()
     key = str(shift_id or "").strip()
     link = debt_group_link(shop)
-    if not key or not link or not telethon_configured():
+    if not key or not link or not telethon_configured(shop):
         return {"ok": False, "skipped": True}
     with transaction.atomic():
         row = DebtSmsTemplate.objects.select_for_update().filter(shop_key=shop).first()
@@ -113,7 +116,7 @@ def send_shift_debt_summary(shop: str, shift_id: str) -> dict:
 
     err = ""
     for chunk in debtors_summary_chunks(shop):
-        res = send_group_message(link, chunk)
+        res = send_group_message(link, chunk, shop_key=shop)
         if not res.get("ok"):
             err = str(res.get("error") or "yuborilmadi")
             break
@@ -140,10 +143,12 @@ def _notify_group(shop: str, debtor: ClientDebtor, entry: ClientDebtorLedger | N
             .first()
             or ""
         ).strip()
-        if not link or not parse_group_link(link) or not telethon_configured():
+        if not link or not parse_group_link(link) or not telethon_configured(shop):
             return
         text = _group_notice_text(debtor, entry, debtor.balance())
-        transaction.on_commit(lambda: enqueue_group_message(link, text))
+        transaction.on_commit(
+            lambda l=link, t=text, s=shop: enqueue_group_message(l, t, shop_key=s)
+        )
     except Exception:
         pass
 
@@ -164,6 +169,15 @@ def _maybe_resolve_telegram(row: ClientDebtor) -> None:
         pass
 
 
+def _sms_enabled_for(shop: str) -> bool:
+    shop = (shop or "").strip().lower()
+    if not shop or not devsms.resolve_token():
+        return False
+    return bool(
+        DebtSmsTemplate.objects.filter(shop_key=shop, sms_enabled=True).exists()
+    )
+
+
 def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     """
     Qarz matni: Telegram va DevSMS — ikkalasiga ham yuboriladi.
@@ -175,10 +189,11 @@ def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     if not (debtor.phone or "").strip():
         return {"ok": False, "error": "Telefon yo‘q", "channel": "none"}
 
+    shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
     tg_ok = False
     tg_err = ""
     tg_id = ""
-    if telethon_configured():
+    if telethon_configured(shop):
         try:
             res = send_text_by_phone(debtor.phone, msg, debtor=debtor)
             if res.get("ok"):
@@ -195,7 +210,9 @@ def _deliver_debt_notice(debtor: ClientDebtor, text: str) -> dict:
     else:
         tg_err = "Telethon sozlanmagan"
 
-    sms = devsms.send_dev_sms(phone=debtor.phone, message=msg)
+    sms: dict = {"ok": False, "error": "DevSMS o‘chirilgan"}
+    if _sms_enabled_for(shop):
+        sms = devsms.send_dev_sms(phone=debtor.phone, message=msg)
     sms_ok = bool(sms.get("ok"))
     sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
 
@@ -529,6 +546,7 @@ def _list_payload(shop: str) -> dict:
         "total_debt": float(total),
         "total_display": _fmt_money(total),
         "shop_label": shop_label,
+        "sms_enabled": bool(tpl and tpl.sms_enabled and devsms.resolve_token()),
     }
 
 
@@ -571,6 +589,9 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
         "preview_credit": preview_credit,
         "placeholders": ["{shop}", "{amount}", "{balance}", "{check_link}"],
         "telegram_group_link": row.telegram_group_link or "",
+        "sms_enabled": bool(row.sms_enabled) and bool(devsms.resolve_token()),
+        "devsms_ready": bool(devsms.resolve_token()),
+        "telethon": telethon_public_status(row.shop_key),
     }
 
 
@@ -755,7 +776,7 @@ def cabinet_client_debtor_save(request):
 
     # Yangi mijoz + boshlang‘ich qarz: Telegram/SMS
     sms_res = None
-    send_sms = bool(body.get("send_sms", True))
+    send_sms = bool(body.get("send_sms", False))
     if send_sms and not sid and amount > 0 and row.phone:
         entry = row.ledger.order_by("-id").first()
         check_url = (
@@ -925,6 +946,137 @@ def cabinet_sms_template_save(request):
 
 @login_required
 @require_POST
+def cabinet_sms_toggle(request):
+    """DevSMS yoqish/o‘chirish — faqat foydalanuvchi tanlovi, avtomatik yoqilmaydi."""
+    shop = _shop(request)
+    tenant = _tenant(request)
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
+
+    raw = body.get("sms_enabled")
+    if isinstance(raw, str):
+        enabled = raw.strip().lower() in {"1", "true", "on", "yes"}
+    else:
+        enabled = bool(raw)
+
+    tpl = _get_or_create_template(shop, tenant)
+    if enabled and not devsms.resolve_token():
+        tpl.sms_enabled = False
+        tpl.save(update_fields=["sms_enabled", "updated_at"])
+        return JsonResponse(
+            {
+                "error": "DevSMS token serverda yo‘q. Yoqib bo‘lmaydi.",
+                "template": _serialize_template(tpl),
+            },
+            status=400,
+        )
+    tpl.sms_enabled = bool(enabled)
+    tpl.save(update_fields=["sms_enabled", "updated_at"])
+    return JsonResponse(
+        {
+            "ok": True,
+            "sms_enabled": bool(tpl.sms_enabled),
+            "template": _serialize_template(tpl),
+            "message": "Dev SMS yoqildi." if tpl.sms_enabled else "Dev SMS o‘chirildi.",
+        }
+    )
+
+
+@login_required
+@require_POST
+def cabinet_telethon_save(request):
+    """Boshqa serverlar o‘z API ID / Hash / String sessionini kiritadi."""
+    shop = _shop(request)
+    tenant = _tenant(request)
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
+
+    tpl = _get_or_create_template(shop, tenant)
+    if uses_shared_telethon(shop):
+        return JsonResponse(
+            {
+                "error": (
+                    "Kulol Optom va Kulol Optom-2 hozirgi server akkauntidan "
+                    "foydalanadi. API ni o‘zgartirib bo‘lmaydi."
+                ),
+                "template": _serialize_template(tpl),
+            },
+            status=400,
+        )
+
+    if body.get("clear"):
+        tpl.telethon_api_id = ""
+        tpl.telethon_api_hash = ""
+        tpl.telethon_session = ""
+        tpl.telethon_user = ""
+        tpl.save(
+            update_fields=[
+                "telethon_api_id",
+                "telethon_api_hash",
+                "telethon_session",
+                "telethon_user",
+                "updated_at",
+            ]
+        )
+        return JsonResponse(
+            {
+                "ok": True,
+                "cleared": True,
+                "template": _serialize_template(tpl),
+                "message": "Telegram userbot o‘chirildi.",
+            }
+        )
+
+    api_id = str(body.get("api_id") or tpl.telethon_api_id or "").strip()
+    api_hash = str(body.get("api_hash") or tpl.telethon_api_hash or "").strip()
+    session = str(body.get("session") or tpl.telethon_session or "").strip()
+    if not api_id or not api_id.isdigit():
+        return JsonResponse({"error": "API ID raqam bo‘lishi kerak (my.telegram.org)."}, status=400)
+    if not api_hash:
+        return JsonResponse({"error": "API Hash kiriting."}, status=400)
+    if not session:
+        return JsonResponse({"error": "String session kiriting."}, status=400)
+
+    check = verify_telethon_session(api_id, api_hash, session)
+    if not check.get("ok"):
+        return JsonResponse(
+            {
+                "error": "Kirish muvaffaqiyatsiz: "
+                + str(check.get("error") or "session noto‘g‘ri")
+            },
+            status=400,
+        )
+
+    tpl.telethon_api_id = api_id[:32]
+    tpl.telethon_api_hash = api_hash[:80]
+    tpl.telethon_session = session
+    tpl.telethon_user = str(check.get("user") or "")[:180]
+    tpl.save(
+        update_fields=[
+            "telethon_api_id",
+            "telethon_api_hash",
+            "telethon_session",
+            "telethon_user",
+            "updated_at",
+        ]
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "template": _serialize_template(tpl),
+            "message": "Kirildi"
+            + (f" ({tpl.telethon_user})" if tpl.telethon_user else "")
+            + ".",
+        }
+    )
+
+
+@login_required
+@require_POST
 def cabinet_client_debts_telegram_group(request):
     """Guruh havolasini tekshiradi (sinov xabari) va faqat muvaffaqiyatli bo‘lsa saqlaydi."""
     shop = _shop(request)
@@ -948,14 +1100,25 @@ def cabinet_client_debts_telegram_group(request):
             status=400,
         )
     link = info["normalized"]
-    if not telethon_configured():
-        return JsonResponse({"error": "Telegram (Telethon) serverda sozlanmagan"}, status=400)
+    if not telethon_configured(shop):
+        return JsonResponse(
+            {
+                "error": (
+                    "Telegram userbot sozlanmagan. Shablon bo‘limida API ID, "
+                    "API Hash va String session ni kiriting."
+                    if not uses_shared_telethon(shop)
+                    else "Telegram (Telethon) serverda sozlanmagan"
+                )
+            },
+            status=400,
+        )
 
     label = _canonical_shop_label(tpl.shop_label or tenant.business_name or "TezPOS")
     test = send_group_message(
         link,
         f"<b>{html.escape(label)}</b>\n"
         "Qarz qo‘shilganda va ayirilganda xabarlar shu guruhga yuboriladi.",
+        shop_key=shop,
     )
     if not test.get("ok"):
         return JsonResponse(

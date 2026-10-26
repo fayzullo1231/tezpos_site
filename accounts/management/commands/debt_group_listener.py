@@ -11,7 +11,11 @@ from django.core.management.base import BaseCommand
 
 from accounts.client_debts import debtors_summary_chunks
 from accounts.models import DebtSmsTemplate
-from accounts.telethon_debt import _client, parse_group_link, telethon_configured
+from accounts.telethon_debt import (
+    _client_from_creds,
+    parse_group_link,
+    session_groups,
+)
 
 logger = logging.getLogger("tezpos.telegram")
 
@@ -60,7 +64,8 @@ class Command(BaseCommand):
     help = "Telegram guruhda /qarz buyrug‘iga qarzdorlar ro‘yxati bilan javob beradi"
 
     def handle(self, *args, **options):
-        if not telethon_configured():
+        groups = session_groups()
+        if not groups:
             self.stderr.write("Telethon sozlanmagan")
             return
         while True:
@@ -73,9 +78,18 @@ class Command(BaseCommand):
             time.sleep(15)
 
     async def _listen(self):
+        groups = await sync_to_async(session_groups)()
+        if not groups:
+            raise RuntimeError("Telethon sozlanmagan")
+        await asyncio.gather(*(self._listen_one(g) for g in groups))
+
+    async def _listen_one(self, group: dict):
         from telethon import events
 
-        client = await _client()
+        client = await _client_from_creds(
+            group["api_id"], group["api_hash"], group["session"]
+        )
+        allowed = set(group.get("shops") or [])
         last_reply: dict[int, float] = {}
 
         @client.on(events.NewMessage(pattern=COMMAND_RE))
@@ -88,12 +102,16 @@ class Command(BaseCommand):
             if not linked:
                 return
             chat = await event.get_chat()
-            shops = _match_shops(
-                linked,
-                chat_id,
-                getattr(chat, "username", "") or "",
-                _message_topic(event.message),
-            )
+            shops = [
+                s
+                for s in _match_shops(
+                    linked,
+                    chat_id,
+                    getattr(chat, "username", "") or "",
+                    _message_topic(event.message),
+                )
+                if s in allowed
+            ]
             if not shops:
                 return
             last_reply[chat_id] = now
@@ -103,7 +121,9 @@ class Command(BaseCommand):
                     await event.reply(chunk, parse_mode="html", link_preview=False)
             logger.info("/qarz javob berildi chat=%s shops=%s", chat_id, shops)
 
-        self.stdout.write("debt_group_listener: /qarz kutilmoqda")
+        self.stdout.write(
+            "debt_group_listener: /qarz kutilmoqda shops=" + ",".join(sorted(allowed))
+        )
         try:
             await client.run_until_disconnected()
         finally:

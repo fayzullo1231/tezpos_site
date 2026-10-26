@@ -15,7 +15,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .auth_views import session_has_tezpos
-from .models import DebtSmsTemplate, Supplier, SupplierLedger, SupplierProduct
+from .models import DebtSmsTemplate, LabelTemplate, Supplier, SupplierLedger, SupplierProduct
 
 
 def _tg():
@@ -145,7 +145,7 @@ def _notify_supplier_group(
     try:
         tg = _tg()
         link = _supplier_group_link(shop)
-        if not link or not tg["telethon_configured"]():
+        if not link or not tg["telethon_configured"](shop):
             return
         text = _supplier_notice_text(
             supplier,
@@ -156,7 +156,9 @@ def _notify_supplier_group(
             is_debt=is_debt,
         )
         enqueue = tg["enqueue_group_message"]
-        transaction.on_commit(lambda: enqueue(link, text))
+        transaction.on_commit(
+            lambda l=link, t=text, s=shop: enqueue(l, t, shop_key=s)
+        )
     except Exception:
         pass
 
@@ -733,7 +735,7 @@ def cabinet_suppliers_telegram_group(request):
             status=400,
         )
     link = info["normalized"]
-    if not tg["telethon_configured"]():
+    if not tg["telethon_configured"](shop):
         return JsonResponse(
             {"error": "Telegram (Telethon) serverda sozlanmagan"}, status=400
         )
@@ -742,6 +744,7 @@ def cabinet_suppliers_telegram_group(request):
         link,
         "Taminotchilar\n"
         "Tovar kirim (qarz/naqd) va qarz o‘zgarishlari shu guruhga yuboriladi.",
+        shop_key=shop,
     )
     if not test.get("ok"):
         return JsonResponse(
@@ -816,6 +819,7 @@ def api_supplier_kirim(request):
     if amount <= 0:
         return _cors(JsonResponse({"error": "Summa 0 dan katta bo‘lishi kerak"}, status=400))
 
+    silent = bool(body.get("silent") or body.get("skip_notify"))
     supplier = _ensure_supplier(shop, name, phone)
     entry = None
     if payment == "credit":
@@ -831,23 +835,25 @@ def api_supplier_kirim(request):
                 created_by=shop[:180],
                 created_at=timezone.now(),
             )
-        _notify_supplier_group(
-            shop,
-            supplier,
-            payment_label="Qarzga kirim",
-            amount=amount,
-            note=entry.note,
-            is_debt=True,
-        )
+        if not silent:
+            _notify_supplier_group(
+                shop,
+                supplier,
+                payment_label="Qarzga kirim",
+                amount=amount,
+                note=entry.note,
+                is_debt=True,
+            )
     else:
-        _notify_supplier_group(
-            shop,
-            supplier,
-            payment_label="Naqd kirim",
-            amount=amount,
-            note=note or f"POS kirim naqd #{body.get('receipt_number') or ''}".strip(),
-            is_debt=False,
-        )
+        if not silent:
+            _notify_supplier_group(
+                shop,
+                supplier,
+                payment_label="Naqd kirim",
+                amount=amount,
+                note=note or f"POS kirim naqd #{body.get('receipt_number') or ''}".strip(),
+                is_debt=False,
+            )
 
     return _cors(
         JsonResponse(
@@ -860,6 +866,155 @@ def api_supplier_kirim(request):
             }
         )
     )
+
+
+def _norm_kassa_banks(raw) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw or []:
+        name = str(item or "").strip()[:80]
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+        if len(out) >= 12:
+            break
+    return out
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST", "OPTIONS"])
+def api_kassa_banks(request):
+    """POS: bank/kassa shotlari — barcha kassalarda bir xil."""
+    if request.method == "OPTIONS":
+        return _cors(JsonResponse({"ok": True}))
+    from .client_debts import _token_shop
+
+    try:
+        shop = _token_shop(request)
+    except Exception as exc:
+        return _cors(JsonResponse({"error": str(exc)}, status=401))
+
+    key = f"{shop}::kassa-banks"
+    if request.method == "GET":
+        row = LabelTemplate.objects.filter(shop_key=key).first()
+        banks = _norm_kassa_banks((row.data or {}).get("banks") if row else [])
+        return _cors(JsonResponse({"ok": True, "banks": banks}))
+
+    body = _api_json_body(request)
+    banks = _norm_kassa_banks(body.get("banks") or body.get("names") or [])
+    LabelTemplate.objects.update_or_create(
+        shop_key=key,
+        defaults={"data": {"banks": banks}, "updated_by": shop[:180]},
+    )
+    return _cors(JsonResponse({"ok": True, "banks": banks}))
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def api_supplier_save(request):
+    """
+    POS: taminotchi yaratish / boshlang'ich qarz.
+    body: name, phone?, opening_balance?, silent?
+    """
+    if request.method == "OPTIONS":
+        return _cors(JsonResponse({"ok": True}))
+    from .client_debts import _token_shop
+
+    try:
+        shop = _token_shop(request)
+    except Exception as exc:
+        return _cors(JsonResponse({"error": str(exc)}, status=401))
+
+    body = _api_json_body(request)
+    name = str(body.get("supplier_name") or body.get("name") or "").strip()
+    phone = str(body.get("phone") or "").strip()[:40]
+    if not name:
+        return _cors(JsonResponse({"error": "Taminotchi nomi majburiy"}, status=400))
+    silent = bool(body.get("silent") or body.get("skip_notify"))
+    opening = _dec(body.get("opening_balance") or body.get("balance") or 0)
+    supplier = _ensure_supplier(shop, name, phone)
+    entry = None
+    cur = supplier.balance()
+    if opening != 0 and cur == 0:
+        if opening > 0:
+            kind = SupplierLedger.KIND_WE_OWE
+            amt = opening
+        else:
+            kind = SupplierLedger.KIND_THEY_OWE
+            amt = abs(opening)
+        with transaction.atomic():
+            entry = SupplierLedger.objects.create(
+                supplier=supplier,
+                kind=kind,
+                amount=amt,
+                signed_amount=SupplierLedger.sign_for(kind, amt),
+                note=str(body.get("note") or "Boshlangich qarz (import)")[:255],
+                created_by=shop[:180],
+                created_at=timezone.now(),
+            )
+        if not silent:
+            _notify_supplier_group(
+                shop,
+                supplier,
+                payment_label="Boshlangich qarz",
+                amount=amt,
+                note=entry.note,
+                is_debt=opening > 0,
+            )
+    return _cors(
+        JsonResponse(
+            {
+                "ok": True,
+                "supplier": _serialize_supplier(supplier, with_products=False),
+                "balance": float(supplier.balance()),
+                "entry": _serialize_ledger(entry) if entry else None,
+            }
+        )
+    )
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def api_supplier_disable(request):
+    """
+    POS: taminotchini o‘chirish (is_active=False). Ro‘yxatdan tushadi, tarix saqlanadi.
+    body: id | supplier_id | name | supplier_name
+    Auth: Token + X-Server-Name.
+    """
+    if request.method == "OPTIONS":
+        return _cors(JsonResponse({"ok": True}))
+    from .client_debts import _token_shop
+
+    try:
+        shop = _token_shop(request)
+    except Exception as exc:
+        return _cors(JsonResponse({"error": str(exc)}, status=401))
+
+    body = _api_json_body(request)
+    row = None
+    sid = body.get("id") if body.get("id") not in (None, "") else body.get("supplier_id")
+    if sid not in (None, ""):
+        try:
+            row = Supplier.objects.get(pk=int(sid), shop_key=shop, is_active=True)
+        except (Supplier.DoesNotExist, TypeError, ValueError):
+            row = None
+    if row is None:
+        name = str(body.get("name") or body.get("supplier_name") or "").strip()
+        if name:
+            row = (
+                Supplier.objects.filter(shop_key=shop, name__iexact=name, is_active=True)
+                .order_by("id")
+                .first()
+            )
+    if row is None:
+        return _cors(JsonResponse({"error": "Taminotchi topilmadi"}, status=404))
+    row.is_active = False
+    row.save(update_fields=["is_active", "updated_at"])
+    return _cors(JsonResponse({"ok": True, "id": row.pk, "name": row.name}))
 
 
 @csrf_exempt
@@ -1016,14 +1171,15 @@ def api_supplier_ledger(request):
             created_at=timezone.now(),
         )
         labels = dict(SupplierLedger.KIND_CHOICES)
-        _notify_supplier_group(
-            shop,
-            supplier,
-            payment_label=labels.get(kind, kind),
-            amount=amount,
-            note=note,
-            is_debt=kind in (SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_PAY),
-        )
+        if not bool(body.get("silent") or body.get("skip_notify")):
+            _notify_supplier_group(
+                shop,
+                supplier,
+                payment_label=labels.get(kind, kind),
+                amount=amount,
+                note=note,
+                is_debt=kind in (SupplierLedger.KIND_WE_OWE, SupplierLedger.KIND_THEY_PAY),
+            )
     return _cors(
         JsonResponse(
             {"ok": True, "entry": _serialize_ledger(entry), "balance": float(supplier.balance())}

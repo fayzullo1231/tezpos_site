@@ -4556,6 +4556,48 @@ body.cabinet-body {
 .cd-tg-form { margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e2e8f2; }
 .cd-tg-msg.is-ok { color: #15803d; }
 .cd-tg-msg.is-err { color: #b91c1c; }
+.cd-channel-card {
+  display: grid;
+  gap: .75rem;
+  margin-bottom: 1rem;
+  padding: .9rem 1rem 1rem;
+  border: 1px solid #e2e8f2;
+  border-radius: 14px;
+  background: #fafbfd;
+}
+.cd-channel-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: .55rem;
+}
+.cd-channel-head h4 { margin: 0; color: #002048; font-size: 1rem; }
+.cd-channel-head .cabinet-hint { margin: .25rem 0 0; }
+.cd-tg-creds {
+  display: grid;
+  gap: .45rem;
+  margin: 0;
+}
+.cd-tg-creds > div {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  gap: .4rem;
+  align-items: baseline;
+  font-size: .88rem;
+}
+.cd-tg-creds dt { margin: 0; color: #5b6b85; font-weight: 600; }
+.cd-tg-creds dd { margin: 0; color: #002048; font-weight: 700; word-break: break-all; }
+#cd-tg-acc-form textarea {
+  width: 100%;
+  min-height: 4.5rem;
+  border: 1px solid #dbe3ef;
+  border-radius: 12px;
+  padding: .7rem .85rem;
+  font: inherit;
+  color: #06305e;
+  resize: vertical;
+}
 .cd-cal-day {
   border: 1px solid #e2e8f2; border-radius: 14px; padding: .85rem 1rem; background: #fafbfd;
   display: grid; gap: .7rem;

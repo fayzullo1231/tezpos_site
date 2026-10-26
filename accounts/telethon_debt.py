@@ -153,11 +153,103 @@ def reminder_kind_for(due: date | None, today: date | None = None) -> str | None
     return None
 
 
-def telethon_configured() -> bool:
-    api_id = str(getattr(settings, "TELETHON_API_ID", "") or "").strip()
-    api_hash = str(getattr(settings, "TELETHON_API_HASH", "") or "").strip()
-    session = str(getattr(settings, "TELETHON_SESSION", "") or "").strip()
-    return bool(api_id and api_hash and session and api_id.isdigit())
+SHARED_TELETHON_SHOPS = frozenset({"kuloloptom", "kuloloptom-2"})
+
+
+def uses_shared_telethon(shop_key: str | None) -> bool:
+    return (shop_key or "").strip().lower() in SHARED_TELETHON_SHOPS
+
+
+def _global_creds() -> tuple[str, str, str]:
+    return (
+        str(getattr(settings, "TELETHON_API_ID", "") or "").strip(),
+        str(getattr(settings, "TELETHON_API_HASH", "") or "").strip(),
+        str(getattr(settings, "TELETHON_SESSION", "") or "").strip(),
+    )
+
+
+def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
+    """kuloloptom / kuloloptom-2 — server .env; qolgan do‘konlar o‘z sessioni."""
+    shop = (shop_key or "").strip().lower()
+    if not shop or uses_shared_telethon(shop):
+        return _global_creds()
+    tpl = (
+        DebtSmsTemplate.objects.filter(shop_key=shop)
+        .only("telethon_api_id", "telethon_api_hash", "telethon_session")
+        .first()
+    )
+    if not tpl:
+        return ("", "", "")
+    return (
+        (tpl.telethon_api_id or "").strip(),
+        (tpl.telethon_api_hash or "").strip(),
+        (tpl.telethon_session or "").strip(),
+    )
+
+
+def _creds_ok(api_id: str, api_hash: str, session: str) -> bool:
+    return bool(api_id and api_hash and session and str(api_id).isdigit())
+
+
+def telethon_configured(shop_key: str | None = None) -> bool:
+    api_id, api_hash, session = telethon_creds(shop_key)
+    return _creds_ok(api_id, api_hash, session)
+
+
+def _mask_secret(value: str) -> str:
+    s = (value or "").strip()
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return "••••"
+    return s[:4] + "…" + s[-4:]
+
+
+def telethon_public_status(shop_key: str | None = None) -> dict:
+    shop = (shop_key or "").strip().lower()
+    shared = uses_shared_telethon(shop)
+    api_id, api_hash, session = telethon_creds(shop)
+    configured = _creds_ok(api_id, api_hash, session)
+    user = ""
+    if shared:
+        user = "Ro‘yxatdan o‘tgan" if configured else "Sozlanmagan"
+    else:
+        tpl = DebtSmsTemplate.objects.filter(shop_key=shop).only("telethon_user").first()
+        user = (tpl.telethon_user or "").strip() if tpl else ""
+    return {
+        "shared": shared,
+        "configured": configured,
+        "user": user,
+        "api_id": api_id if (shared or configured) else "",
+        "api_hash_masked": _mask_secret(api_hash) if (shared or configured) else "",
+        "session_set": bool(session),
+    }
+
+
+def session_groups() -> list[dict]:
+    """Bir xil session = bitta Telethon client (listener uchun)."""
+    groups: dict[str, dict] = {}
+    shops: set[str] = set(
+        DebtSmsTemplate.objects.exclude(telegram_group_link="")
+        .values_list("shop_key", flat=True)
+    )
+    shops.update(SHARED_TELETHON_SHOPS)
+    for shop in shops:
+        if not telethon_configured(shop):
+            continue
+        api_id, api_hash, session = telethon_creds(shop)
+        fp = f"{api_id}:{session[:32]}"
+        row = groups.setdefault(
+            fp,
+            {
+                "api_id": api_id,
+                "api_hash": api_hash,
+                "session": session,
+                "shops": [],
+            },
+        )
+        row["shops"].append(shop)
+    return list(groups.values())
 
 
 def _run(coro, timeout: int = 900):
@@ -177,19 +269,56 @@ def _run(coro, timeout: int = 900):
         return pool.submit(asyncio.run, _wrapped()).result(timeout=timeout + 30)
 
 
-async def _client():
+async def _client_from_creds(api_id: str, api_hash: str, session: str):
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
-    api_id = int(str(settings.TELETHON_API_ID).strip())
-    api_hash = str(settings.TELETHON_API_HASH).strip()
-    session = str(settings.TELETHON_SESSION).strip()
-    client = TelegramClient(StringSession(session), api_id, api_hash)
+    if not _creds_ok(str(api_id), str(api_hash), str(session)):
+        raise RuntimeError("Telethon sozlanmagan")
+    client = TelegramClient(
+        StringSession(str(session).strip()),
+        int(str(api_id).strip()),
+        str(api_hash).strip(),
+    )
     await client.connect()
     if not await client.is_user_authorized():
         await client.disconnect()
         raise RuntimeError("Telethon session avtorizatsiyadan o‘tmagan")
     return client
+
+
+async def _client(shop_key: str | None = None):
+    api_id, api_hash, session = telethon_creds(shop_key)
+    return await _client_from_creds(api_id, api_hash, session)
+
+
+def verify_telethon_session(api_id: str, api_hash: str, session: str) -> dict[str, Any]:
+    """String session + API bilan kirishni tekshiradi."""
+
+    async def _go():
+        client = await _client_from_creds(api_id, api_hash, session)
+        try:
+            me = await client.get_me()
+            username = (getattr(me, "username", None) or "") or ""
+            first = (getattr(me, "first_name", None) or "") or ""
+            last = (getattr(me, "last_name", None) or "") or ""
+            name = (first + " " + last).strip()
+            display = ("@" + username) if username else (name or str(getattr(me, "id", "") or ""))
+            return {
+                "ok": True,
+                "user": display,
+                "user_id": str(getattr(me, "id", "") or ""),
+            }
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    try:
+        return _run(_go(), timeout=40)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200]}
 
 
 def _intl_phone(phone_n: str) -> str:
@@ -393,9 +522,6 @@ def _mark_reminded(debtor: ClientDebtor, kind: str) -> None:
 async def resolve_debtors_batch_async(
     debtors: list[ClientDebtor], *, force: bool = False
 ) -> list[ClientDebtor]:
-    if not telethon_configured():
-        return debtors
-
     need: list[ClientDebtor] = []
     for d in debtors:
         if not (d.phone or "").strip():
@@ -414,27 +540,34 @@ async def resolve_debtors_batch_async(
     if not need:
         return debtors
 
-    client = await _client()
-    try:
-        for i, d in enumerate(need):
-            phone_n = await sync_to_async(devsms.normalize_phone)(d.phone)
-            if not phone_n:
-                await _save_status(d, "no_phone")
-                continue
-            meta = await _resolve_phone_for_send(client, phone_n)
-            user = meta.pop("user", None)
-            imported = bool(meta.pop("_imported", False))
-            meta.pop("_privacy", None)
-            if imported:
-                await _delete_temp_contact(client, user)
-            await apply_telegram_meta(d, meta)
-            if i + 1 < len(need):
-                await asyncio.sleep(RESOLVE_PAUSE_SEC)
-    finally:
+    by_shop: dict[str, list[ClientDebtor]] = {}
+    for d in need:
+        by_shop.setdefault((d.shop_key or "").strip().lower(), []).append(d)
+
+    for shop, rows in by_shop.items():
+        if not telethon_configured(shop):
+            continue
+        client = await _client(shop)
         try:
-            await client.disconnect()
-        except Exception:
-            pass
+            for i, d in enumerate(rows):
+                phone_n = await sync_to_async(devsms.normalize_phone)(d.phone)
+                if not phone_n:
+                    await _save_status(d, "no_phone")
+                    continue
+                meta = await _resolve_phone_for_send(client, phone_n)
+                user = meta.pop("user", None)
+                imported = bool(meta.pop("_imported", False))
+                meta.pop("_privacy", None)
+                if imported:
+                    await _delete_temp_contact(client, user)
+                await apply_telegram_meta(d, meta)
+                if i + 1 < len(rows):
+                    await asyncio.sleep(RESOLVE_PAUSE_SEC)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
     return debtors
 
 
@@ -524,48 +657,64 @@ async def send_jobs_by_phone_async(
     """jobs: [(debtor, kind, text), ...] — har biri raqam orqali."""
     if not jobs:
         return []
-    client = await _client()
+    by_shop: dict[str, list[tuple[ClientDebtor, str, str]]] = {}
+    for job in jobs:
+        by_shop.setdefault((job[0].shop_key or "").strip().lower(), []).append(job)
+
     out: list[dict] = []
-    try:
-        for i, (debtor, kind, text) in enumerate(jobs):
-            phone_n = await sync_to_async(devsms.normalize_phone)(debtor.phone)
-            if not phone_n:
+    for shop, shop_jobs in by_shop.items():
+        if not telethon_configured(shop):
+            for debtor, _kind, _text in shop_jobs:
                 out.append(
                     {
                         "ok": False,
-                        "error": "Telefon yo‘q",
+                        "error": "Telethon sozlanmagan",
                         "debtor_id": debtor.pk,
                         "name": debtor.name,
                     }
                 )
-                continue
-            res = await _send_by_phone(
-                client,
-                phone_n,
-                text,
-                prefer_telegram_id=str(getattr(debtor, "telegram_id", "") or ""),
-            )
-            meta = res.get("meta") or {}
-            if meta:
-                await apply_telegram_meta(debtor, meta)
-            if res.get("ok"):
-                await _mark_reminded(debtor, kind)
-            row = {
-                "ok": bool(res.get("ok")),
-                "error": res.get("error") or "",
-                "telegram_id": res.get("telegram_id") or meta.get("telegram_id") or "",
-                "debtor_id": debtor.pk,
-                "name": debtor.name,
-                "display": await sync_to_async(telegram_display)(debtor),
-            }
-            out.append(row)
-            if i + 1 < len(jobs):
-                await asyncio.sleep(max(SEND_PAUSE_SEC, RESOLVE_PAUSE_SEC))
-    finally:
+            continue
+        client = await _client(shop)
         try:
-            await client.disconnect()
-        except Exception:
-            pass
+            for i, (debtor, kind, text) in enumerate(shop_jobs):
+                phone_n = await sync_to_async(devsms.normalize_phone)(debtor.phone)
+                if not phone_n:
+                    out.append(
+                        {
+                            "ok": False,
+                            "error": "Telefon yo‘q",
+                            "debtor_id": debtor.pk,
+                            "name": debtor.name,
+                        }
+                    )
+                    continue
+                res = await _send_by_phone(
+                    client,
+                    phone_n,
+                    text,
+                    prefer_telegram_id=str(getattr(debtor, "telegram_id", "") or ""),
+                )
+                meta = res.get("meta") or {}
+                if meta:
+                    await apply_telegram_meta(debtor, meta)
+                if res.get("ok"):
+                    await _mark_reminded(debtor, kind)
+                row = {
+                    "ok": bool(res.get("ok")),
+                    "error": res.get("error") or "",
+                    "telegram_id": res.get("telegram_id") or meta.get("telegram_id") or "",
+                    "debtor_id": debtor.pk,
+                    "name": debtor.name,
+                    "display": await sync_to_async(telegram_display)(debtor),
+                }
+                out.append(row)
+                if i + 1 < len(shop_jobs):
+                    await asyncio.sleep(max(SEND_PAUSE_SEC, RESOLVE_PAUSE_SEC))
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
     return out
 
 
@@ -583,7 +732,8 @@ def send_text_by_phone(
     DevSMS shabloni matnini Telegramga yuboradi (bir xil text).
     Kontaktga saqlanmaydi.
     """
-    if not telethon_configured():
+    shop_key = (getattr(debtor, "shop_key", "") or "") if debtor is not None else ""
+    if not telethon_configured(shop_key or None):
         return {"ok": False, "error": "Telethon sozlanmagan"}
     phone_n = devsms.normalize_phone(phone)
     if not phone_n:
@@ -596,7 +746,7 @@ def send_text_by_phone(
         prefer_id = str(getattr(debtor, "telegram_id", "") or "")
 
     async def _one():
-        client = await _client()
+        client = await _client(shop_key or None)
         try:
             res = await _send_by_phone(
                 client, phone_n, msg, prefer_telegram_id=prefer_id
@@ -665,13 +815,13 @@ def parse_group_link(link: str) -> dict | None:
     return None
 
 
-async def _send_group_async(link: str, text: str) -> dict[str, Any]:
+async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[str, Any]:
     info = parse_group_link(link)
     if not info:
         return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
     from telethon.tl.types import PeerChannel
 
-    client = await _client()
+    client = await _client(shop_key or None)
     try:
         target = PeerChannel(info["chat"]) if isinstance(info["chat"], int) else info["chat"]
         try:
@@ -698,28 +848,30 @@ async def _send_group_async(link: str, text: str) -> dict[str, Any]:
             pass
 
 
-def send_group_message(link: str, text: str, *, timeout: int = 60) -> dict[str, Any]:
-    if not telethon_configured():
+def send_group_message(
+    link: str, text: str, *, timeout: int = 60, shop_key: str = ""
+) -> dict[str, Any]:
+    if not telethon_configured(shop_key or None):
         return {"ok": False, "error": "Telethon sozlanmagan"}
     if not (text or "").strip():
         return {"ok": False, "error": "Matn bo‘sh"}
     try:
-        return _run(_send_group_async(link, text), timeout=timeout)
+        return _run(_send_group_async(link, text, shop_key), timeout=timeout)
     except Exception as exc:
         logger.exception("send_group_message failed")
         return {"ok": False, "error": str(exc)[:200]}
 
 
-_group_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+_group_queue: "queue.Queue[tuple[str, str, str]]" = queue.Queue()
 _group_worker: threading.Thread | None = None
 _group_lock = threading.Lock()
 
 
 def _group_loop() -> None:
     while True:
-        link, text = _group_queue.get()
+        shop_key, link, text = _group_queue.get()
         try:
-            res = send_group_message(link, text)
+            res = send_group_message(link, text, shop_key=shop_key)
             if not res.get("ok"):
                 logger.warning("Guruhga qarz xabari yuborilmadi link=%s err=%s", link, res.get("error"))
         except Exception:
@@ -728,10 +880,10 @@ def _group_loop() -> None:
             _group_queue.task_done()
 
 
-def enqueue_group_message(link: str, text: str) -> None:
+def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
     """Javobni kutmasdan fon oqimida ketma-ket yuboradi."""
     global _group_worker
-    _group_queue.put((link, text))
+    _group_queue.put(((shop_key or "").strip().lower(), link, text))
     with _group_lock:
         if _group_worker is None or not _group_worker.is_alive():
             _group_worker = threading.Thread(

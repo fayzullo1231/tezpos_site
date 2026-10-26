@@ -32,7 +32,14 @@ class ClientDebtorAdmin(admin.ModelAdmin):
 
 @admin.register(DebtSmsTemplate)
 class DebtSmsTemplateAdmin(admin.ModelAdmin):
-    list_display = ("title", "shop_key", "shop_label", "is_approved", "updated_at")
+    list_display = (
+        "title",
+        "shop_key",
+        "shop_label",
+        "sms_enabled",
+        "is_approved",
+        "updated_at",
+    )
     search_fields = ("title", "shop_key", "shop_label")
 
 
