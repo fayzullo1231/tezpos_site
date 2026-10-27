@@ -392,7 +392,12 @@ def _maybe_deliver_personal(
     """Userbot orqali raqamga Dev SMS shabloni; SMS faqat sayt yoqiq bo‘lsa."""
     if not (debtor.phone or "").strip():
         return None
-    allow_sms = bool(send_sms) and _sms_enabled_for(shop)
+    if shop_blocks_devsms(shop):
+        allow_sms = False
+    elif uses_shared_telethon(shop):
+        allow_sms = _sms_enabled_for(shop)
+    else:
+        allow_sms = bool(send_sms) and _sms_enabled_for(shop)
     allow_tg = telethon_configured(shop) or shop_blocks_devsms(shop)
     if not allow_sms and not allow_tg:
         _maybe_resolve_telegram(debtor)
@@ -604,7 +609,16 @@ def _ensure_shop_label(tpl: DebtSmsTemplate, shop: str) -> DebtSmsTemplate:
 def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> DebtSmsTemplate:
     row = DebtSmsTemplate.objects.filter(shop_key=shop).first()
     if row:
-        return _ensure_shop_label(row, shop)
+        row = _ensure_shop_label(row, shop)
+        if (
+            uses_shared_telethon(shop)
+            and not shop_blocks_devsms(shop)
+            and not row.sms_enabled
+            and devsms.resolve_token()
+        ):
+            row.sms_enabled = True
+            row.save(update_fields=["sms_enabled", "updated_at"])
+        return row
     shop_label = _default_shop_label(shop, tenant)
     return DebtSmsTemplate.objects.create(
         shop_key=shop,
@@ -612,6 +626,7 @@ def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> D
         shop_label=shop_label,
         body=DebtSmsTemplate.DEFAULT_BODY,
         is_approved=True,
+        sms_enabled=uses_shared_telethon(shop) and bool(devsms.resolve_token()),
     )
 
 
@@ -870,6 +885,14 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
     tpl = DebtSmsTemplate.objects.filter(shop_key=shop).first()
     if shop_blocks_devsms(shop) and tpl and tpl.sms_enabled:
         tpl.sms_enabled = False
+        tpl.save(update_fields=["sms_enabled", "updated_at"])
+    elif (
+        uses_shared_telethon(shop)
+        and tpl
+        and not tpl.sms_enabled
+        and devsms.resolve_token()
+    ):
+        tpl.sms_enabled = True
         tpl.save(update_fields=["sms_enabled", "updated_at"])
     if tpl:
         tpl = _ensure_shop_label(tpl, shop)

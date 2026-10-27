@@ -89,16 +89,24 @@ def _shop(request) -> str:
 
 def _supplier_group_link(shop: str) -> str:
     try:
-        link = (
-            DebtSmsTemplate.objects.filter(shop_key=(shop or "").strip().lower())
-            .values_list("supplier_telegram_group_link", flat=True)
-            .first()
-            or ""
-        ).strip()
+        from .telethon_debt import related_debt_shops
+
+        keys = related_debt_shops(shop)
+        if not keys:
+            return ""
+        rows = DebtSmsTemplate.objects.filter(shop_key__in=keys).values_list(
+            "shop_key", "supplier_telegram_group_link"
+        )
+        by = {str(k or "").strip().lower(): (v or "").strip() for k, v in rows}
+        tg = _tg()
+        parse = tg["parse_group_link"]
+        for key in keys:
+            link = by.get(key, "")
+            if link and parse(link):
+                return link
     except Exception:
         return ""
-    tg = _tg()
-    return link if tg["parse_group_link"](link) else ""
+    return ""
 
 
 def _supplier_notice_text(
