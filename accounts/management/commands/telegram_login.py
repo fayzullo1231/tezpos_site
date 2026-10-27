@@ -24,7 +24,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         shop = (options.get("shop") or "usmon").strip().lower()
-        if shop in ("importproduct", "importoptom"):
+        if shop in ("import", "importproduct", "importoptom") or shop.startswith("import"):
             shop = "usmon"
         tpl = DebtSmsTemplate.objects.filter(shop_key__iexact=shop).first()
         if tpl is None and shop != "usmon":
