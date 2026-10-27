@@ -183,7 +183,7 @@ def _maybe_resolve_telegram(row: ClientDebtor) -> None:
 def shop_blocks_devsms(shop: str) -> bool:
     """Usmon: DevSMS yo‘q, qarz xabari faqat Komron userboti orqali."""
     s = (shop or "").strip().lower()
-    return bool(s) and (s == "usmon" or s.startswith("usmon"))
+    return bool(s) and (s == "usmon" or s.startswith("usmon") or "usmon" in s)
 
 
 def _sms_enabled_for(shop: str) -> bool:
@@ -718,9 +718,80 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
     }
 
 
-def _debtors_qs(shop: str):
+def _related_shop_keys(shop: str) -> list[str]:
+    """Server nomi o‘zgaganda ham eski usmon qarzdorlari ko‘rinsin."""
+    shop = (shop or "").strip().lower()
+    keys: list[str] = []
+    if shop:
+        keys.append(shop)
+    usmon_like = bool(shop) and (
+        shop_blocks_devsms(shop) or "usmon" in shop
+    )
+    if usmon_like:
+        extra = (
+            ClientDebtor.objects.filter(shop_key__icontains="usmon")
+            .values_list("shop_key", flat=True)
+            .distinct()
+        )
+        for k in extra:
+            k = (k or "").strip().lower()
+            if k and k not in keys:
+                keys.append(k)
+        if "usmon" not in keys:
+            keys.append("usmon")
+    komron_shops = list(
+        DebtSmsTemplate.objects.filter(telethon_user__icontains="komron")
+        .values_list("shop_key", flat=True)
+    )
+    komron_shops += list(
+        DebtSmsTemplate.objects.filter(telethon_user__icontains="kamron")
+        .values_list("shop_key", flat=True)
+    )
+    komron_l = [(str(x) or "").strip().lower() for x in komron_shops if x]
+    if usmon_like or (shop and shop in komron_l):
+        for k in komron_l:
+            if k and k not in keys:
+                keys.append(k)
+        if "usmon" not in keys:
+            keys.append("usmon")
+    return keys
+
+
+def _request_shop_keys(request, shop: str) -> list[str]:
+    keys = list(_related_shop_keys(shop))
+    header = (
+        (getattr(request, "META", {}) or {}).get("HTTP_X_SERVER_NAME")
+        or (getattr(request, "META", {}) or {}).get("HTTP_X_TEZPOS_SERVER")
+        or (getattr(request, "GET", {}) or {}).get("server")
+        or ""
+    )
+    header = str(header).strip().lower()
+    if header:
+        for k in _related_shop_keys(header):
+            if k not in keys:
+                keys.append(k)
+    return keys
+
+
+def _get_debtor(shop: str, pk, extra_keys=None) -> ClientDebtor:
+    keys = list(_related_shop_keys(shop))
+    for k in extra_keys or []:
+        k = (k or "").strip().lower()
+        if k and k not in keys:
+            keys.append(k)
+    return ClientDebtor.objects.get(
+        pk=int(pk), shop_key__in=keys, is_active=True
+    )
+
+
+def _debtors_qs(shop: str, extra_keys=None):
+    keys = list(_related_shop_keys(shop))
+    for k in extra_keys or []:
+        k = (k or "").strip().lower()
+        if k and k not in keys:
+            keys.append(k)
     return (
-        ClientDebtor.objects.filter(shop_key=shop, is_active=True)
+        ClientDebtor.objects.filter(shop_key__in=keys, is_active=True)
         .annotate(
             bal=Coalesce(
                 Sum("ledger__signed_amount"),
@@ -731,8 +802,8 @@ def _debtors_qs(shop: str):
     )
 
 
-def _list_payload(shop: str) -> dict:
-    rows = list(_debtors_qs(shop))
+def _list_payload(shop: str, extra_keys=None) -> dict:
+    rows = list(_debtors_qs(shop, extra_keys=extra_keys))
     total = Decimal("0")
     out = []
     for r in rows:
@@ -816,9 +887,7 @@ def cabinet_client_debts(request):
     detail_id = request.GET.get("id")
     if detail_id:
         try:
-            row = ClientDebtor.objects.get(
-                pk=int(detail_id), shop_key=shop, is_active=True
-            )
+            row = _get_debtor(shop, detail_id)
         except (ClientDebtor.DoesNotExist, TypeError, ValueError):
             return JsonResponse({"error": "Topilmadi"}, status=404)
         return JsonResponse(
@@ -835,7 +904,7 @@ def cabinet_client_debts(request):
 def cabinet_client_debts_calendar(request):
     shop = _shop(request)
     base = ClientDebtorLedger.objects.filter(
-        debtor__shop_key=shop, debtor__is_active=True
+        debtor__shop_key__in=_related_shop_keys(shop), debtor__is_active=True)
     )
 
     def _parse_day(raw):
@@ -954,7 +1023,7 @@ def cabinet_client_debtor_save(request):
 
     if sid:
         try:
-            row = ClientDebtor.objects.get(pk=int(sid), shop_key=shop, is_active=True)
+            row = _get_debtor(shop, sid)
         except (ClientDebtor.DoesNotExist, TypeError, ValueError):
             return JsonResponse({"error": "Topilmadi"}, status=404)
         row.name = name
@@ -1033,9 +1102,7 @@ def cabinet_client_debtor_delete(request):
     shop = _shop(request)
     try:
         body = json.loads(request.body.decode("utf-8") or "{}")
-        row = ClientDebtor.objects.get(
-            pk=int(body.get("id")), shop_key=shop, is_active=True
-        )
+        row = _get_debtor(shop, body.get("id"))
     except (json.JSONDecodeError, ClientDebtor.DoesNotExist, TypeError, ValueError):
         return JsonResponse({"error": "Topilmadi"}, status=404)
     row.is_active = False
@@ -1062,9 +1129,7 @@ def cabinet_client_debt_adjust(request):
         return JsonResponse({"error": "Summa 0 dan katta bo‘lishi kerak"}, status=400)
 
     try:
-        debtor = ClientDebtor.objects.get(
-            pk=int(body.get("debtor_id")), shop_key=shop, is_active=True
-        )
+        debtor = _get_debtor(shop, body.get("debtor_id"))
     except (ClientDebtor.DoesNotExist, TypeError, ValueError):
         return JsonResponse({"error": "Mijoz topilmadi"}, status=404)
 
@@ -1455,9 +1520,7 @@ def api_client_debts(request):
     detail_id = request.GET.get("id")
     if detail_id:
         try:
-            row = ClientDebtor.objects.get(
-                pk=int(detail_id), shop_key=shop, is_active=True
-            )
+            row = _get_debtor(shop, detail_id, extra_keys=_request_shop_keys(request, shop))
         except (ClientDebtor.DoesNotExist, TypeError, ValueError):
             return _cors(JsonResponse({"error": "Topilmadi"}, status=404))
         return _cors(
@@ -1468,7 +1531,7 @@ def api_client_debts(request):
                 }
             )
         )
-    return _cors(JsonResponse(_list_payload(shop)))
+    return _cors(JsonResponse(_list_payload(shop, extra_keys=_request_shop_keys(request, shop))))
 
 
 @csrf_exempt
@@ -1488,9 +1551,10 @@ def api_client_debtor_save(request):
     note = str(body.get("note") or "").strip()[:180]
     sid = body.get("id")
     who = shop
+    keys = _request_shop_keys(request, shop)
     if sid:
         try:
-            row = ClientDebtor.objects.get(pk=int(sid), shop_key=shop, is_active=True)
+            row = _get_debtor(shop, sid, extra_keys=keys)
         except (ClientDebtor.DoesNotExist, TypeError, ValueError):
             return _cors(JsonResponse({"error": "Topilmadi"}, status=404))
         row.name = name
@@ -1498,9 +1562,19 @@ def api_client_debtor_save(request):
         row.note = note
         row.save(update_fields=["name", "phone", "note", "updated_at"])
     else:
-        row = ClientDebtor.objects.create(
-            shop_key=shop, name=name, phone=phone, note=note
-        )
+        row = None
+        digits = "".join(ch for ch in phone if ch.isdigit())
+        if digits:
+            for cand in ClientDebtor.objects.filter(
+                shop_key__in=keys, is_active=True
+            ).exclude(phone=""):
+                if "".join(ch for ch in (cand.phone or "") if ch.isdigit())[-9:] == digits[-9:]:
+                    row = cand
+                    break
+        if row is None:
+            row = ClientDebtor.objects.create(
+                shop_key=shop, name=name, phone=phone, note=note
+            )
     amount = _dec(body.get("amount"))
     if amount > 0 and not sid:
         first = ClientDebtorLedger.objects.create(
@@ -1576,10 +1650,10 @@ def api_client_debt_adjust(request):
     if amount <= 0:
         return _cors(JsonResponse({"error": "Summa 0 dan katta bo‘lishi kerak"}, status=400))
     try:
-        debtor = ClientDebtor.objects.get(
-            pk=int(body.get("debtor_id") or body.get("id")),
-            shop_key=shop,
-            is_active=True,
+        debtor = _get_debtor(
+            shop,
+            body.get("debtor_id") or body.get("id"),
+            extra_keys=_request_shop_keys(request, shop),
         )
     except (ClientDebtor.DoesNotExist, TypeError, ValueError):
         return _cors(JsonResponse({"error": "Mijoz topilmadi"}, status=404))
@@ -1636,7 +1710,7 @@ def public_client_debt_check(request, shop, pk):
     logo = _logo_url(request)
     try:
         entry = ClientDebtorLedger.objects.select_related("debtor").get(
-            pk=int(pk), debtor__shop_key=shop
+            pk=int(pk), debtor__shop_key__in=_related_shop_keys(shop)
         )
     except (ClientDebtorLedger.DoesNotExist, TypeError, ValueError):
         return render(

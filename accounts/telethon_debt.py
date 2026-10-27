@@ -205,7 +205,7 @@ def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
     creds = _creds_from_tpl(tpl)
     if _creds_ok(*creds):
         return creds
-    if shop == "usmon" or shop.startswith("usmon"):
+    if shop == "usmon" or shop.startswith("usmon") or "usmon" in shop:
         for row in DebtSmsTemplate.objects.filter(shop_key__istartswith="usmon").only(
             "telethon_api_id",
             "telethon_api_hash",
@@ -311,8 +311,25 @@ def session_groups() -> list[dict]:
             print(msg, flush=True)
             continue
         _add_group(groups, api_id, api_hash, session, shop)
-        if "komron" in user or "kamron" in user or shop.startswith("usmon"):
+        if "komron" in user or "kamron" in user or shop.startswith("usmon") or "usmon" in shop:
             _add_group(groups, api_id, api_hash, session, "usmon")
+            _add_group(groups, api_id, api_hash, session, shop)
+    usmon_fp = None
+    for fp, row in groups.items():
+        if "usmon" in (row.get("shops") or []):
+            usmon_fp = fp
+            break
+    if usmon_fp:
+        extra = set()
+        for t in DebtSmsTemplate.objects.all().only("shop_key"):
+            k = (t.shop_key or "").strip().lower()
+            if k and "usmon" in k:
+                extra.add(k)
+        extra.add("usmon")
+        row = groups[usmon_fp]
+        for k in extra:
+            if k not in row["shops"]:
+                row["shops"].append(k)
     return list(groups.values())
 
 
