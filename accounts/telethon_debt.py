@@ -444,7 +444,7 @@ async def _client_from_creds(api_id: str, api_hash: str, session: str):
 
 
 async def _client(shop_key: str | None = None):
-    api_id, api_hash, session = telethon_creds(shop_key)
+    api_id, api_hash, session = await sync_to_async(telethon_creds)(shop_key)
     return await _client_from_creds(api_id, api_hash, session)
 
 
@@ -802,7 +802,7 @@ async def send_jobs_by_phone_async(
 
     out: list[dict] = []
     for shop, shop_jobs in by_shop.items():
-        if not telethon_configured(shop):
+        if not await sync_to_async(telethon_configured)(shop):
             for debtor, _kind, _text in shop_jobs:
                 out.append(
                     {
