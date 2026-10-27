@@ -754,6 +754,23 @@ def _related_shop_keys(shop: str) -> list[str]:
                 keys.append(k)
         if "usmon" not in keys:
             keys.append("usmon")
+    # Server nomi umuman o‘zgagan: yangi do‘kon bo‘sh, usmon qarzdorlari qolgan
+    if (
+        shop
+        and not shop.startswith("kulol")
+        and not ClientDebtor.objects.filter(shop_key=shop, is_active=True).exists()
+    ):
+        extra = (
+            ClientDebtor.objects.filter(shop_key__icontains="usmon")
+            .values_list("shop_key", flat=True)
+            .distinct()
+        )
+        for k in extra:
+            k = (k or "").strip().lower()
+            if k and k not in keys:
+                keys.append(k)
+        if "usmon" not in keys:
+            keys.append("usmon")
     return keys
 
 
@@ -904,7 +921,8 @@ def cabinet_client_debts(request):
 def cabinet_client_debts_calendar(request):
     shop = _shop(request)
     base = ClientDebtorLedger.objects.filter(
-        debtor__shop_key__in=_related_shop_keys(shop), debtor__is_active=True)
+        debtor__shop_key__in=_related_shop_keys(shop),
+        debtor__is_active=True,
     )
 
     def _parse_day(raw):
@@ -1506,6 +1524,84 @@ def _json_body(request) -> dict:
         return {}
 
 
+def _request_token(request) -> str:
+    auth = request.META.get("HTTP_AUTHORIZATION") or ""
+    if auth.lower().startswith("token "):
+        return auth[6:].strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (request.META.get("HTTP_X_TEZPOS_TOKEN") or "").strip()
+
+
+def _import_pos_customers(shop: str, request) -> int:
+    """POS /api/sales/customers ni sayt Qarzdorlarga ko‘chiradi (rename/bo‘sh do‘kon)."""
+    token = _request_token(request)
+    server = (
+        (request.META.get("HTTP_X_SERVER_NAME") or "")
+        or (request.META.get("HTTP_X_TEZPOS_SERVER") or "")
+        or shop
+    ).strip()
+    if not token or not shop:
+        return 0
+    try:
+        data = tezpos_api.api_request(
+            "GET",
+            "/api/sales/customers/?all=true",
+            token=token,
+            server_name=server,
+            timeout=12,
+        )
+    except Exception:
+        logger.exception("POS customers import failed shop=%s", shop)
+        return 0
+    rows = data if isinstance(data, list) else (data or {}).get("results") or []
+    existing_phones: set[str] = set()
+    existing_names: set[str] = set()
+    for d in ClientDebtor.objects.filter(
+        shop_key__in=_related_shop_keys(shop), is_active=True
+    ):
+        digits = "".join(ch for ch in (d.phone or "") if ch.isdigit())
+        if len(digits) >= 9:
+            existing_phones.add(digits[-9:])
+        existing_names.add((d.name or "").strip().lower())
+    n = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name") or "").strip()[:180]
+        if not name or name.lower() == "tashrif buyuruvchi":
+            continue
+        phone = str(r.get("phone") or "").strip()[:40]
+        digits = "".join(ch for ch in phone if ch.isdigit())
+        if len(digits) >= 9 and digits[-9:] in existing_phones:
+            continue
+        if (not digits or len(digits) < 9) and name.lower() in existing_names:
+            continue
+        row = ClientDebtor.objects.create(shop_key=shop, name=name, phone=phone)
+        debt = _dec(r.get("debt"))
+        if debt != 0:
+            kind = (
+                ClientDebtorLedger.KIND_ADD
+                if debt > 0
+                else ClientDebtorLedger.KIND_SUB
+            )
+            ClientDebtorLedger.objects.create(
+                debtor=row,
+                kind=kind,
+                amount=abs(debt),
+                signed_amount=ClientDebtorLedger.sign_for(kind, abs(debt)),
+                note="POS dan ko‘chirildi",
+                created_by=shop[:180],
+            )
+        n += 1
+        if len(digits) >= 9:
+            existing_phones.add(digits[-9:])
+        existing_names.add(name.lower())
+    if n:
+        logger.info("POS customers imported shop=%s count=%s", shop, n)
+    return n
+
+
 @csrf_exempt
 @require_http_methods(["GET", "OPTIONS"])
 def api_client_debts(request):
@@ -1531,6 +1627,9 @@ def api_client_debts(request):
                 }
             )
         )
+    keys = _request_shop_keys(request, shop)
+    if not ClientDebtor.objects.filter(shop_key=shop, is_active=True).exists():
+        _import_pos_customers(shop, request)
     return _cors(JsonResponse(_list_payload(shop, extra_keys=_request_shop_keys(request, shop))))
 
 
