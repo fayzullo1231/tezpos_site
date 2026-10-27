@@ -243,13 +243,35 @@ class Command(BaseCommand):
                     ",".join(group.get("shops") or []),
                 )
                 if dead:
+                    old_fp = f"{group.get('api_id')}:{str(group.get('session') or '')[:32]}"
                     print(
                         "SESSION O'LDI shops="
                         + ",".join(group.get("shops") or [])
-                        + " — YANGI String session kerak. 15 daqiqa urinilmaydi.",
+                        + " — yangi session saqlansa avtomatik olinadi.",
                         flush=True,
                     )
-                    await asyncio.sleep(900)
+                    for _ in range(40):
+                        await asyncio.sleep(15)
+                        try:
+                            now = await sync_to_async(session_groups)()
+                        except Exception:
+                            continue
+                        for g in now:
+                            shops = set(str(s).lower() for s in (g.get("shops") or []))
+                            if not shops.intersection(_norm_shops(group.get("shops"))):
+                                continue
+                            fp = f"{g['api_id']}:{str(g.get('session') or '')[:32]}"
+                            if fp != old_fp:
+                                group.update(g)
+                                print(
+                                    "Yangi session topildi shops="
+                                    + ",".join(sorted(shops)),
+                                    flush=True,
+                                )
+                                break
+                        else:
+                            continue
+                        break
                     continue
             await asyncio.sleep(12)
 
