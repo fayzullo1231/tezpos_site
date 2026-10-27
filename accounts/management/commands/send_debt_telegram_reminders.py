@@ -5,6 +5,7 @@ Qarz muddati eslatmalari — Telethon orqali Telegramga.
   python manage.py send_debt_telegram_reminders --dry-run
   python manage.py send_debt_telegram_reminders --resolve-only
   python manage.py send_debt_telegram_reminders --resolve-only --force
+  python manage.py send_debt_telegram_reminders --shop import --all
 """
 from __future__ import annotations
 
@@ -15,6 +16,9 @@ from django.utils import timezone
 
 from accounts.models import ClientDebtor, DebtSmsTemplate
 from accounts.telethon_debt import (
+    KIND_BALANCE,
+    USMON_FAMILY_KEYS,
+    is_usmon_family,
     reminder_kind_for,
     resolve_debtors_batch,
     send_debt_reminders_batch,
@@ -39,10 +43,18 @@ class Command(BaseCommand):
             help="Keshni e’tiborsiz qilib qayta resolve",
         )
         parser.add_argument("--shop", default="", help="Faqat shu shop_key")
+        parser.add_argument(
+            "--all",
+            action="store_true",
+            help="Qarzi bor hammaga qoldiq eslatmasi (muddatsiz ham, bugun yuborilgan bo'lsa ham)",
+        )
         parser.add_argument("--limit", type=int, default=500)
 
     def handle(self, *args, **options):
         shop_opt = (options.get("shop") or "").strip()
+        if options["all"] and not shop_opt:
+            self.stderr.write(self.style.ERROR("--all uchun --shop kerak"))
+            return
         if shop_opt and not telethon_configured(shop_opt):
             self.stderr.write(
                 self.style.ERROR(f"Telethon sozlanmagan: {shop_opt}")
@@ -70,9 +82,12 @@ class Command(BaseCommand):
             .filter(bal__gt=0)
             .exclude(phone="")
         )
-        shop = (options.get("shop") or "").strip()
+        shop = (options.get("shop") or "").strip().lower()
         if shop:
-            qs = qs.filter(shop_key=shop)
+            keys = list(USMON_FAMILY_KEYS) if is_usmon_family(shop) else [shop]
+            if shop not in keys:
+                keys.append(shop)
+            qs = qs.filter(shop_key__in=keys)
         rows = list(qs.order_by("due_date", "id")[: max(1, options["limit"])])
 
         if options["resolve_only"]:
@@ -110,13 +125,16 @@ class Command(BaseCommand):
         skipped = 0
         no_tg = 0
         for row in rows:
-            kind = reminder_kind_for(row.due_date, today)
-            if not kind:
-                skipped += 1
-                continue
-            if row.tg_last_remind_date == today and row.tg_last_remind_kind == kind:
-                skipped += 1
-                continue
+            if options["all"]:
+                kind = reminder_kind_for(row.due_date, today) or KIND_BALANCE
+            else:
+                kind = reminder_kind_for(row.due_date, today)
+                if not kind:
+                    skipped += 1
+                    continue
+                if row.tg_last_remind_date == today and row.tg_last_remind_kind == kind:
+                    skipped += 1
+                    continue
             if row.telegram_status == "no_phone" or not (row.phone or "").strip():
                 no_tg += 1
                 continue

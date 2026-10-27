@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 KIND_SOON = "soon"
 KIND_DUE_TODAY = "due_today"
 KIND_OVERDUE = "overdue"
+KIND_BALANCE = "balance"
 
 PLACEHOLDER_NAMES = {"tezpos", "qarz", "mijoz", "tp"}
 
@@ -102,6 +103,16 @@ def _shop_short(shop_key: str) -> str:
 def _shop_template_label(shop_key: str) -> str:
     tpl = DebtSmsTemplate.objects.filter(shop_key=shop_key).first()
     label = ((tpl.shop_label if tpl else "") or "").strip()
+    if is_usmon_family(shop_key) and label.lower() in {
+        "",
+        "tezpos",
+        "product",
+        "produkt",
+        "продукт",
+        "import",
+        "usmon",
+    }:
+        return "Import Product"
     return label or "Kulol Optom"
 
 
@@ -110,7 +121,7 @@ def build_reminder_text(
     kind: str,
     shop: str,
     amount,
-    due: date,
+    due: date | None,
     overdue_days: int = 0,
 ) -> str:
     days = max(1, int(overdue_days or 0))
@@ -118,6 +129,8 @@ def build_reminder_text(
         reminder = "Eslatma: qarzni qaytarish muddati bugun."
     elif kind == KIND_SOON:
         reminder = "Eslatma: qarzni qaytarish 1 kun qoldi."
+    elif kind == KIND_BALANCE or not due:
+        reminder = "Eslatma: qarz qoldig'ingiz."
     else:
         reminder = f"Eslatma: qarzni qaytarish {days} kun kechikkan."
     return devsms.build_client_debt_message(
@@ -1178,9 +1191,13 @@ def send_debt_reminders_batch(jobs: list[tuple[ClientDebtor, str]]) -> list[dict
     prepared: list[tuple[ClientDebtor, str, str]] = []
     for debtor, kind in jobs:
         bal = debtor.balance()
-        if bal <= 0 or not debtor.due_date:
+        if bal <= 0 or (kind != KIND_BALANCE and not debtor.due_date):
             continue
-        overdue_days = max(0, (timezone.localdate() - debtor.due_date).days)
+        overdue_days = (
+            max(0, (timezone.localdate() - debtor.due_date).days)
+            if debtor.due_date
+            else 0
+        )
         text = build_reminder_text(
             kind=kind,
             shop=_shop_template_label(debtor.shop_key),
