@@ -147,17 +147,17 @@ def reminder_kind_for(due: date | None, today: date | None = None) -> str | None
 SHARED_TELETHON_SHOPS = frozenset({"kuloloptom", "kuloloptom-2"})
 
 
-USMON_FAMILY_KEYS = frozenset({"usmon", "importoptom"})
+USMON_FAMILY_KEYS = frozenset({"usmon", "importproduct", "importoptom"})
 
 
 def is_usmon_family(shop: str | None) -> bool:
-    """Usmon / Importoptom — bitta Komron userboti."""
+    """Usmon / Importproduct — bitta Komron userboti."""
     s = (shop or "").strip().lower()
     if not s:
         return False
     if s in USMON_FAMILY_KEYS:
         return True
-    if "usmon" in s or s.startswith("importoptom"):
+    if "usmon" in s or s.startswith("importproduct") or s.startswith("importoptom"):
         return True
     return False
 
@@ -329,6 +329,7 @@ def session_groups() -> list[dict]:
         if "komron" in user or "kamron" in user or is_usmon_family(shop):
             _add_group(groups, api_id, api_hash, session, "usmon")
             _add_group(groups, api_id, api_hash, session, shop)
+            _add_group(groups, api_id, api_hash, session, "importproduct")
             _add_group(groups, api_id, api_hash, session, "importoptom")
     usmon_fp = None
     for fp, row in groups.items():

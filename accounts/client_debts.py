@@ -182,7 +182,7 @@ def _maybe_resolve_telegram(row: ClientDebtor) -> None:
 
 
 def shop_blocks_devsms(shop: str) -> bool:
-    """Usmon / Importoptom: DevSMS yo‘q, qarz xabari faqat Komron userboti."""
+    """Usmon / Importproduct: DevSMS yo‘q, qarz xabari faqat Komron userboti."""
     return is_usmon_family(shop)
 
 
