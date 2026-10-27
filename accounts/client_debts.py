@@ -394,7 +394,10 @@ def _maybe_deliver_personal(
                 raw_items = []
         raw_items = _normalize_ledger_items(raw_items)
         tpl = _get_or_create_template(shop, tenant)
-        text = (ready_text or "").strip()
+        # Usmon: mahsulot ro‘yxati faqat ochiladigan chekda
+        usmon = shop_blocks_devsms(shop)
+        msg_items = [] if usmon else raw_items
+        text = "" if usmon else (ready_text or "").strip()
         if not text:
             text = _render_sms(
                 tpl,
@@ -406,10 +409,10 @@ def _maybe_deliver_personal(
                 request=request,
                 kind=kind,
                 due=getattr(debtor, "due_date", None),
-                items=raw_items,
+                items=msg_items,
             )
-        else:
-            item_block = devsms._format_item_lines(raw_items)
+        elif msg_items:
+            item_block = devsms._format_item_lines(msg_items)
             if item_block and item_block not in text:
                 lines = text.split("\n")
                 out = []
