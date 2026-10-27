@@ -124,23 +124,10 @@ def build_reminder_text(
     due: date | None,
     overdue_days: int = 0,
 ) -> str:
-    days = max(1, int(overdue_days or 0))
-    if kind == KIND_DUE_TODAY:
-        reminder = "Eslatma: qarzni qaytarish muddati bugun."
-    elif kind == KIND_SOON:
-        reminder = "Eslatma: qarzni qaytarish 1 kun qoldi."
-    elif kind == KIND_BALANCE or not due:
-        reminder = "Eslatma: qarz qoldig'ingiz."
-    else:
-        reminder = f"Eslatma: qarzni qaytarish {days} kun kechikkan."
-    return devsms.build_client_debt_message(
-        shop=(shop or "Kulol Optom").strip() or "Kulol Optom",
-        transaction_amount=amount,
-        balance=amount,
-        check_link=devsms.DEFAULT_CLIENT_CHECK,
-        due_date=due,
-        reminder=reminder,
-    )
+    del kind, due, overdue_days
+    head = (shop or "Import Product").strip() or "Import Product"
+    money = devsms._fmt_som(amount)
+    return f"{head}\n\nQarz: {money} so'm\n\nQoldiq: {money} so'm"
 
 
 def reminder_kind_for(due: date | None, today: date | None = None) -> str | None:
