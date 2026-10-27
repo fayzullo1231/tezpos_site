@@ -167,7 +167,7 @@ def uses_shared_telethon(shop_key: str | None) -> bool:
 
 
 def related_debt_shops(shop: str | None) -> list[str]:
-    """Bir xil userbot / guruh havolasi bo‘lgan do‘kon kalitlari."""
+    """Faqat Kulol Optom / Kulol Optom-2 guruh havolasini ulashadi. Import/Usmonga tegmaydi."""
     s = (shop or "").strip().lower()
     if not s:
         return []
@@ -181,9 +181,6 @@ def related_debt_shops(shop: str | None) -> list[str]:
     add(s)
     if uses_shared_telethon(s) or s.startswith("kulol"):
         for key in SHARED_TELETHON_SHOPS:
-            add(key)
-    if is_usmon_family(s):
-        for key in ("usmon", "import", "importproduct", "importoptom"):
             add(key)
     return out
 
