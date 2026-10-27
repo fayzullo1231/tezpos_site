@@ -30,6 +30,7 @@ from .telethon_debt import (
     enqueue_group_message,
     enqueue_text_by_phone,
     ensure_telegram_resolved,
+    is_usmon_family,
     parse_group_link,
     send_group_message,
     telethon_configured,
@@ -181,9 +182,8 @@ def _maybe_resolve_telegram(row: ClientDebtor) -> None:
 
 
 def shop_blocks_devsms(shop: str) -> bool:
-    """Usmon: DevSMS yo‘q, qarz xabari faqat Komron userboti orqali."""
-    s = (shop or "").strip().lower()
-    return bool(s) and (s == "usmon" or s.startswith("usmon") or "usmon" in s)
+    """Usmon / Importoptom: DevSMS yo‘q, qarz xabari faqat Komron userboti."""
+    return is_usmon_family(shop)
 
 
 def _sms_enabled_for(shop: str) -> bool:

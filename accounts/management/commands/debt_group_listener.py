@@ -82,9 +82,9 @@ def _pick_sender(shop: str, senders: dict):
         for key, val in senders.items():
             if shop.startswith(key) or key.startswith(shop):
                 return val
-        if shop == "usmon" or shop.startswith("usmon"):
+        if shop == "usmon" or shop.startswith("usmon") or shop == "importoptom":
             for key, val in senders.items():
-                if key == "usmon" or str(key).startswith("usmon"):
+                if key == "usmon" or str(key).startswith("usmon") or key == "importoptom":
                     return val
     if len(senders) == 1:
         return next(iter(senders.values()))

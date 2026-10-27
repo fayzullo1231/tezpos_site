@@ -24,7 +24,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         shop = (options.get("shop") or "usmon").strip().lower()
+        if shop == "importoptom":
+            shop = "usmon"
         tpl = DebtSmsTemplate.objects.filter(shop_key__iexact=shop).first()
+        if tpl is None and shop != "usmon":
+            tpl = DebtSmsTemplate.objects.filter(shop_key__iexact="usmon").first()
+            if tpl is not None:
+                shop = "usmon"
         if tpl is None:
             tpl = DebtSmsTemplate(shop_key=shop)
         api_id, api_hash, _old = _creds_from_tpl(tpl)

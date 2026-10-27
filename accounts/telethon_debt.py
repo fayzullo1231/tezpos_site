@@ -147,6 +147,21 @@ def reminder_kind_for(due: date | None, today: date | None = None) -> str | None
 SHARED_TELETHON_SHOPS = frozenset({"kuloloptom", "kuloloptom-2"})
 
 
+USMON_FAMILY_KEYS = frozenset({"usmon", "importoptom"})
+
+
+def is_usmon_family(shop: str | None) -> bool:
+    """Usmon / Importoptom — bitta Komron userboti."""
+    s = (shop or "").strip().lower()
+    if not s:
+        return False
+    if s in USMON_FAMILY_KEYS:
+        return True
+    if "usmon" in s or s.startswith("importoptom"):
+        return True
+    return False
+
+
 def uses_shared_telethon(shop_key: str | None) -> bool:
     return (shop_key or "").strip().lower() in SHARED_TELETHON_SHOPS
 
@@ -205,7 +220,7 @@ def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
     creds = _creds_from_tpl(tpl)
     if _creds_ok(*creds):
         return creds
-    if shop == "usmon" or shop.startswith("usmon") or "usmon" in shop:
+    if is_usmon_family(shop):
         for row in DebtSmsTemplate.objects.filter(shop_key__istartswith="usmon").only(
             "telethon_api_id",
             "telethon_api_hash",
@@ -311,21 +326,21 @@ def session_groups() -> list[dict]:
             print(msg, flush=True)
             continue
         _add_group(groups, api_id, api_hash, session, shop)
-        if "komron" in user or "kamron" in user or shop.startswith("usmon") or "usmon" in shop:
+        if "komron" in user or "kamron" in user or is_usmon_family(shop):
             _add_group(groups, api_id, api_hash, session, "usmon")
             _add_group(groups, api_id, api_hash, session, shop)
+            _add_group(groups, api_id, api_hash, session, "importoptom")
     usmon_fp = None
     for fp, row in groups.items():
         if "usmon" in (row.get("shops") or []):
             usmon_fp = fp
             break
     if usmon_fp:
-        extra = set()
+        extra = set(USMON_FAMILY_KEYS)
         for t in DebtSmsTemplate.objects.all().only("shop_key"):
             k = (t.shop_key or "").strip().lower()
-            if k and "usmon" in k:
+            if k and is_usmon_family(k):
                 extra.add(k)
-        extra.add("usmon")
         row = groups[usmon_fp]
         for k in extra:
             if k not in row["shops"]:
@@ -969,9 +984,12 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
     """Listener orqali yuboradi. Listener o‘chiq bo‘lsa navbatga yozadi."""
     if debtor is None or not (text or "").strip():
         return {"ok": False, "error": "Matn yoki mijoz yo‘q"}
+    shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
+    if is_usmon_family(shop):
+        shop = "usmon"
     job = {
         "type": "dm",
-        "shop": (getattr(debtor, "shop_key", "") or "").strip().lower(),
+        "shop": shop,
         "phone": debtor.phone or "",
         "debtor_id": int(debtor.pk),
         "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
