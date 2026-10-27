@@ -565,11 +565,35 @@ def _tenant(request):
     return tenant
 
 
+IMPORT_PRODUCT_LABEL = "Import Product"
+_WEAK_SHOP_LABELS = frozenset(
+    {"", "tezpos", "product", "produkt", "продукт", "import", "usmon"}
+)
+
+
+def _default_shop_label(shop: str, tenant: TenantProfile | None = None) -> str:
+    if is_usmon_family(shop):
+        return IMPORT_PRODUCT_LABEL
+    name = (tenant.business_name if tenant else "") or ""
+    return name.strip() or "TezPOS"
+
+
+def _ensure_shop_label(tpl: DebtSmsTemplate, shop: str) -> DebtSmsTemplate:
+    cur = (tpl.shop_label or "").strip()
+    if is_usmon_family(shop) and cur.lower() in _WEAK_SHOP_LABELS:
+        tpl.shop_label = IMPORT_PRODUCT_LABEL
+        try:
+            tpl.save(update_fields=["shop_label", "updated_at"])
+        except Exception:
+            pass
+    return tpl
+
+
 def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> DebtSmsTemplate:
     row = DebtSmsTemplate.objects.filter(shop_key=shop).first()
     if row:
-        return row
-    shop_label = (tenant.business_name if tenant else "") or "TezPOS"
+        return _ensure_shop_label(row, shop)
+    shop_label = _default_shop_label(shop, tenant)
     return DebtSmsTemplate.objects.create(
         shop_key=shop,
         title=f"{shop_label} qarzdorlik",
@@ -606,11 +630,13 @@ def _resolve_sms_shop_branch(
 ) -> tuple[str, str]:
     """Saqlangan «Do'kon nomi» birinchi; admin username ishlatilmaydi."""
     label = (tpl.shop_label or "").strip()
+    if is_usmon_family(tpl.shop_key) and label.lower() in _WEAK_SHOP_LABELS:
+        label = IMPORT_PRODUCT_LABEL
     if not label and request is not None:
         display = (request.session.get(SESSION_DISPLAY) or "").strip()
         label = display
     if not label:
-        label = "TezPOS"
+        label = _default_shop_label(tpl.shop_key)
     # To'liq yorliqni bir qator qilib qoldiramiz (branch qo'shilmasin)
     label = _canonical_shop_label(label)
     return label, ""
@@ -833,9 +859,13 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
     if shop_blocks_devsms(shop) and tpl and tpl.sms_enabled:
         tpl.sms_enabled = False
         tpl.save(update_fields=["sms_enabled", "updated_at"])
+    if tpl:
+        tpl = _ensure_shop_label(tpl, shop)
     shop_label = ""
     if tpl and (tpl.shop_label or "").strip():
         shop_label = _canonical_shop_label(tpl.shop_label)
+    elif is_usmon_family(shop):
+        shop_label = IMPORT_PRODUCT_LABEL
     return {
         "ok": True,
         "debtors": out,
