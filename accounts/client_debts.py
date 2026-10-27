@@ -32,6 +32,7 @@ from .telethon_debt import (
     ensure_telegram_resolved,
     is_usmon_family,
     parse_group_link,
+    related_debt_shops,
     send_group_message,
     telethon_configured,
     telethon_public_status,
@@ -67,13 +68,20 @@ def _group_notice_text(debtor: ClientDebtor, entry: ClientDebtorLedger, bal) -> 
 
 
 def debt_group_link(shop: str) -> str:
-    link = (
-        DebtSmsTemplate.objects.filter(shop_key=(shop or "").strip().lower())
-        .values_list("telegram_group_link", flat=True)
-        .first()
-        or ""
-    ).strip()
-    return link if parse_group_link(link) else ""
+    keys = related_debt_shops(shop)
+    if not keys:
+        return ""
+    rows = DebtSmsTemplate.objects.filter(shop_key__in=keys).values_list(
+        "shop_key", "telegram_group_link"
+    )
+    by = {
+        str(k or "").strip().lower(): (v or "").strip() for k, v in rows
+    }
+    for key in keys:
+        link = by.get(key, "")
+        if link and parse_group_link(link):
+            return link
+    return ""
 
 
 def debtors_summary_chunks(shop: str, limit: int = 3800) -> list[str]:
@@ -141,13 +149,8 @@ def _notify_group(shop: str, debtor: ClientDebtor, entry: ClientDebtorLedger | N
     if entry is None:
         return
     try:
-        link = (
-            DebtSmsTemplate.objects.filter(shop_key=shop)
-            .values_list("telegram_group_link", flat=True)
-            .first()
-            or ""
-        ).strip()
-        if not link or not parse_group_link(link):
+        link = debt_group_link(shop)
+        if not link:
             return
         if not telethon_configured(shop):
             logger.warning("Guruh xabari: userbot sozlanmagan shop=%s", shop)
@@ -155,7 +158,16 @@ def _notify_group(shop: str, debtor: ClientDebtor, entry: ClientDebtorLedger | N
         text = _group_notice_text(debtor, entry, debtor.balance())
 
         def _go(l=link, t=text, s=shop):
-            enqueue_group_message(l, t, shop_key=s)
+            res = send_group_message(l, t, shop_key=s)
+            if res.get("ok"):
+                logger.info("Guruhga qarz xabari ketdi shop=%s", s)
+            else:
+                logger.warning(
+                    "Guruhga qarz xabari xato shop=%s err=%s queued=%s",
+                    s,
+                    res.get("error"),
+                    res.get("queued"),
+                )
 
         if transaction.get_connection().in_atomic_block:
             transaction.on_commit(_go)

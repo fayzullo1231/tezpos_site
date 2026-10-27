@@ -283,6 +283,39 @@ class Command(BaseCommand):
         ready = asyncio.Event()
         box: dict = {"client": None}
 
+        async def _send_any_job(job: dict) -> dict:
+            kind = str((job or {}).get("type") or "dm")
+            if kind == "group":
+                if not ready.is_set():
+                    try:
+                        await asyncio.wait_for(ready.wait(), timeout=25)
+                    except asyncio.TimeoutError:
+                        return {"ok": False, "error": "Userbot hali ulanmagan"}
+                client = box.get("client")
+                if client is None:
+                    return {"ok": False, "error": "Userbot yo‘q"}
+                try:
+                    res = await send_group_on_client(
+                        client,
+                        str(job.get("link") or ""),
+                        str(job.get("text") or ""),
+                    )
+                except Exception as exc:
+                    logger.exception("HTTP guruh xato")
+                    return {"ok": False, "error": str(exc)[:200]}
+                if res.get("ok"):
+                    print(
+                        f"Telegram guruh ketdi shop={job.get('shop')} topic={res.get('topic')}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"Telegram guruh fail shop={job.get('shop')} err={res.get('error')}",
+                        flush=True,
+                    )
+                return res
+            return await _send_dm_job(job)
+
         async def _send_dm_job(job: dict) -> dict:
             if not ready.is_set():
                 try:
@@ -325,9 +358,10 @@ class Command(BaseCommand):
             return {"ok": True, "phone": phone}
 
         for shop in allowed:
-            senders[shop] = _send_dm_job
-        if any(s == "usmon" or s.startswith("usmon") for s in allowed):
-            senders["usmon"] = _send_dm_job
+            senders[shop] = _send_any_job
+        if any(s == "usmon" or s.startswith("usmon") or s.startswith("import") for s in allowed):
+            senders["usmon"] = _send_any_job
+            senders["import"] = _send_any_job
 
         client = await _client_from_creds(
             group["api_id"], group["api_hash"], group["session"]
@@ -384,9 +418,10 @@ class Command(BaseCommand):
 
                     allowed = await sync_to_async(_refresh)()
                     for shop in allowed:
-                        senders[shop] = _send_dm_job
-                    if any(s == "usmon" or s.startswith("usmon") for s in allowed):
-                        senders["usmon"] = _send_dm_job
+                        senders[shop] = _send_any_job
+                    if any(s == "usmon" or s.startswith("usmon") or s.startswith("import") for s in allowed):
+                        senders["usmon"] = _send_any_job
+                        senders["import"] = _send_any_job
                     jobs = await sync_to_async(take_jobs)(allowed)
                     for path, job in jobs:
                         err = ""

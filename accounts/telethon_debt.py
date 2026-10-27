@@ -166,6 +166,28 @@ def uses_shared_telethon(shop_key: str | None) -> bool:
     return (shop_key or "").strip().lower() in SHARED_TELETHON_SHOPS
 
 
+def related_debt_shops(shop: str | None) -> list[str]:
+    """Bir xil userbot / guruh havolasi bo‘lgan do‘kon kalitlari."""
+    s = (shop or "").strip().lower()
+    if not s:
+        return []
+    out: list[str] = []
+
+    def add(key: str) -> None:
+        k = (key or "").strip().lower()
+        if k and k not in out:
+            out.append(k)
+
+    add(s)
+    if uses_shared_telethon(s) or s.startswith("kulol"):
+        for key in SHARED_TELETHON_SHOPS:
+            add(key)
+    if is_usmon_family(s):
+        for key in ("usmon", "import", "importproduct", "importoptom"):
+            add(key)
+    return out
+
+
 def _global_creds() -> tuple[str, str, str]:
     return (
         str(getattr(settings, "TELETHON_API_ID", "") or "").strip(),
@@ -913,16 +935,53 @@ async def send_group_on_client(client, link: str, text: str) -> dict[str, Any]:
     info = parse_group_link(link)
     if not info:
         return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
-    entity = await _resolve_group_entity(client, info)
-    kwargs: dict[str, Any] = {"parse_mode": "html", "link_preview": False}
-    if info["topic"] and getattr(entity, "forum", False):
-        kwargs["reply_to"] = info["topic"]
-    msg = await client.send_message(entity, text, **kwargs)
-    return {
-        "ok": True,
-        "message_id": getattr(msg, "id", None),
-        "title": getattr(entity, "title", "") or "",
-    }
+    try:
+        entity = await _resolve_group_entity(client, info)
+    except Exception as exc:
+        logger.exception("guruh entity topilmadi")
+        return {"ok": False, "error": f"Guruh topilmadi: {exc}"[:220]}
+    topic = info.get("topic")
+    base: dict[str, Any] = {"parse_mode": "html", "link_preview": False}
+    attempts: list[dict[str, Any]] = []
+    if topic:
+        tid = int(topic)
+        try:
+            from telethon.tl.types import InputReplyToMessage
+
+            try:
+                reply_obj = InputReplyToMessage(reply_to_msg_id=tid, top_msg_id=tid)
+            except TypeError:
+                reply_obj = InputReplyToMessage(reply_to_msg_id=tid)
+            attempts.append({**base, "reply_to": reply_obj})
+        except Exception:
+            pass
+        attempts.append({**base, "reply_to": tid})
+    attempts.append(dict(base))
+    last_err = "Guruhga yozilmadi"
+    for kw in attempts:
+        try:
+            msg = await client.send_message(entity, text, **kw)
+            logger.info(
+                "guruh yuborildi title=%s topic=%s reply=%s",
+                getattr(entity, "title", ""),
+                topic,
+                bool(kw.get("reply_to")),
+            )
+            return {
+                "ok": True,
+                "message_id": getattr(msg, "id", None),
+                "title": getattr(entity, "title", "") or "",
+                "topic": topic,
+            }
+        except Exception as exc:
+            last_err = str(exc)[:200]
+            logger.warning(
+                "guruh send fail topic=%s reply=%s err=%s",
+                topic,
+                bool(kw.get("reply_to")),
+                exc,
+            )
+    return {"ok": False, "error": last_err}
 
 
 async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[str, Any]:
@@ -942,29 +1001,29 @@ async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[st
 def send_group_message(
     link: str, text: str, *, timeout: int = 60, shop_key: str = ""
 ) -> dict[str, Any]:
-    """Gunicorn yangi client ochmasin — listenerga yozadi."""
+    """Gunicorn yangi client ochmasin — listener HTTP, bo‘lmasa navbat."""
     if not telethon_configured(shop_key or None):
         return {"ok": False, "error": "Telethon sozlanmagan"}
     if not (text or "").strip():
         return {"ok": False, "error": "Matn bo‘sh"}
-    enqueue_group_message(link, text, shop_key)
+    if not parse_group_link(link):
+        return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
     from .tg_send_local import send_via_listener
 
-    res = send_via_listener(
-        {
-            "type": "group",
-            "shop": (shop_key or "").strip().lower(),
-            "link": link,
-            "text": text,
-        },
-        timeout=min(18, timeout),
-    )
+    job = {
+        "type": "group",
+        "shop": (shop_key or "").strip().lower(),
+        "link": link,
+        "text": text,
+    }
+    res = send_via_listener(job, timeout=min(18, timeout))
     if res.get("ok"):
         return res
+    enqueue_group_message(link, text, shop_key)
     return {
-        "ok": True,
+        "ok": False,
         "queued": True,
-        "error": res.get("error") or "",
+        "error": res.get("error") or "Guruhga yuborilmadi, navbatga yozildi",
     }
 
 
