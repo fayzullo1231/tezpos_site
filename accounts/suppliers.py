@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 from decimal import Decimal, InvalidOperation
+
+logger = logging.getLogger(__name__)
 
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
@@ -155,12 +158,26 @@ def _notify_supplier_group(
             note=note,
             is_debt=is_debt,
         )
-        enqueue = tg["enqueue_group_message"]
-        transaction.on_commit(
-            lambda l=link, t=text, s=shop: enqueue(l, t, shop_key=s)
-        )
+        send = tg["send_group_message"]
+
+        def _go(l=link, t=text, s=shop):
+            res = send(l, t, shop_key=s)
+            if res.get("ok"):
+                logger.info("Taminotchi guruh ketdi shop=%s topic=%s", s, res.get("topic"))
+            else:
+                logger.warning(
+                    "Taminotchi guruh xato shop=%s err=%s queued=%s",
+                    s,
+                    res.get("error"),
+                    res.get("queued"),
+                )
+
+        if transaction.get_connection().in_atomic_block:
+            transaction.on_commit(_go)
+        else:
+            _go()
     except Exception:
-        pass
+        logger.exception("Taminotchi guruh xabari yozilmadi shop=%s", shop)
 
 
 def _get_or_create_sms_tpl(shop: str) -> DebtSmsTemplate:
@@ -758,13 +775,18 @@ def cabinet_suppliers_telegram_group(request):
     tpl.supplier_telegram_group_link = link
     tpl.save(update_fields=["supplier_telegram_group_link", "updated_at"])
     title = test.get("title") or ""
+    topic = test.get("topic")
+    where = f"{title}" if title else ""
+    if topic:
+        where = (where + " " if where else "") + f"mavzu {topic}"
     return JsonResponse(
         {
             "ok": True,
             "link": link,
             "title": title,
+            "topic": topic,
             "message": "Saqlandi. Guruhga sinov xabari yuborildi"
-            + (f" ({title})" if title else "")
+            + (f" ({where.strip()})" if where else "")
             + ".",
         }
     )

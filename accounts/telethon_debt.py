@@ -928,6 +928,17 @@ async def _resolve_group_entity(client, info: dict):
     raise last or RuntimeError("Guruh topilmadi")
 
 
+def _sent_topic_id(msg) -> int | None:
+    rt = getattr(msg, "reply_to", None)
+    if not rt:
+        return None
+    top = getattr(rt, "reply_to_top_id", None) or getattr(rt, "reply_to_msg_id", None)
+    try:
+        return int(top) if top else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def send_group_on_client(client, link: str, text: str) -> dict[str, Any]:
     info = parse_group_link(link)
     if not info:
@@ -939,46 +950,81 @@ async def send_group_on_client(client, link: str, text: str) -> dict[str, Any]:
         return {"ok": False, "error": f"Guruh topilmadi: {exc}"[:220]}
     topic = info.get("topic")
     base: dict[str, Any] = {"parse_mode": "html", "link_preview": False}
-    attempts: list[dict[str, Any]] = []
+
+    async def _try_send(**extra):
+        kw = {**base, **extra}
+        try:
+            return await client.send_message(entity, text, **kw)
+        except TypeError:
+            kw.pop("top_msg_id", None)
+            return await client.send_message(entity, text, **kw)
+
+    title = getattr(entity, "title", "") or ""
     if topic:
         tid = int(topic)
+        variants: list[dict[str, Any]] = []
         try:
             from telethon.tl.types import InputReplyToMessage
 
             try:
-                reply_obj = InputReplyToMessage(reply_to_msg_id=tid, top_msg_id=tid)
+                variants.append(
+                    {
+                        "reply_to": InputReplyToMessage(
+                            reply_to_msg_id=tid, top_msg_id=tid
+                        )
+                    }
+                )
             except TypeError:
-                reply_obj = InputReplyToMessage(reply_to_msg_id=tid)
-            attempts.append({**base, "reply_to": reply_obj})
+                variants.append(
+                    {"reply_to": InputReplyToMessage(reply_to_msg_id=tid)}
+                )
         except Exception:
             pass
-        attempts.append({**base, "reply_to": tid})
-    attempts.append(dict(base))
-    last_err = "Guruhga yozilmadi"
-    for kw in attempts:
-        try:
-            msg = await client.send_message(entity, text, **kw)
+        variants.append({"reply_to": tid, "top_msg_id": tid})
+        variants.append({"reply_to": tid})
+        last_err = "Mavzuga yozilmadi"
+        for extra in variants:
+            try:
+                msg = await _try_send(**extra)
+            except Exception as exc:
+                last_err = str(exc)[:200]
+                logger.warning(
+                    "guruh topic send fail title=%s topic=%s err=%s",
+                    title,
+                    tid,
+                    exc,
+                )
+                continue
+            landed = _sent_topic_id(msg)
             logger.info(
-                "guruh yuborildi title=%s topic=%s reply=%s",
-                getattr(entity, "title", ""),
-                topic,
-                bool(kw.get("reply_to")),
+                "guruh yuborildi title=%s want_topic=%s landed=%s",
+                title,
+                tid,
+                landed,
             )
             return {
                 "ok": True,
                 "message_id": getattr(msg, "id", None),
-                "title": getattr(entity, "title", "") or "",
-                "topic": topic,
+                "title": title,
+                "topic": tid,
+                "landed_topic": landed,
             }
-        except Exception as exc:
-            last_err = str(exc)[:200]
-            logger.warning(
-                "guruh send fail topic=%s reply=%s err=%s",
-                topic,
-                bool(kw.get("reply_to")),
-                exc,
-            )
-    return {"ok": False, "error": last_err}
+        return {
+            "ok": False,
+            "error": f"Mavzu {tid} ga yozilmadi: {last_err}",
+        }
+
+    try:
+        msg = await _try_send()
+    except Exception as exc:
+        logger.warning("guruh send fail title=%s err=%s", title, exc)
+        return {"ok": False, "error": str(exc)[:200]}
+    return {
+        "ok": True,
+        "message_id": getattr(msg, "id", None),
+        "title": title,
+        "topic": None,
+    }
 
 
 async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[str, Any]:
