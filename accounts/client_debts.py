@@ -203,6 +203,26 @@ def shop_devsms_on(shop: str) -> bool:
     return (shop or "").strip().lower() == "kuloloptomuz"
 
 
+def _kulol_sms_label() -> str:
+    """Eskizda tasdiqlangan Kulol Optom sarlavhasi. Boshqa do‘kon yozuvi o‘zgarmaydi."""
+    row = (
+        DebtSmsTemplate.objects.filter(shop_key="kuloloptom")
+        .only("shop_label")
+        .first()
+    )
+    label = ((row.shop_label if row else "") or "").strip()
+    return label or "Kulol Optom"
+
+
+def _force_sms_head(text: str, head: str) -> str:
+    lines = (text or "").split("\n")
+    for i, ln in enumerate(lines):
+        if ln.strip():
+            lines[i] = head
+            return "\n".join(lines)
+    return head
+
+
 def _sms_enabled_for(shop: str) -> bool:
     shop = (shop or "").strip().lower()
     if not shop or shop_blocks_devsms(shop):
@@ -451,6 +471,8 @@ def _maybe_deliver_personal(
                     else:
                         out.append(ln)
                 text = "\n".join(out if inserted else lines + ["", item_block])
+        if shop_devsms_on(shop):
+            text = _force_sms_head(text, _kulol_sms_label())
         if len(text) > 3900:
             text = text[:3890] + "\n…"
         logger.info(
@@ -601,6 +623,8 @@ _WEAK_SHOP_LABELS = frozenset(
 def _default_shop_label(shop: str, tenant: TenantProfile | None = None) -> str:
     if is_usmon_family(shop):
         return IMPORT_PRODUCT_LABEL
+    if shop_devsms_on(shop):
+        return _kulol_sms_label()
     name = (tenant.business_name if tenant else "") or ""
     return name.strip() or "TezPOS"
 
@@ -613,6 +637,19 @@ def _ensure_shop_label(tpl: DebtSmsTemplate, shop: str) -> DebtSmsTemplate:
             tpl.save(update_fields=["shop_label", "updated_at"])
         except Exception:
             pass
+        return tpl
+    if shop_devsms_on(shop):
+        want = _kulol_sms_label()
+        weak = cur.lower() in _WEAK_SHOP_LABELS or cur.lower().replace("-", "") in {
+            "kuloloptomuz",
+            "kuloloptom",
+        }
+        if cur != want and (not cur or weak):
+            tpl.shop_label = want
+            try:
+                tpl.save(update_fields=["shop_label", "updated_at"])
+            except Exception:
+                pass
     return tpl
 
 
@@ -893,6 +930,8 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
             total += Decimal(str(item["balance"]))
         out.append(item)
     out.sort(key=lambda x: x["balance"], reverse=True)
+    if shop_devsms_on(shop) and devsms.resolve_token():
+        _get_or_create_template(shop, None)
     tpl = DebtSmsTemplate.objects.filter(shop_key=shop).first()
     if shop_blocks_devsms(shop) and tpl and tpl.sms_enabled:
         tpl.sms_enabled = False
