@@ -198,12 +198,22 @@ def shop_blocks_devsms(shop: str) -> bool:
     return is_usmon_family(shop)
 
 
+def shop_devsms_on(shop: str) -> bool:
+    """Faqat kuloloptomuz. Boshqa serverlar o‘z holicha qoladi."""
+    return (shop or "").strip().lower() == "kuloloptomuz"
+
+
 def _sms_enabled_for(shop: str) -> bool:
     shop = (shop or "").strip().lower()
     if not shop or shop_blocks_devsms(shop):
         return False
     if not devsms.resolve_token():
         return False
+    if shop_devsms_on(shop):
+        DebtSmsTemplate.objects.filter(shop_key=shop, sms_enabled=False).update(
+            sms_enabled=True
+        )
+        return True
     return bool(
         DebtSmsTemplate.objects.filter(shop_key=shop, sms_enabled=True).exists()
     )
@@ -394,7 +404,7 @@ def _maybe_deliver_personal(
         return None
     if shop_blocks_devsms(shop):
         allow_sms = False
-    elif uses_shared_telethon(shop):
+    elif uses_shared_telethon(shop) or shop_devsms_on(shop):
         allow_sms = _sms_enabled_for(shop)
     else:
         allow_sms = bool(send_sms) and _sms_enabled_for(shop)
@@ -611,7 +621,7 @@ def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> D
     if row:
         row = _ensure_shop_label(row, shop)
         if (
-            uses_shared_telethon(shop)
+            (uses_shared_telethon(shop) or shop_devsms_on(shop))
             and not shop_blocks_devsms(shop)
             and not row.sms_enabled
             and devsms.resolve_token()
@@ -626,7 +636,8 @@ def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> D
         shop_label=shop_label,
         body=DebtSmsTemplate.DEFAULT_BODY,
         is_approved=True,
-        sms_enabled=uses_shared_telethon(shop) and bool(devsms.resolve_token()),
+        sms_enabled=(uses_shared_telethon(shop) or shop_devsms_on(shop))
+        and bool(devsms.resolve_token()),
     )
 
 
@@ -887,7 +898,7 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
         tpl.sms_enabled = False
         tpl.save(update_fields=["sms_enabled", "updated_at"])
     elif (
-        uses_shared_telethon(shop)
+        (uses_shared_telethon(shop) or shop_devsms_on(shop))
         and tpl
         and not tpl.sms_enabled
         and devsms.resolve_token()
