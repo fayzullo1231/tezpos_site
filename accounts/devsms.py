@@ -68,6 +68,62 @@ def _normalize_sms_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _is_item_line(line: str) -> bool:
+    s = (line or "").lstrip()
+    i = 0
+    while i < len(s) and s[i].isdigit():
+        i += 1
+    return i > 0 and i < len(s) and s[i] == ")"
+
+
+def to_approved_sms(text: str) -> str:
+    """Eskiz tasdiqlagan qisqa shablon. Mahsulot qatorlari chekda qoladi.
+
+    Sarlavha
+
+    Qarz: 15 000 so'm
+
+    Qoldiq: 5 000 so'm
+
+    Chek : https://tez-pos.uz/...
+    """
+    lines = [ln.rstrip() for ln in _normalize_sms_text(text).split("\n")]
+    head = ""
+    qarz = ""
+    qoldiq = ""
+    link = ""
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("Qarz:") and not qarz:
+            qarz = s
+            continue
+        if s.startswith("Qoldiq:") and not qoldiq:
+            qoldiq = s
+            continue
+        if s.lower().startswith("chek"):
+            rest = s.split(":", 1)[1].strip() if ":" in s else ""
+            if rest.startswith("http"):
+                link = rest
+            continue
+        if s.startswith("http://") or s.startswith("https://"):
+            if not link:
+                link = s
+            continue
+        if s.startswith("Qaytarish:"):
+            continue
+        if _is_item_line(s):
+            continue
+        if not head:
+            head = s
+    if not (head and qarz and qoldiq):
+        return _normalize_sms_text(text)
+    if not link:
+        link = DEFAULT_CLIENT_CHECK
+    return _normalize_sms_text(f"{head}\n\n{qarz}\n\n{qoldiq}\n\nChek : {link}")
+
+
 DEFAULT_CLIENT_CHECK = "https://tez-pos.uz/"
 
 

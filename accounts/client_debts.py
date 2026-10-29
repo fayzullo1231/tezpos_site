@@ -273,7 +273,10 @@ def _deliver_debt_notice(
     if allow_sms is None:
         allow_sms = _sms_enabled_for(shop)
     if allow_sms and _sms_enabled_for(shop):
-        sms = devsms.send_dev_sms(phone=debtor.phone, message=msg)
+        sms = devsms.send_dev_sms(
+            phone=debtor.phone,
+            message=devsms.to_approved_sms(msg),
+        )
         sms_ok = bool(sms.get("ok"))
         sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
     else:
