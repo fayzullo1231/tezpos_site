@@ -1427,17 +1427,6 @@ def cabinet_telethon_save(request):
         return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
 
     tpl = _get_or_create_template(shop, tenant)
-    if uses_shared_telethon(shop):
-        return JsonResponse(
-            {
-                "error": (
-                    "Kulol Optom va Kulol Optom-2 hozirgi server akkauntidan "
-                    "foydalanadi. API ni o‘zgartirib bo‘lmaydi."
-                ),
-                "template": _serialize_template(tpl),
-            },
-            status=400,
-        )
 
     if body.get("clear"):
         tpl.telethon_api_id = ""

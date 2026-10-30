@@ -76,18 +76,16 @@ def _norm_shops(shops) -> set[str]:
 
 
 def _pick_sender(shop: str, senders: dict):
+    """Aniq shop. Boshqa do‘kon userbotiga tushmaydi. Import/Usmon o‘z oilasi."""
+    shop = (shop or "").strip().lower()
     if shop and shop in senders:
         return senders[shop]
-    if shop:
+    if shop and (
+        shop == "usmon" or shop.startswith("usmon") or shop.startswith("import")
+    ):
         for key, val in senders.items():
-            if shop.startswith(key) or key.startswith(shop):
+            if key == "usmon" or str(key).startswith("usmon") or str(key).startswith("import"):
                 return val
-        if shop == "usmon" or shop.startswith("usmon") or shop.startswith("import"):
-            for key, val in senders.items():
-                if key == "usmon" or str(key).startswith("usmon") or str(key).startswith("import"):
-                    return val
-    if len(senders) == 1:
-        return next(iter(senders.values()))
     return None
 
 

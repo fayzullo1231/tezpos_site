@@ -7,6 +7,7 @@ Har safar raqam bo‘yicha qidiriladi, keyin xabar yuboriladi.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import logging
 import random
@@ -167,22 +168,9 @@ def uses_shared_telethon(shop_key: str | None) -> bool:
 
 
 def related_debt_shops(shop: str | None) -> list[str]:
-    """Faqat Kulol Optom / Kulol Optom-2 guruh havolasini ulashadi. Import/Usmonga tegmaydi."""
+    """Guruh havolasi faqat shu do‘konniki. Boshqa serverga ulashilmaydi."""
     s = (shop or "").strip().lower()
-    if not s:
-        return []
-    out: list[str] = []
-
-    def add(key: str) -> None:
-        k = (key or "").strip().lower()
-        if k and k not in out:
-            out.append(k)
-
-    add(s)
-    if uses_shared_telethon(s) or s.startswith("kulol"):
-        for key in SHARED_TELETHON_SHOPS:
-            add(key)
-    return out
+    return [s] if s else []
 
 
 def _global_creds() -> tuple[str, str, str]:
@@ -230,15 +218,19 @@ def _template_for_shop(shop: str):
 
 
 def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
-    """kuloloptom / kuloloptom-2 — server .env; qolgan do‘konlar o‘z sessioni."""
+    """Har bir do‘kon o‘z saytdagi sessioni. Kulol .env faqat aniq kuloloptom uchun."""
     shop = (shop_key or "").strip().lower()
-    if not shop or uses_shared_telethon(shop):
+    if not shop:
         return _global_creds()
 
     tpl = _template_for_shop(shop)
     creds = _creds_from_tpl(tpl)
     if _creds_ok(*creds):
         return creds
+    if shop == "kuloloptom":
+        g = _global_creds()
+        if _creds_ok(*g):
+            return g
     if is_usmon_family(shop):
         for row in DebtSmsTemplate.objects.filter(shop_key__istartswith="usmon").only(
             "telethon_api_id",
@@ -256,7 +248,7 @@ def telethon_creds(shop_key: str | None = None) -> tuple[str, str, str]:
             "telethon_session",
             "telethon_user",
         ):
-            if uses_shared_telethon(row.shop_key):
+            if not is_usmon_family(row.shop_key):
                 continue
             user = (row.telethon_user or "").strip().lower()
             if "komron" in user or "kamron" in user:
@@ -286,21 +278,19 @@ def _mask_secret(value: str) -> str:
 
 def telethon_public_status(shop_key: str | None = None) -> dict:
     shop = (shop_key or "").strip().lower()
-    shared = uses_shared_telethon(shop)
     api_id, api_hash, session = telethon_creds(shop)
     configured = _creds_ok(api_id, api_hash, session)
-    user = ""
-    if shared:
-        user = "Ro‘yxatdan o‘tgan" if configured else "Sozlanmagan"
-    else:
-        tpl = _template_for_shop(shop)
-        user = (tpl.telethon_user or "").strip() if tpl else ""
+    tpl = _template_for_shop(shop)
+    user = (tpl.telethon_user or "").strip() if tpl else ""
+    own_ok = _creds_ok(*_creds_from_tpl(tpl))
+    if not user and shop == "kuloloptom" and configured and not own_ok:
+        user = "Server akkaunti"
     return {
-        "shared": shared,
+        "shared": False,
         "configured": configured,
         "user": user,
-        "api_id": api_id if (shared or configured) else "",
-        "api_hash_masked": _mask_secret(api_hash) if (shared or configured) else "",
+        "api_id": api_id if configured else "",
+        "api_hash_masked": _mask_secret(api_hash) if configured else "",
         "session_set": bool(session),
     }
 
@@ -311,7 +301,7 @@ def _add_group(groups: dict, api_id: str, api_hash: str, session: str, shop: str
     shop = (shop or "").strip().lower()
     if not shop:
         return
-    fp = f"{api_id}:{session[:32]}"
+    fp = hashlib.sha256(f"{api_id}:{session}".encode("utf-8")).hexdigest()
     row = groups.setdefault(
         fp,
         {"api_id": api_id, "api_hash": api_hash, "session": session, "shops": []},
@@ -321,16 +311,13 @@ def _add_group(groups: dict, api_id: str, api_hash: str, session: str, shop: str
 
 
 def session_groups() -> list[dict]:
-    """Bir xil session = bitta Telethon client (listener uchun)."""
+    """Har bir do‘kon o‘z sessioni. Import/Usmon faqat o‘z Komron userbotini ulashadi."""
     groups: dict[str, dict] = {}
-    g_id, g_hash, g_sess = _global_creds()
-    if _creds_ok(g_id, g_hash, g_sess):
-        for shop in SHARED_TELETHON_SHOPS:
-            _add_group(groups, g_id, g_hash, g_sess, shop)
+    own_shops: set[str] = set()
 
     for row in DebtSmsTemplate.objects.all():
         shop = (row.shop_key or "").strip().lower()
-        if not shop or uses_shared_telethon(shop):
+        if not shop:
             continue
         api_id, api_hash, session = _creds_from_tpl(row)
         user = (row.telethon_user or "").lower()
@@ -345,9 +332,11 @@ def session_groups() -> list[dict]:
             print(msg, flush=True)
             continue
         _add_group(groups, api_id, api_hash, session, shop)
-        if "komron" in user or "kamron" in user or is_usmon_family(shop):
+        own_shops.add(shop)
+        if is_usmon_family(shop) and (
+            "komron" in user or "kamron" in user or is_usmon_family(shop)
+        ):
             _add_group(groups, api_id, api_hash, session, "usmon")
-            _add_group(groups, api_id, api_hash, session, shop)
             _add_group(groups, api_id, api_hash, session, "import")
             _add_group(groups, api_id, api_hash, session, "importproduct")
             _add_group(groups, api_id, api_hash, session, "importoptom")
@@ -366,6 +355,10 @@ def session_groups() -> list[dict]:
         for k in extra:
             if k not in row["shops"]:
                 row["shops"].append(k)
+    if "kuloloptom" not in own_shops:
+        g_id, g_hash, g_sess = _global_creds()
+        if _creds_ok(g_id, g_hash, g_sess):
+            _add_group(groups, g_id, g_hash, g_sess, "kuloloptom")
     return list(groups.values())
 
 
