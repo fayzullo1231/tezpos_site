@@ -80,6 +80,8 @@ def _pick_sender(shop: str, senders: dict):
     shop = (shop or "").strip().lower()
     if shop and shop in senders:
         return senders[shop]
+    if shop == "kuloloptom-2" and "kuloloptom" in senders:
+        return senders["kuloloptom"]
     if shop and (
         shop == "usmon" or shop.startswith("usmon") or shop.startswith("import")
     ):
