@@ -357,6 +357,8 @@ class Command(BaseCommand):
             logger.info("Telegram DM ketdi shop=%s phone=%s", job.get("shop"), phone)
             return {"ok": True, "phone": phone}
 
+        if "kuloloptom" in allowed:
+            allowed.add("kuloloptom-2")
         for shop in allowed:
             senders[shop] = _send_any_job
         if any(s == "usmon" or s.startswith("usmon") or s.startswith("import") for s in allowed):
