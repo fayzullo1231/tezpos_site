@@ -53,6 +53,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        self.stdout.write(
+            "Bu buyruq o'chirilgan. Faqat kuloloptom-2 uchun bir marta:\n"
+            "python manage.py resend_kuloloptom2_once --send"
+        )
+        return
         if BLOCKED in SHOPS:
             self.stderr.write("kuloloptomuz bu buyruqqa kiritilmaydi")
             return
