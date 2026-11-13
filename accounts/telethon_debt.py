@@ -565,49 +565,79 @@ def _meta_err(err: str) -> dict:
     }
 
 
+def _phone_not_occupied(exc) -> bool:
+    name = type(exc).__name__.upper()
+    msg = (getattr(exc, "message", None) or str(exc) or "").upper()
+    return (
+        "NOT_OCCUPIED" in name
+        or "NOT_OCCUPIED" in msg
+        or "NOT YET BEING USED" in msg
+    )
+
+
+def _phone_variants(phone_n: str) -> list[str]:
+    """Telegram ilovasi raqamni + siz yuboradi. +998 ikkinchi urinish."""
+    digits = _uz_phone_digits(phone_n)
+    if not digits:
+        return []
+    return [digits, "+" + digits]
+
+
 async def _resolve_phone(client, phone_n: str) -> dict:
     """
-    Raqamni Telegram userga aylantiradi.
-    Avvalo ResolvePhone (kontaktga qo‘shilmaydi).
+    contacts.resolvePhone — raqam orqali topish.
+    Avval 998XXXXXXXXX, bo‘lmasa +998XXXXXXXXX.
     """
     from telethon.errors import FloodWaitError, RPCError
     from telethon.tl.functions.contacts import ResolvePhoneRequest
 
-    intl = _intl_phone(phone_n)
-    if not intl:
+    variants = _phone_variants(phone_n)
+    if not variants:
         return _meta_err("Telefon yo‘q")
 
     floods = 0
-    while floods < 3:
-        try:
-            result = await client(ResolvePhoneRequest(phone=intl))
-            users = list(getattr(result, "users", None) or [])
-            if not users:
-                peer = getattr(result, "peer", None)
-                uid = getattr(peer, "user_id", None) if peer is not None else None
-                if uid:
-                    try:
-                        user = await client.get_entity(int(uid))
-                        return _meta_ok(user)
-                    except Exception:
-                        pass
-                return _meta_err("resolve_empty")
-            return _meta_ok(users[0])
-        except FloodWaitError as exc:
-            floods += 1
-            wait = min(int(getattr(exc, "seconds", 0) or 0) + 1, 15)
-            logger.warning("FloodWait %ss — kutilyapti", wait)
-            await asyncio.sleep(wait)
-        except RPCError as exc:
-            msg = (getattr(exc, "message", None) or str(exc) or "").upper()
-            if "PHONE_NOT_OCCUPIED" in msg or "PHONE_NOT_OCCUPIED" in str(exc):
-                return _meta_no_tg("resolve_privacy")
-            logger.warning("resolvePhone RPC %s", exc)
-            return _meta_err(str(exc))
-        except Exception as exc:
-            logger.warning("resolvePhone xato %s", exc)
-            return _meta_err(str(exc))
-    return _meta_err("FloodWait")
+    saw_missing = False
+    last_err = ""
+    for idx, phone in enumerate(variants):
+        if idx:
+            await asyncio.sleep(RESOLVE_PAUSE_SEC)
+        while True:
+            try:
+                result = await client(ResolvePhoneRequest(phone=phone))
+                users = list(getattr(result, "users", None) or [])
+                if not users:
+                    peer = getattr(result, "peer", None)
+                    uid = getattr(peer, "user_id", None) if peer is not None else None
+                    if uid:
+                        try:
+                            user = await client.get_entity(int(uid))
+                            return _meta_ok(user)
+                        except Exception:
+                            pass
+                    saw_missing = True
+                    break
+                return _meta_ok(users[0])
+            except FloodWaitError as exc:
+                floods += 1
+                if floods > 2:
+                    return _meta_err("FloodWait")
+                wait = min(int(getattr(exc, "seconds", 0) or 0) + 1, 15)
+                logger.warning("FloodWait %ss — kutilyapti", wait)
+                await asyncio.sleep(wait)
+            except RPCError as exc:
+                if _phone_not_occupied(exc):
+                    saw_missing = True
+                    break
+                logger.warning("resolvePhone RPC %s", exc)
+                last_err = str(exc)[:200]
+                break
+            except Exception as exc:
+                logger.warning("resolvePhone xato %s", exc)
+                last_err = str(exc)[:200]
+                break
+    if saw_missing and not last_err:
+        return _meta_no_tg("resolve_privacy")
+    return _meta_err(last_err or "resolve_empty")
 
 
 def _user_from_import(result):
@@ -621,29 +651,62 @@ def _user_from_import(result):
     return None
 
 
+def _parse_import(result, by_cid: dict):
+    users = {}
+    for u in list(getattr(result, "users", None) or []):
+        try:
+            users[int(u.id)] = u
+        except (TypeError, ValueError):
+            continue
+    found = []
+    for imp in list(getattr(result, "imported", None) or []):
+        try:
+            cid = int(getattr(imp, "client_id", 0) or 0)
+            uid = int(getattr(imp, "user_id", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        user = users.get(uid)
+        if user is None or cid not in by_cid:
+            continue
+        found.append((cid, user))
+    if not found and len(users) == 1 and len(by_cid) == 1:
+        found.append((next(iter(by_cid)), next(iter(users.values()))))
+    retry = []
+    for item in list(getattr(result, "retry_contacts", None) or []):
+        try:
+            retry.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    popular = []
+    for item in list(getattr(result, "popular_invites", None) or []):
+        try:
+            popular.append(int(getattr(item, "client_id", item) or 0))
+        except (TypeError, ValueError):
+            continue
+    return found, retry, popular
+
+
 async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") -> dict:
     """
-    Raqam orqali kontakt qilib oladi va user qaytaradi.
-    Kontakt saqlanadi: o‘chirilsa Telegram xabarni chatga tushirmaydi.
-    «Telegram yo‘q» faqat barcha formatlar popular_invites qaytarsa.
+    Bitta raqamni kontakt qilib oladi.
+    popular_invites «Telegram yo‘q» emas — ko‘p odam saqlagan raqam.
+    Kontakt saqlanadi, aks holda xabar chatga tushmaydi.
     """
     from telethon.errors import FloodWaitError, RPCError
-    from telethon.tl.functions.contacts import ImportContactsRequest
+    from telethon.tl.functions.contacts import AddContactRequest, ImportContactsRequest
     from telethon.tl.types import InputPhoneContact
 
-    intl = _intl_phone(phone_n)
-    digits = _uz_phone_digits(phone_n)
-    phones = []
-    for p in (intl, digits):
-        if p and p not in phones:
-            phones.append(p)
+    phones = _phone_variants(phone_n)
     if not phones:
         return _meta_err("Telefon yo‘q")
     first = (contact_name or "").strip()[:32] or "Mijoz"
-
+    saw_popular = False
+    saw_empty = False
     last = _meta_err("Telegram vaqtincha topilmadi")
-    saw_missing = False
-    for phone in phones:
+
+    for idx, phone in enumerate(phones):
+        if idx:
+            await asyncio.sleep(RESOLVE_PAUSE_SEC)
         client_id = random.randint(1, 0x7FFFFFFF)
         for attempt in range(2):
             contact = InputPhoneContact(
@@ -655,12 +718,12 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
             try:
                 result = await client(ImportContactsRequest([contact]))
             except FloodWaitError as exc:
-                wait = min(int(getattr(exc, "seconds", 0) or 0) + 1, 8)
+                wait = min(int(getattr(exc, "seconds", 0) or 0) + 1, 12)
                 logger.warning("FloodWait import %ss", wait)
                 await asyncio.sleep(wait)
                 continue
             except RPCError as exc:
-                logger.warning("import RPC %s phone=%s", exc, phone[:6])
+                logger.warning("import RPC %s", exc)
                 last = _meta_err(str(exc))
                 break
             user = _user_from_import(result)
@@ -668,29 +731,31 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
                 meta = _meta_ok(user)
                 meta["_imported"] = True
                 try:
-                    from telethon.tl.functions.contacts import AddContactRequest
-
                     await client(
                         AddContactRequest(
                             id=user,
                             first_name=first,
                             last_name="",
-                            phone=intl or digits,
+                            phone=phone,
                             add_phone_privacy_exception=True,
                         )
                     )
                 except Exception:
                     logger.warning("addContact xato", exc_info=True)
                 return meta
-            popular = list(getattr(result, "popular_invites", None) or [])
-            retry = list(getattr(result, "retry_contacts", None) or [])
-            if popular and not retry:
-                saw_missing = True
-                break
-            last = _meta_err("Telegram vaqtincha topilmadi")
-            await asyncio.sleep(1)
-    if saw_missing:
-        return _meta_no_tg()
+            _found, retry, popular = _parse_import(result, {client_id: phone})
+            if retry and attempt == 0:
+                await asyncio.sleep(2)
+                continue
+            if popular:
+                saw_popular = True
+            else:
+                saw_empty = True
+            break
+    if saw_popular:
+        return _meta_err("popular")
+    if saw_empty:
+        return _meta_err("import_empty")
     return last
 
 
@@ -714,16 +779,18 @@ async def _delete_temp_contact(client, user) -> None:
 
 
 async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") -> dict:
-    """Avval +998 resolvePhone (raqam orqali topish), bo‘lmasa import."""
+    """Avval resolvePhone, bo‘lmasa kontakt import. popular_invites «yo‘q» emas."""
     resolved = await _resolve_phone(client, phone_n)
     if resolved.get("ok") and resolved.get("user") is not None:
         return resolved
     imported = await _import_user_by_phone(client, phone_n, contact_name)
     if imported.get("ok") and imported.get("user") is not None:
         return imported
-    if resolved.get("status") == "no_telegram" and imported.get("status") == "no_telegram":
+    if imported.get("error") == "popular":
+        return _meta_err("Raqam vaqtincha yopiq")
+    if resolved.get("status") == "no_telegram" and imported.get("error") == "import_empty":
         return _meta_no_tg()
-    if imported.get("status") == "no_telegram":
+    if resolved.get("status") == "no_telegram":
         return _meta_err("Telegram vaqtincha topilmadi")
     return imported
 
@@ -741,6 +808,138 @@ def debtors_pending_telegram(shops, limit: int = 120) -> list:
         .exclude(telegram_status="ok")
         .order_by(F("telegram_checked_at").asc(nulls_first=True), "id")[: max(1, limit)]
     )
+
+
+async def resolve_pending_on_client(client, debtors) -> int:
+    """
+    Telefon daftari kabi bitta importContacts.
+    popular_invites «Telegram yo‘q» qilib yozilmaydi.
+    Topilmaganlar sekin resolvePhone bilan qayta tekshiriladi.
+    """
+    from telethon.errors import FloodWaitError, RPCError
+    from telethon.tl.functions.contacts import ImportContactsRequest
+    from telethon.tl.types import InputPhoneContact
+
+    rows = []
+    for row in debtors or []:
+        digits = _uz_phone_digits(getattr(row, "phone", "") or "")
+        if not digits:
+            continue
+        rows.append((row, digits))
+    if not rows:
+        return 0
+
+    found = 0
+    missed: list[tuple] = []
+
+    async def _save_found(row, user) -> None:
+        nonlocal found
+        meta = _meta_ok(user)
+        meta["_imported"] = True
+        clean = {k: v for k, v in meta.items() if k not in ("user", "_privacy", "_imported")}
+        await apply_telegram_meta(row, clean)
+        found += 1
+        print(f"telegram topildi {row.name}", flush=True)
+
+    async def _import_chunk(chunk, plus: bool):
+        by_cid = {}
+        contacts = []
+        for row, digits in chunk:
+            cid = random.randint(1, 0x7FFFFFFF)
+            while cid in by_cid:
+                cid = random.randint(1, 0x7FFFFFFF)
+            phone = ("+" + digits) if plus else digits
+            by_cid[cid] = (row, digits)
+            contacts.append(
+                InputPhoneContact(
+                    client_id=cid,
+                    phone=phone,
+                    first_name=(getattr(row, "name", "") or "Mijoz").strip()[:32] or "Mijoz",
+                    last_name="",
+                )
+            )
+        result = await client(ImportContactsRequest(contacts))
+        got, retry, popular = _parse_import(result, by_cid)
+        print(
+            f"telegram import plus={int(plus)} soni={len(chunk)} "
+            f"topildi={len(got)} popular={len(popular)} retry={len(retry)}",
+            flush=True,
+        )
+        hit = set()
+        for cid, user in got:
+            pair = by_cid.get(cid)
+            if pair is None:
+                continue
+            await _save_found(pair[0], user)
+            hit.add(cid)
+        if retry:
+            await asyncio.sleep(RESOLVE_PAUSE_SEC)
+            again = [c for c in contacts if c.client_id in set(retry) and c.client_id not in hit]
+            if again:
+                result2 = await client(ImportContactsRequest(again))
+                got2, _retry2, _pop2 = _parse_import(result2, by_cid)
+                for cid, user in got2:
+                    if cid in hit:
+                        continue
+                    pair = by_cid.get(cid)
+                    if pair is None:
+                        continue
+                    await _save_found(pair[0], user)
+                    hit.add(cid)
+        left = [by_cid[cid] for cid in by_cid if cid not in hit]
+        return left
+
+    use_plus = False
+    try:
+        for start in range(0, len(rows), 40):
+            if not client.is_connected():
+                break
+            chunk = rows[start : start + 40]
+            left = await _import_chunk(chunk, use_plus)
+            if start == 0 and not use_plus and len(left) == len(chunk):
+                await asyncio.sleep(RESOLVE_PAUSE_SEC)
+                left = await _import_chunk(chunk, True)
+                if len(left) < len(chunk):
+                    use_plus = True
+                else:
+                    missed.extend(left)
+                    print("telegram import bo'sh — limit yoki raqam yopiq", flush=True)
+                    break
+            missed.extend(left)
+            await asyncio.sleep(RESOLVE_PAUSE_SEC)
+    except FloodWaitError as exc:
+        print(f"telegram qidiruv to'xtadi: flood {getattr(exc, 'seconds', '')}", flush=True)
+        return found
+    except RPCError as exc:
+        print(f"telegram import xato: {exc}", flush=True)
+        return found
+
+    streak = 0
+    for row, digits in missed:
+        if not client.is_connected():
+            break
+        try:
+            meta = await _resolve_phone(client, digits)
+        except Exception as exc:
+            logger.warning("resolve qoldiq %s", exc)
+            break
+        if meta.get("ok") and meta.get("user") is not None:
+            await _save_found(row, meta["user"])
+            streak = 0
+        elif meta.get("status") == "no_telegram" and found > 0:
+            clean = {k: v for k, v in meta.items() if k not in ("user", "_privacy", "_imported")}
+            await apply_telegram_meta(row, clean)
+            streak += 1
+        elif "flood" in str(meta.get("error") or "").lower():
+            print("telegram qidiruv to'xtadi: flood", flush=True)
+            break
+        else:
+            streak += 1
+            if found == 0 and streak >= 5:
+                print("telegram qidiruv to'xtadi: limit", flush=True)
+                break
+        await asyncio.sleep(RESOLVE_PAUSE_SEC)
+    return found
 
 
 @sync_to_async

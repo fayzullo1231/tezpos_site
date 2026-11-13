@@ -16,8 +16,8 @@ from accounts.client_debts import debtors_summary_chunks
 from accounts.models import ClientDebtor, DebtSmsTemplate
 from accounts.telethon_debt import (
     _client_from_creds,
-    _resolve_phone_for_send,
     _send_by_phone,
+    resolve_pending_on_client,
     _uz_phone_digits,
     debtors_pending_telegram,
     apply_telegram_meta,
@@ -495,35 +495,15 @@ class Command(BaseCommand):
                 _recheck_started.discard(key)
                 return
             print(f"telegram qidiruv shops={key} soni={len(rows)}", flush=True)
-            found = 0
-            for row in rows:
-                if box.get("client") is None or not ready.is_set():
-                    _recheck_started.discard(key)
-                    return
-                try:
-                    meta = await _resolve_phone_for_send(
-                        box["client"], row.phone or "", row.name or ""
-                    )
-                except Exception as exc:
-                    logger.warning("telegram qidiruv xato: %s", exc)
-                    await asyncio.sleep(2)
-                    continue
-                clean = {
-                    k: v
-                    for k, v in (meta or {}).items()
-                    if k not in ("user", "_privacy", "_imported")
-                }
-                try:
-                    await apply_telegram_meta(row, clean)
-                except Exception:
-                    logger.exception("telegram status saqlanmadi")
-                if clean.get("status") == "ok":
-                    found += 1
-                    print(f"telegram topildi {row.name}", flush=True)
-                elif "flood" in str(clean.get("error") or "").lower():
-                    print("telegram qidiruv to'xtadi: flood", flush=True)
-                    return
-                await asyncio.sleep(3)
+            if box.get("client") is None or not ready.is_set():
+                _recheck_started.discard(key)
+                return
+            try:
+                found = await resolve_pending_on_client(box["client"], rows)
+            except Exception:
+                logger.exception("telegram qidiruv")
+                _recheck_started.discard(key)
+                return
             print(f"telegram qidiruv tugadi topildi={found}", flush=True)
 
         outbox_task = asyncio.create_task(_drain_outbox())
