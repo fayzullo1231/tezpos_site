@@ -16,8 +16,10 @@ from accounts.client_debts import debtors_summary_chunks
 from accounts.models import ClientDebtor, DebtSmsTemplate
 from accounts.telethon_debt import (
     _client_from_creds,
+    _resolve_phone_for_send,
     _send_by_phone,
     _uz_phone_digits,
+    debtors_pending_telegram,
     apply_telegram_meta,
     describe_sessions,
     parse_group_link,
@@ -32,6 +34,7 @@ COMMAND_RE = re.compile(r"^/qarz(?:@\w+)?\s*$", re.IGNORECASE)
 COOLDOWN_SEC = 10
 HTTP_HOST = "127.0.0.1"
 HTTP_PORT = 18765
+_recheck_started: set[str] = set()
 
 
 def _linked_shops() -> list[tuple[str, dict]]:
@@ -479,11 +482,57 @@ class Command(BaseCommand):
                     logger.exception("outbox drain xato")
                 await asyncio.sleep(0.8)
 
+        async def _recheck_missing():
+            key = ",".join(sorted(allowed))
+            if not key or key in _recheck_started:
+                return
+            _recheck_started.add(key)
+            await asyncio.sleep(2)
+            try:
+                rows = await sync_to_async(debtors_pending_telegram)(allowed)
+            except Exception:
+                logger.exception("telegram qidiruv ro'yxati")
+                _recheck_started.discard(key)
+                return
+            print(f"telegram qidiruv shops={key} soni={len(rows)}", flush=True)
+            found = 0
+            for row in rows:
+                if box.get("client") is None or not ready.is_set():
+                    _recheck_started.discard(key)
+                    return
+                try:
+                    meta = await _resolve_phone_for_send(
+                        box["client"], row.phone or "", row.name or ""
+                    )
+                except Exception as exc:
+                    logger.warning("telegram qidiruv xato: %s", exc)
+                    await asyncio.sleep(2)
+                    continue
+                clean = {
+                    k: v
+                    for k, v in (meta or {}).items()
+                    if k not in ("user", "_privacy", "_imported")
+                }
+                try:
+                    await apply_telegram_meta(row, clean)
+                except Exception:
+                    logger.exception("telegram status saqlanmadi")
+                if clean.get("status") == "ok":
+                    found += 1
+                    print(f"telegram topildi {row.name}", flush=True)
+                elif "flood" in str(clean.get("error") or "").lower():
+                    print("telegram qidiruv to'xtadi: flood", flush=True)
+                    return
+                await asyncio.sleep(1.2)
+            print(f"telegram qidiruv tugadi topildi={found}", flush=True)
+
         outbox_task = asyncio.create_task(_drain_outbox())
+        recheck_task = asyncio.create_task(_recheck_missing())
         try:
             await client.run_until_disconnected()
         finally:
             outbox_task.cancel()
+            recheck_task.cancel()
             ready.clear()
             box["client"] = None
             try:

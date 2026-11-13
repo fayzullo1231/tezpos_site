@@ -661,6 +661,20 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
             if user is not None:
                 meta = _meta_ok(user)
                 meta["_imported"] = True
+                try:
+                    from telethon.tl.functions.contacts import AddContactRequest
+
+                    await client(
+                        AddContactRequest(
+                            id=user,
+                            first_name=first,
+                            last_name="",
+                            phone=intl or digits,
+                            add_phone_privacy_exception=True,
+                        )
+                    )
+                except Exception:
+                    logger.warning("addContact xato", exc_info=True)
                 return meta
             popular = list(getattr(result, "popular_invites", None) or [])
             retry = list(getattr(result, "retry_contacts", None) or [])
@@ -694,11 +708,23 @@ async def _delete_temp_contact(client, user) -> None:
 
 
 async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") -> dict:
-    """Yuborish uchun: ResolvePhone, bo‘lmasa Import. Kontakt o‘chirilmaydi."""
-    meta = await _resolve_phone(client, phone_n)
-    if meta.get("ok") and meta.get("user") is not None:
-        return meta
+    """Faqat +998 import. resolvePhone ko‘p odamni yolg‘on «yo‘q» qiladi."""
     return await _import_user_by_phone(client, phone_n, contact_name)
+
+
+def debtors_pending_telegram(shops, limit: int = 120) -> list:
+    """Hali topilmagan, telefoni bor qarzdorlar. Har userbot faqat o‘z do‘koni."""
+    from django.db.models import F
+
+    keys = sorted({str(s or "").strip().lower() for s in (shops or []) if str(s or "").strip()})
+    if not keys:
+        return []
+    return list(
+        ClientDebtor.objects.filter(shop_key__in=keys, is_active=True)
+        .exclude(phone="")
+        .exclude(telegram_status="ok")
+        .order_by(F("telegram_checked_at").asc(nulls_first=True), "id")[: max(1, limit)]
+    )
 
 
 @sync_to_async
