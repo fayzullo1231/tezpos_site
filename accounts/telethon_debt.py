@@ -1,8 +1,7 @@
 """
 Qarz eslatmalari — Telethon (user session) orqali Telegramga yuborish.
 
-Kontaktga saqlanmaydi: contacts.resolvePhone (ImportContacts yo‘q).
-Har safar raqam bo‘yicha qidiriladi, keyin xabar yuboriladi.
+Raqam bo‘yicha topiladi, kontakt saqlanadi va xabar shu chatga yoziladi.
 """
 from __future__ import annotations
 
@@ -10,7 +9,6 @@ import asyncio
 import hashlib
 import html
 import logging
-import random
 import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -598,11 +596,11 @@ def _user_from_import(result):
     return None
 
 
-async def _import_user_by_phone(client, phone_n: str) -> dict:
+async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") -> dict:
     """
-    Vaqtinchalik ImportContacts — user qaytaradi.
-    Kontaktni o‘chirish yuborishdan KEYIN (_delete_temp_contact).
-    Bo‘sh javob «Telegram yo‘q» bo‘lib qotmaydi: buni faqat popular_invites tasdiqlaydi.
+    Raqam orqali kontakt qilib oladi va user qaytaradi.
+    Kontakt saqlanadi: o‘chirilsa Telegram xabarni chatga tushirmaydi.
+    «Telegram yo‘q» faqat barcha formatlar popular_invites qaytarsa.
     """
     from telethon.errors import FloodWaitError, RPCError
     from telethon.tl.functions.contacts import ImportContactsRequest
@@ -611,25 +609,33 @@ async def _import_user_by_phone(client, phone_n: str) -> dict:
     intl = _intl_phone(phone_n)
     digits = "".join(ch for ch in intl if ch.isdigit())
     phones = []
-    for p in (intl, digits):
+    for p in (digits, intl):
         if p and p not in phones:
             phones.append(p)
     if not phones:
         return _meta_err("Telefon yo‘q")
+    first = (contact_name or "").strip()[:32] or "Mijoz"
+    try:
+        client_id = int(digits[-9:]) if len(digits) >= 9 else 1
+    except ValueError:
+        client_id = 1
+    if client_id <= 0:
+        client_id = 1
 
     last = _meta_err("Telegram vaqtincha topilmadi")
+    saw_missing = False
     for phone in phones:
-        for attempt in range(3):
+        for attempt in range(2):
             contact = InputPhoneContact(
-                client_id=random.randint(1, 0x7FFFFFFF),
+                client_id=client_id,
                 phone=phone,
-                first_name="TP",
+                first_name=first,
                 last_name="",
             )
             try:
                 result = await client(ImportContactsRequest([contact]))
             except FloodWaitError as exc:
-                wait = min(int(getattr(exc, "seconds", 0) or 0) + 2, 30)
+                wait = min(int(getattr(exc, "seconds", 0) or 0) + 1, 8)
                 logger.warning("FloodWait import %ss", wait)
                 await asyncio.sleep(wait)
                 continue
@@ -644,9 +650,12 @@ async def _import_user_by_phone(client, phone_n: str) -> dict:
             popular = list(getattr(result, "popular_invites", None) or [])
             retry = list(getattr(result, "retry_contacts", None) or [])
             if popular and not retry:
-                return _meta_no_tg()
+                saw_missing = True
+                break
             last = _meta_err("Telegram vaqtincha topilmadi")
-            await asyncio.sleep(2 + attempt * 2)
+            await asyncio.sleep(1)
+    if saw_missing:
+        return _meta_no_tg()
     return last
 
 
@@ -669,12 +678,12 @@ async def _delete_temp_contact(client, user) -> None:
         logger.warning("DeleteContacts failed (ignore)", exc_info=True)
 
 
-async def _resolve_phone_for_send(client, phone_n: str) -> dict:
-    """Yuborish uchun: ResolvePhone, bo‘lmasa Import (delete keyinroq)."""
+async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") -> dict:
+    """Yuborish uchun: ResolvePhone, bo‘lmasa Import. Kontakt o‘chirilmaydi."""
     meta = await _resolve_phone(client, phone_n)
     if meta.get("ok") and meta.get("user") is not None:
         return meta
-    return await _import_user_by_phone(client, phone_n)
+    return await _import_user_by_phone(client, phone_n, contact_name)
 
 
 @sync_to_async
@@ -784,10 +793,11 @@ async def _send_by_phone(
     prefer_telegram_id: str = "",
     access_hash: str = "",
     username: str = "",
+    contact_name: str = "",
 ) -> dict:
     """
     DevSMS bilan bir xil matnni Telegramga yuboradi.
-    Tartib: saqlangan peer → username → raqam. Import bo‘lsa, kontaktdan keyin o‘chadi.
+    Tartib: saqlangan peer → username → raqam. Topilgan kontakt saqlanadi.
     """
     from telethon.errors import FloodWaitError
 
@@ -832,7 +842,7 @@ async def _send_by_phone(
             user = None
 
     if user is None and direct_peer is None:
-        meta = await _resolve_phone_for_send(client, phone_n)
+        meta = await _resolve_phone_for_send(client, phone_n, contact_name)
         user = meta.get("user")
         imported_temp = bool(meta.get("_imported"))
 
@@ -876,7 +886,7 @@ async def _send_by_phone(
             break
 
     if not send_ok and not imported_temp and phone_n:
-        meta2 = await _resolve_phone_for_send(client, phone_n)
+        meta2 = await _resolve_phone_for_send(client, phone_n, contact_name)
         user2 = meta2.get("user")
         if meta2.get("ok") and user2 is not None:
             user = user2
@@ -902,10 +912,7 @@ async def _send_by_phone(
             except Exception as exc:
                 send_err = str(exc)[:200]
 
-    # Muhim: yuborgandan KEYIN o‘chirish (maxfiylik / kontaktga saqlamaslik)
-    if imported_temp and user is not None:
-        await _delete_temp_contact(client, user)
-
+    # Kontakt saqlanadi. O‘chirilsa xabar chatga tushmay, so‘rovlar ichida qoladi.
     if not send_ok:
         return {
             "ok": False,
@@ -994,7 +1001,7 @@ def send_text_by_phone(
         "telegram_id": "",
         "text": msg,
     }
-    res = send_via_listener(job, timeout=18)
+    res = send_via_listener(job, timeout=40)
     if res.get("ok"):
         return res
     write_job(job)
@@ -1232,12 +1239,13 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
         "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
         "telegram_access_hash": str(getattr(debtor, "telegram_access_hash", "") or ""),
         "telegram_username": str(getattr(debtor, "telegram_username", "") or ""),
+        "contact_name": str(getattr(debtor, "name", "") or "")[:32],
         "text": (text or "").strip(),
     }
     from .tg_send_local import send_via_listener
     from .tg_outbox import write_job
 
-    res = send_via_listener(job, timeout=18)
+    res = send_via_listener(job, timeout=40)
     if res.get("ok"):
         logger.info(
             "Telegram DM ketdi shop=%s phone=%s",

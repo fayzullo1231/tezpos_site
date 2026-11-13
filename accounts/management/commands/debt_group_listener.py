@@ -169,7 +169,7 @@ class Command(BaseCommand):
                         done.set()
 
                 asyncio.run_coroutine_threadsafe(_run(), loop)
-                done.wait(timeout=45)
+                done.wait(timeout=50)
                 res = holder.get("res") or {"ok": False, "error": "timeout"}
                 payload = json.dumps(res, ensure_ascii=False).encode("utf-8")
                 self.send_response(200 if res.get("ok") else 500)
@@ -349,6 +349,9 @@ class Command(BaseCommand):
                 or job.get("telegram_username")
                 or ""
             )
+            contact_name = str(
+                getattr(debtor, "name", "") or job.get("contact_name") or ""
+            )[:32]
             res = await _send_by_phone(
                 client,
                 phone,
@@ -356,6 +359,7 @@ class Command(BaseCommand):
                 prefer_telegram_id=prefer,
                 access_hash=access,
                 username=username,
+                contact_name=contact_name,
             )
             meta = res.get("meta") or {}
             if debtor is not None and meta:
