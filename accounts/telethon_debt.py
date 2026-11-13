@@ -490,11 +490,25 @@ def verify_telethon_session(api_id: str, api_hash: str, session: str) -> dict[st
         return {"ok": False, "error": str(exc)[:200]}
 
 
-def _intl_phone(phone_n: str) -> str:
-    p = (phone_n or "").strip()
-    if not p:
+def _uz_phone_digits(phone_n: str) -> str:
+    """9 xonali mahalliy raqamga +998 yozilmasa ham 998XXXXXXXXX qaytaradi."""
+    d = "".join(ch for ch in str(phone_n or "") if ch.isdigit())
+    if not d:
         return ""
-    return p if p.startswith("+") else ("+" + p)
+    if d.startswith("998") and len(d) >= 12:
+        d = d[:12]
+    elif len(d) >= 9:
+        d = "998" + d[-9:]
+    else:
+        return ""
+    if len(d) != 12 or not d.startswith("998"):
+        return ""
+    return d
+
+
+def _intl_phone(phone_n: str) -> str:
+    d = _uz_phone_digits(phone_n)
+    return ("+" + d) if d else ""
 
 
 def _user_display(u) -> tuple[str, str]:
@@ -607,9 +621,9 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
     from telethon.tl.types import InputPhoneContact
 
     intl = _intl_phone(phone_n)
-    digits = "".join(ch for ch in intl if ch.isdigit())
+    digits = _uz_phone_digits(phone_n)
     phones = []
-    for p in (digits, intl):
+    for p in (intl, digits):
         if p and p not in phones:
             phones.append(p)
     if not phones:
@@ -640,8 +654,9 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
                 await asyncio.sleep(wait)
                 continue
             except RPCError as exc:
-                logger.warning("import RPC %s", exc)
-                return _meta_err(str(exc))
+                logger.warning("import RPC %s phone=%s", exc, phone[:6])
+                last = _meta_err(str(exc))
+                break
             user = _user_from_import(result)
             if user is not None:
                 meta = _meta_ok(user)

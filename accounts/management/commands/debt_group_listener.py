@@ -14,10 +14,10 @@ from django.core.management.base import BaseCommand
 
 from accounts.client_debts import debtors_summary_chunks
 from accounts.models import ClientDebtor, DebtSmsTemplate
-from accounts import devsms
 from accounts.telethon_debt import (
     _client_from_creds,
     _send_by_phone,
+    _uz_phone_digits,
     apply_telegram_meta,
     describe_sessions,
     parse_group_link,
@@ -325,7 +325,7 @@ class Command(BaseCommand):
             client = box.get("client")
             if client is None:
                 return {"ok": False, "error": "Userbot yo‘q"}
-            phone = await sync_to_async(devsms.normalize_phone)(job.get("phone") or "")
+            phone = await sync_to_async(_uz_phone_digits)(job.get("phone") or "")
             debtor = None
             pk = job.get("debtor_id")
             if pk:
@@ -333,7 +333,7 @@ class Command(BaseCommand):
                     ClientDebtor.objects.filter(pk=int(pk)).first
                 )()
                 if debtor and not phone:
-                    phone = await sync_to_async(devsms.normalize_phone)(debtor.phone)
+                    phone = await sync_to_async(_uz_phone_digits)(debtor.phone)
             if not phone:
                 return {"ok": False, "error": "Telefon yo‘q"}
             prefer = str(
