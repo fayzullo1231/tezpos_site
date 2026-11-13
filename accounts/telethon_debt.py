@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import html
 import logging
+import random
 import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -576,27 +577,37 @@ async def _resolve_phone(client, phone_n: str) -> dict:
     if not intl:
         return _meta_err("Telefon yo‘q")
 
-    while True:
+    floods = 0
+    while floods < 3:
         try:
             result = await client(ResolvePhoneRequest(phone=intl))
             users = list(getattr(result, "users", None) or [])
             if not users:
-                return _meta_no_tg()
+                peer = getattr(result, "peer", None)
+                uid = getattr(peer, "user_id", None) if peer is not None else None
+                if uid:
+                    try:
+                        user = await client.get_entity(int(uid))
+                        return _meta_ok(user)
+                    except Exception:
+                        pass
+                return _meta_err("resolve_empty")
             return _meta_ok(users[0])
         except FloodWaitError as exc:
-            wait = int(getattr(exc, "seconds", 0) or 0) + 2
+            floods += 1
+            wait = min(int(getattr(exc, "seconds", 0) or 0) + 1, 15)
             logger.warning("FloodWait %ss — kutilyapti", wait)
             await asyncio.sleep(wait)
         except RPCError as exc:
             msg = (getattr(exc, "message", None) or str(exc) or "").upper()
             if "PHONE_NOT_OCCUPIED" in msg or "PHONE_NOT_OCCUPIED" in str(exc):
-                # Privacy: resolvePhone yopiq bo‘lishi mumkin — import fallback
                 return _meta_no_tg("resolve_privacy")
-            logger.exception("telethon resolvePhone failed")
+            logger.warning("resolvePhone RPC %s", exc)
             return _meta_err(str(exc))
         except Exception as exc:
-            logger.exception("telethon resolvePhone failed")
+            logger.warning("resolvePhone xato %s", exc)
             return _meta_err(str(exc))
+    return _meta_err("FloodWait")
 
 
 def _user_from_import(result):
@@ -629,16 +640,11 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
     if not phones:
         return _meta_err("Telefon yo‘q")
     first = (contact_name or "").strip()[:32] or "Mijoz"
-    try:
-        client_id = int(digits[-9:]) if len(digits) >= 9 else 1
-    except ValueError:
-        client_id = 1
-    if client_id <= 0:
-        client_id = 1
 
     last = _meta_err("Telegram vaqtincha topilmadi")
     saw_missing = False
     for phone in phones:
+        client_id = random.randint(1, 0x7FFFFFFF)
         for attempt in range(2):
             contact = InputPhoneContact(
                 client_id=client_id,
@@ -708,8 +714,18 @@ async def _delete_temp_contact(client, user) -> None:
 
 
 async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") -> dict:
-    """Faqat +998 import. resolvePhone ko‘p odamni yolg‘on «yo‘q» qiladi."""
-    return await _import_user_by_phone(client, phone_n, contact_name)
+    """Avval +998 resolvePhone (raqam orqali topish), bo‘lmasa import."""
+    resolved = await _resolve_phone(client, phone_n)
+    if resolved.get("ok") and resolved.get("user") is not None:
+        return resolved
+    imported = await _import_user_by_phone(client, phone_n, contact_name)
+    if imported.get("ok") and imported.get("user") is not None:
+        return imported
+    if resolved.get("status") == "no_telegram" and imported.get("status") == "no_telegram":
+        return _meta_no_tg()
+    if imported.get("status") == "no_telegram":
+        return _meta_err("Telegram vaqtincha topilmadi")
+    return imported
 
 
 def debtors_pending_telegram(shops, limit: int = 120) -> list:

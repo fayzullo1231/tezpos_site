@@ -523,7 +523,7 @@ class Command(BaseCommand):
                 elif "flood" in str(clean.get("error") or "").lower():
                     print("telegram qidiruv to'xtadi: flood", flush=True)
                     return
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(3)
             print(f"telegram qidiruv tugadi topildi={found}", flush=True)
 
         outbox_task = asyncio.create_task(_drain_outbox())
