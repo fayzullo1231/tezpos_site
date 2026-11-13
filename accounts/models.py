@@ -227,6 +227,7 @@ class ClientDebtor(models.Model):
     )
     # Telegram (Telethon)
     telegram_id = models.CharField(max_length=32, blank=True, default="")
+    telegram_access_hash = models.CharField(max_length=32, blank=True, default="")
     telegram_username = models.CharField(max_length=120, blank=True, default="")
     telegram_name = models.CharField(max_length=180, blank=True, default="")
     telegram_status = models.CharField(

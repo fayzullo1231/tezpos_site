@@ -9,6 +9,8 @@ Qarz muddati eslatmalari — Telethon orqali Telegramga.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand
 from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
@@ -138,10 +140,16 @@ class Command(BaseCommand):
             if row.telegram_status == "no_phone" or not (row.phone or "").strip():
                 no_tg += 1
                 continue
-            # no_telegram — qayta urinmaymiz (privacy / yo‘q); --force resolve-only bilan yangilanadi
+            # Aniq «Telegram yo‘q» ni 12 soat ichida qayta yopmaymiz.
             if row.telegram_status == "no_telegram" and row.telegram_checked_at:
-                no_tg += 1
-                continue
+                fresh = timezone.now() - row.telegram_checked_at < timedelta(hours=12)
+                has_peer = bool(
+                    (row.telegram_id or "").strip()
+                    and (getattr(row, "telegram_access_hash", "") or "").strip()
+                )
+                if fresh and not has_peer:
+                    no_tg += 1
+                    continue
             if options["dry_run"]:
                 self.stdout.write(
                     f"[dry] {row.name} | {kind} | {row.due_date} | {telegram_display(row)}"

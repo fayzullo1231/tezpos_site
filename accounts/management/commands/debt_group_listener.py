@@ -339,11 +339,23 @@ class Command(BaseCommand):
             prefer = str(
                 job.get("telegram_id") or getattr(debtor, "telegram_id", "") or ""
             )
+            access = str(
+                getattr(debtor, "telegram_access_hash", "")
+                or job.get("telegram_access_hash")
+                or ""
+            )
+            username = str(
+                getattr(debtor, "telegram_username", "")
+                or job.get("telegram_username")
+                or ""
+            )
             res = await _send_by_phone(
                 client,
                 phone,
                 str(job.get("text") or ""),
                 prefer_telegram_id=prefer,
+                access_hash=access,
+                username=username,
             )
             meta = res.get("meta") or {}
             if debtor is not None and meta:
