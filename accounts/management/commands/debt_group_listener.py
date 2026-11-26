@@ -480,7 +480,8 @@ class Command(BaseCommand):
                             await sync_to_async(mark_done)(path)
                 except Exception:
                     logger.exception("outbox drain xato")
-                await asyncio.sleep(0.8)
+                # Navbat bo‘sh bo‘lsa ham tez tekshir — qarz xabari kechikmasin
+                await asyncio.sleep(0.15)
 
         async def _recheck_missing():
             key = ",".join(sorted(allowed))

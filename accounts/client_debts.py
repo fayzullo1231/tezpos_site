@@ -243,8 +243,8 @@ def _deliver_debt_notice(
     debtor: ClientDebtor, text: str, *, allow_sms: bool | None = None
 ) -> dict:
     """
-    Qarz matni: Telegram userbot (raqam) doim — Dev SMS faqat sayt yoqiq bo‘lsa.
-    Kontaktga saqlanmaydi — raqam bo‘yicha resolvePhone.
+    Qarz matni: Telegram/DevSMS so‘rovni bloklamaydi.
+    TG — fayl navbatiga; DevSMS — fon oqimida.
     """
     msg = (text or "").strip()
     if not msg:
@@ -254,12 +254,14 @@ def _deliver_debt_notice(
 
     shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
     tg_ok = False
+    tg_queued = False
     tg_err = ""
     tg_id = ""
     if telethon_configured(shop) or shop_blocks_devsms(shop):
         try:
             tg_res = enqueue_text_by_phone(debtor, msg)
-            tg_ok = bool(tg_res.get("ok"))
+            tg_queued = bool(tg_res.get("queued"))
+            tg_ok = bool(tg_res.get("ok") or tg_queued)
             tg_err = "" if tg_ok else str(tg_res.get("error") or "Telegram yuborilmadi")
         except Exception as exc:
             logger.warning("Telegram yuborilmadi: %s", exc)
@@ -273,12 +275,31 @@ def _deliver_debt_notice(
     if allow_sms is None:
         allow_sms = _sms_enabled_for(shop)
     if allow_sms and _sms_enabled_for(shop):
-        sms = devsms.send_dev_sms(
-            phone=debtor.phone,
-            message=devsms.to_approved_sms(msg),
-        )
-        sms_ok = bool(sms.get("ok"))
-        sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
+        phone = debtor.phone
+        sms_body = devsms.to_approved_sms(msg)
+
+        def _bg_sms(p=phone, m=sms_body):
+            from django.db import close_old_connections
+
+            try:
+                close_old_connections()
+                res = devsms.send_dev_sms(phone=p, message=m)
+                if not res.get("ok"):
+                    logger.warning(
+                        "DevSMS fon xato phone=%s err=%s",
+                        p,
+                        res.get("error"),
+                    )
+            except Exception:
+                logger.exception("DevSMS fon yuborilmadi phone=%s", p)
+            finally:
+                close_old_connections()
+
+        import threading
+
+        threading.Thread(target=_bg_sms, daemon=True).start()
+        sms = {"ok": True, "queued": True, "skipped": False}
+        sms_ok = True
     else:
         sms = {"ok": False, "skipped": True, "error": ""}
 
@@ -300,13 +321,14 @@ def _deliver_debt_notice(
 
     return {
         "ok": ok,
+        "queued": bool(tg_queued or sms.get("queued")),
         "channel": channel,
         "telegram_ok": tg_ok,
         "sms_ok": sms_ok,
         "telegram_id": tg_id,
         "telegram_error": tg_err,
         "sms_error": sms_err,
-        "error": "" if ok and tg_ok and sms_ok else (" | ".join(err_parts) or ""),
+        "error": "" if ok else (" | ".join(err_parts) or ""),
         "id": sms.get("id") if isinstance(sms, dict) else None,
     }
 
@@ -424,11 +446,15 @@ def _maybe_deliver_personal(
 ) -> dict | None:
     """Userbot orqali raqamga Dev SMS shabloni; SMS faqat sayt yoqiq bo‘lsa."""
     if not (debtor.phone or "").strip():
-        return None
+        return {"ok": False, "error": "Telefon yo‘q", "channel": "none"}
     if shop_blocks_devsms(shop):
         allow_sms = False
-    elif uses_shared_telethon(shop) or shop_devsms_on(shop):
+    elif shop_devsms_on(shop):
+        # Faqat kuloloptomuz — Dev SMS
         allow_sms = _sms_enabled_for(shop)
+    elif uses_shared_telethon(shop):
+        # kuloloptom / kuloloptom-2 — faqat Telegram userbot (raqam orqali)
+        allow_sms = False
     else:
         allow_sms = bool(send_sms) and _sms_enabled_for(shop)
     allow_tg = telethon_configured(shop) or shop_blocks_devsms(shop)
@@ -487,7 +513,7 @@ def _maybe_deliver_personal(
             len(raw_items or []),
         )
         res = _deliver_debt_notice(debtor, text, allow_sms=allow_sms)
-        if res.get("ok") and entry is not None:
+        if (res.get("ok") or res.get("queued")) and entry is not None:
             try:
                 entry.sms_sent = True
                 entry.save(update_fields=["sms_sent"])
@@ -1012,6 +1038,15 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
         "devsms_ready": bool(devsms.resolve_token()) and not shop_blocks_devsms(row.shop_key),
         "devsms_blocked": shop_blocks_devsms(row.shop_key),
         "telethon": telethon_public_status(row.shop_key),
+        "remind_weekdays": [
+            int(x)
+            for x in str(row.remind_weekdays or "0,1,2,3,4,5,6").split(",")
+            if str(x).strip().isdigit() and 0 <= int(str(x).strip()) <= 6
+        ]
+        or [0, 1, 2, 3, 4, 5, 6],
+        "remind_overdue_days": int(row.remind_overdue_days or 1),
+        "remind_soon": bool(row.remind_soon),
+        "remind_due_today": bool(row.remind_due_today),
     }
 
 
@@ -1359,6 +1394,72 @@ def cabinet_sms_template_save(request):
             "moderation_credit": credit_tpl_res,
             "sample_sms": sample,
             "sample_sms_credit": credit_sample,
+        }
+    )
+
+
+@login_required
+@require_POST
+def cabinet_remind_settings_save(request):
+    """Qarz eslatma kunlari va kechikish chegarasi."""
+    shop = _shop(request)
+    tenant = _tenant(request)
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Noto‘g‘ri JSON"}, status=400)
+
+    tpl = _get_or_create_template(shop, tenant)
+    raw_days = body.get("remind_weekdays")
+    if isinstance(raw_days, str):
+        parts = [p.strip() for p in raw_days.split(",") if p.strip()]
+    elif isinstance(raw_days, (list, tuple)):
+        parts = [str(p).strip() for p in raw_days]
+    else:
+        parts = []
+    days: list[int] = []
+    for p in parts:
+        try:
+            d = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= d <= 6 and d not in days:
+            days.append(d)
+    if not days:
+        return JsonResponse(
+            {"error": "Kamida bitta eslatma kuni tanlang (Du–Ya)."},
+            status=400,
+        )
+    try:
+        overdue = int(body.get("remind_overdue_days", tpl.remind_overdue_days))
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Kechikish kuni noto‘g‘ri"}, status=400)
+    overdue = max(0, min(365, overdue))
+
+    tpl.remind_weekdays = ",".join(str(d) for d in sorted(days))
+    tpl.remind_overdue_days = overdue
+    tpl.remind_soon = bool(body.get("remind_soon", tpl.remind_soon))
+    tpl.remind_due_today = bool(body.get("remind_due_today", tpl.remind_due_today))
+    tpl.save(
+        update_fields=[
+            "remind_weekdays",
+            "remind_overdue_days",
+            "remind_soon",
+            "remind_due_today",
+            "updated_at",
+        ]
+    )
+    names = ["Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya"]
+    day_txt = ", ".join(names[d] for d in sorted(days))
+    return JsonResponse(
+        {
+            "ok": True,
+            "template": _serialize_template(tpl),
+            "message": (
+                f"Saqlandi. Kunlar: {day_txt}. "
+                f"Kechikish: {overdue} kun"
+                + ("dan." if overdue else " (muddat kuni ham).")
+            ),
         }
     )
 

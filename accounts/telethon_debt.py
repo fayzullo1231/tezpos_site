@@ -1440,30 +1440,15 @@ async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[st
 def send_group_message(
     link: str, text: str, *, timeout: int = 60, shop_key: str = ""
 ) -> dict[str, Any]:
-    """Gunicorn yangi client ochmasin — listener HTTP, bo‘lmasa navbat."""
+    """Gunicorn kutmasin — faqat navbat. Listener o‘zi yuboradi."""
     if not telethon_configured(shop_key or None):
         return {"ok": False, "error": "Telethon sozlanmagan"}
     if not (text or "").strip():
         return {"ok": False, "error": "Matn bo‘sh"}
     if not parse_group_link(link):
         return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
-    from .tg_send_local import send_via_listener
-
-    job = {
-        "type": "group",
-        "shop": (shop_key or "").strip().lower(),
-        "link": link,
-        "text": text,
-    }
-    res = send_via_listener(job, timeout=min(18, timeout))
-    if res.get("ok"):
-        return res
     enqueue_group_message(link, text, shop_key)
-    return {
-        "ok": False,
-        "queued": True,
-        "error": res.get("error") or "Guruhga yuborilmadi, navbatga yozildi",
-    }
+    return {"ok": True, "queued": True}
 
 
 def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
@@ -1481,7 +1466,7 @@ def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
 
 
 def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
-    """Listener orqali yuboradi. Listener o‘chiq bo‘lsa navbatga yozadi."""
+    """Darhol navbatga yozadi — HTTP so‘rov Telethon/resolve kutmaydi."""
     if debtor is None or not (text or "").strip():
         return {"ok": False, "error": "Matn yoki mijoz yo‘q"}
     shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
@@ -1498,34 +1483,15 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
         "contact_name": str(getattr(debtor, "name", "") or "")[:32],
         "text": (text or "").strip(),
     }
-    from .tg_send_local import send_via_listener
     from .tg_outbox import write_job
 
-    res = send_via_listener(job, timeout=40)
-    if res.get("ok"):
-        logger.info(
-            "Telegram DM ketdi shop=%s phone=%s",
-            job["shop"],
-            job["phone"],
-        )
-        return res
-    if res.get("offline"):
-        write_job(job)
-        logger.warning(
-            "Telegram listener o‘chiq shop=%s — navbatga yozildi",
-            job["shop"],
-        )
-        return {
-            "ok": False,
-            "queued": True,
-            "error": "Telegram listener o‘chiq. Serverda tezpos-debt-listener ni yoqing.",
-        }
-    logger.warning(
-        "Telegram DM xato shop=%s err=%s",
+    write_job(job)
+    logger.info(
+        "Telegram DM navbatga shop=%s phone=%s",
         job["shop"],
-        res.get("error"),
+        job["phone"],
     )
-    return res
+    return {"ok": True, "queued": True, "channel": "telegram"}
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:
