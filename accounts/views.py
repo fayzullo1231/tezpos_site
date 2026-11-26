@@ -1953,10 +1953,8 @@ def _build_charts_from_sales(sales: list[dict], today: date):
     }
     return sales_stats
 
-
 SELLING_LIST_ID = "__selling__"
 OTHER_LIST_ID = "__other__"
-
 
 def _range_window(key: str, today: date) -> tuple[date, date]:
     if key == "d1":
@@ -7078,8 +7076,8 @@ def cabinet_stock_in(request):
                 server,
                 date_from=day.isoformat(),
                 date_to=day.isoformat(),
-                timeout=12,
-                max_pages=8,
+                timeout=22 if not fast else 12,
+                max_pages=80 if not fast else 12,
             )
             or []
         )
@@ -7153,11 +7151,12 @@ def cabinet_stock_in(request):
         products_by_name = _products_by_name(products)
 
     need_ids = [
-        str(r.get("id") or "")
+        str(r.get("id") or "").strip()
         for r in filtered
-        if r.get("id") and not _receipt_items(r)
+        if str(r.get("id") or "").strip() and not _receipt_items(r)
     ]
     details: dict[str, dict] = {}
+    missing_details = 0
     if need_ids and not fast:
         def _one(rid: str):
             try:
@@ -7165,15 +7164,24 @@ def cabinet_stock_in(request):
             except (tezpos_api.TezPosApiError, TimeoutError, OSError):
                 return rid, None
 
-        # Har bir hujjat uchun alohida so‘rov — 24 tadan oshirmaymiz
-        with ThreadPoolExecutor(max_workers=min(6, max(2, len(need_ids)))) as pool:
-            for fut in as_completed([pool.submit(_one, rid) for rid in need_ids[:24]]):
+        # Barcha hujjatlar — hech biri tashlab ketilmasin (oldingi 24 ta limit mahsulotlarni yashirgan)
+        workers = min(10, max(2, len(need_ids)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for fut in as_completed([pool.submit(_one, rid) for rid in need_ids]):
                 try:
                     rid, data = fut.result()
                 except Exception:
                     continue
-                if isinstance(data, dict):
+                if isinstance(data, dict) and _receipt_items(data):
                     details[rid] = data
+
+        missing_details = sum(
+            1
+            for rid in need_ids
+            if rid not in details and not _receipt_items(
+                next((x for x in filtered if str(x.get("id") or "") == rid), {})
+            )
+        )
 
     receipts_payload = []
     for r in filtered:
@@ -7190,6 +7198,11 @@ def cabinet_stock_in(request):
     total_cost = sum(float(x.get("total_cost") or 0) for x in receipts_payload)
     total_qty = sum(float(x.get("total_qty") or 0) for x in receipts_payload)
     sku_count = len(products_agg)
+    incomplete = bool(
+        fast
+        or missing_details > 0
+        or any(not (rec.get("items") or []) for rec in receipts_payload)
+    )
 
     payload = {
         "ok": True,
@@ -7200,8 +7213,10 @@ def cabinet_stock_in(request):
         "total_cost": total_cost,
         "receipts": receipts_payload,
         "products": products_agg,
-        "partial": bool(fast or (need_ids and not details)),
+        "partial": incomplete,
         "fast": fast,
+        "details_loaded": len(details),
+        "details_missing": missing_details,
     }
     if not fast:
         _TEZPOS_MEMO[memo_key] = (time.time(), payload)

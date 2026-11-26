@@ -267,22 +267,22 @@
     {% if section == 'overview' %}
     <div class="cabinet-api-banner" id="cabinet-api-banner" hidden role="alert"></div>
     <section class="cabinet-kpi" id="overview-kpi">
-  <article>
+      <article>
         <p id="kpi-period-label">Tanlangan davr</p>
         <h2 id="kpi-checks">{{ range_checks|default:total_sales }}</h2>
         <small>Cheklar · <span id="kpi-gross" data-fmt-money="{{ gross }}">0</span> so'm</small>
-  </article>
-  <article>
+      </article>
+      <article>
         <p>Sof foyda <span id="kpi-price-list-name" class="kpi-pl-tag"></span></p>
         <h2 class="is-profit" id="kpi-profit" data-fmt-money="{{ profit }}">0</h2>
         <small>Marja <span id="kpi-margin">{{ margin|floatformat:1 }}</span>%</small>
       </article>
-  <article>
+      <article>
         <p>Faol signallar</p>
         <h2 id="kpi-signals">{{ active_signals_count }}</h2>
         <small><a href="?section=signals">Ko‘rish →</a></small>
-  </article>
-  <article>
+      </article>
+      <article>
         <p>Bugungi sotuv</p>
         <h2 id="kpi-today-count">{{ today_count }}</h2>
         <small><span id="kpi-today-gross" data-fmt-money="{{ today_gross }}">0</span> so'm</small>
@@ -372,7 +372,7 @@
     </section>
 
     <section class="cabinet-card" id="overview-suppliers-card">
-      <div class="cabinet-card-head">
+        <div class="cabinet-card-head">
         <div>
           <h3>Taminotchi qarzlari</h3>
           <p class="cabinet-hint">Qachon qarz olingan, qachon to‘langan — sana, soat va summa</p>
@@ -418,7 +418,7 @@
         <h3>To‘liq jadval</h3>
       </div>
       <div class="cabinet-table-wrap">
-    <table>
+        <table>
           <thead>
             <tr><th>Tovar</th><th>ABC</th><th>XYZ</th><th>Guruh</th><th>Daromad</th><th>Ulush %</th><th>Qoldiq</th></tr>
           </thead>
@@ -432,12 +432,12 @@
               <td>{{ row.revenue }}</td>
               <td>{{ row.share|floatformat:1 }}%</td>
               <td>{{ row.product.stock_qty }}</td>
-        </tr>
-      {% empty %}
+            </tr>
+            {% empty %}
             <tr><td colspan="7" class="cabinet-hint">…</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </section>
     {% endif %}
@@ -809,7 +809,7 @@
                 <th>Miqdor</th>
                 <th>Tannarx</th>
                 <th>Summa</th>
-              </tr>
+            </tr>
             </thead>
             <tbody id="stock-in-detail-items"></tbody>
           </table>
@@ -1341,7 +1341,7 @@
               <div><dt>String session</dt><dd>Saqlangan</dd></div>
               <div><dt>Holat</dt><dd id="cd-tg-shared-user">Ro‘yxatdan o‘tgan</dd></div>
             </dl>
-            <p class="cabinet-hint">Kulol Optom va Kulol Optom-2 hozirgi server akkauntidan foydalanadi. Boshqa serverlar o‘z API loginlarini kiritadi.</p>
+            <p class="cabinet-hint">Har bir do‘kon faqat o‘z saytda ulangan userbotidan yozadi.</p>
           </div>
           <form id="cd-tg-acc-form" class="sup-form" hidden>
             <label class="sup-field">
@@ -1365,6 +1365,35 @@
           </form>
         </div>
 
+        <form id="cd-remind-form" class="sup-form cd-tg-form">
+          <h4 class="cd-remind-title">Qarz eslatmasi</h4>
+          <p class="cabinet-hint">Telegram userbot orqali avtomatik eslatma. Server ertalab va kechqurun tekshiradi — faqat tanlangan kunlarda yuboriladi.</p>
+          <div class="sup-field">
+            <span>Yuborish kunlari</span>
+            <div class="cd-remind-days" id="cd-remind-days" role="group" aria-label="Eslatma kunlari">
+              <label class="cd-remind-day"><input type="checkbox" value="0" checked> Du</label>
+              <label class="cd-remind-day"><input type="checkbox" value="1" checked> Se</label>
+              <label class="cd-remind-day"><input type="checkbox" value="2" checked> Ch</label>
+              <label class="cd-remind-day"><input type="checkbox" value="3" checked> Pa</label>
+              <label class="cd-remind-day"><input type="checkbox" value="4" checked> Ju</label>
+              <label class="cd-remind-day"><input type="checkbox" value="5" checked> Sh</label>
+              <label class="cd-remind-day"><input type="checkbox" value="6" checked> Ya</label>
+            </div>
+          </div>
+          <label class="sup-field">
+            <span>Necha kun kechiksa eslatilsin</span>
+            <input type="number" id="cd-remind-overdue" min="0" max="365" step="1" value="1" inputmode="numeric">
+            <p class="cabinet-hint">Masalan <b>3</b> — qaytarish sanasidan 3 kun o‘tgach eslatma ketadi. <b>1</b> — ertasi kundan. <b>0</b> — muddat kuni ham (kechikish sifatida).</p>
+          </label>
+          <div class="cd-remind-flags">
+            <label class="cd-sms-check"><input type="checkbox" id="cd-remind-soon" checked> 1 kun oldin eslatma</label>
+            <label class="cd-sms-check"><input type="checkbox" id="cd-remind-due" checked> Qaytarish kuni eslatma</label>
+          </div>
+          <p class="cabinet-hint cd-tg-msg" id="cd-remind-msg" hidden></p>
+          <div class="sup-modal-actions">
+            <button type="submit" class="btn-save" id="cd-remind-save">Eslatma sozlamalarini saqlash</button>
+          </div>
+        </form>
         <form id="cd-tg-form" class="sup-form cd-tg-form">
           <label class="sup-field">
             <span>Telegram guruh havolasi</span>
@@ -1609,11 +1638,11 @@
                     {% else %}{{ sale.payment_method }}{% endif %}
                   </span>
                 </td>
-        </tr>
-      {% empty %}
+              </tr>
+              {% empty %}
               <tr><td colspan="9" class="cabinet-empty">Bu kunda sotuv yo‘q. Sanani o‘zgartirib ko‘ring.</td></tr>
-      {% endfor %}
-      </tbody>
+              {% endfor %}
+            </tbody>
             {% if recent_sales %}
             <tfoot>
               <tr>
@@ -1626,9 +1655,9 @@
               </tr>
             </tfoot>
             {% endif %}
-    </table>
+          </table>
         </div>
-  </article>
+      </article>
     </section>
 
     <div class="receipt-drawer" id="receipt-drawer" hidden>
@@ -1694,7 +1723,7 @@
             </tbody>
           </table>
         </div>
-  </article>
+      </article>
     </section>
 
     {% endif %}
@@ -1985,6 +2014,7 @@
     smsTemplateUrl: "{% url 'accounts:cabinet_sms_template' %}",
     smsTemplateSaveUrl: "{% url 'accounts:cabinet_sms_template_save' %}",
     smsToggleUrl: "{% url 'accounts:cabinet_sms_toggle' %}",
+    remindSettingsSaveUrl: "{% url 'accounts:cabinet_remind_settings_save' %}",
     telethonSaveUrl: "{% url 'accounts:cabinet_telethon_save' %}",
     suppliersUrl: "{% url 'accounts:cabinet_suppliers' %}",
     suppliersSummaryUrl: "{% url 'accounts:cabinet_suppliers_summary' %}",
@@ -2061,5 +2091,5 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 {% endif %}
-<script src="/static/cabinet.js?v=20261027-usmon-nosms" defer></script>
+<script src="/static/cabinet.js?v=20261126-stockin-full" defer></script>
 {% endblock %}

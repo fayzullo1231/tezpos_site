@@ -3011,11 +3011,11 @@
       const url = data.stockInUrl;
       if (!url) return;
       const reqId = ++req;
-      const ssKey = `stockin:${iso}`;
+      const ssKey = `stockin_v2:${iso}`;
       let hadCache = false;
       if (!force && typeof cacheGet === "function") {
         const hit = cacheGet(ssKey);
-        if (hit && hit.ok) {
+        if (hit && hit.ok && !hit.partial) {
           hadCache = true;
           cache[iso] = hit;
           paintKpis(hit);
@@ -3033,8 +3033,28 @@
             `<tr><td colspan="6" class="cabinet-empty">Yuklanmoqda…</td></tr>`;
         }
       }
+      const stockInScore = (p) => {
+        if (!p || typeof p !== "object") return -1;
+        const docs = Number(p.receipts_count || (p.receipts || []).length || 0);
+        const sku = Number(p.sku_count || (p.products || []).length || 0);
+        const qty = Number(p.total_qty || 0);
+        return docs * 100000 + sku * 100 + qty;
+      };
       const applyStockIn = (payload) => {
         if (!payload || payload.error || payload.ok === false) return;
+        const prev = cache[iso];
+        // Kamroq ma’lumotli (to‘liq emas) javob to‘liqroq keshni o‘chirib yubormasin
+        if (
+          prev &&
+          !prev.partial &&
+          payload.partial &&
+          stockInScore(payload) < stockInScore(prev)
+        ) {
+          return;
+        }
+        if (prev && stockInScore(payload) < stockInScore(prev) * 0.5 && payload.partial) {
+          return;
+        }
         cache[iso] = payload;
         if (typeof cacheSet === "function" && !payload.partial) cacheSet(ssKey, payload);
         paintKpis(payload);
@@ -3042,7 +3062,7 @@
         paintReceipts(Array.isArray(payload.receipts) ? payload.receipts : []);
       };
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = setTimeout(() => ctrl?.abort(), 22000);
+      const timer = setTimeout(() => ctrl?.abort(), 90000);
       try {
         const prog = window.tezposFetchProgressive;
         if (typeof prog === "function" && !force) {
@@ -4335,9 +4355,9 @@
           <input type="text" name="barcodes" value="${String(code).replace(/"/g, "&quot;")}" placeholder="860..." inputmode="numeric" autocomplete="off" ${i === 0 ? "required" : ""}>
           <div class="barcode-row-actions">
             <button type="button" class="btn-icon scan-one" title="Kameradan skan">${iconCamera}</button>
-            <button type="button" class="btn-icon gen-one" title="Generatsiya">${iconRefresh}</button>
-            <button type="button" class="btn-icon add-one" title="Qo‘shish">${iconPlus}</button>
-            <button type="button" class="btn-icon danger rm-barcode" title="O‘chirish" ${list.length <= 1 ? "disabled" : ""}>${iconTrash}</button>
+          <button type="button" class="btn-icon gen-one" title="Generatsiya">${iconRefresh}</button>
+          <button type="button" class="btn-icon add-one" title="Qo‘shish">${iconPlus}</button>
+          <button type="button" class="btn-icon danger rm-barcode" title="O‘chirish" ${list.length <= 1 ? "disabled" : ""}>${iconTrash}</button>
           </div>
         </div>`
       )
@@ -7583,7 +7603,7 @@
       st === "we_owe"
         ? `Biz qarz: ${fmt(row.we_owe)}`
         : st === "they_owe"
-          ? `Ular qarz: ${fmt(row.they_owe)}`
+          ? `+${fmt(row.they_owe)}`
           : "Qarz yo‘q";
     return `<article class="sup-card is-${esc(st)}" data-id="${row.id}">
       <div class="sup-card-head">
@@ -7787,7 +7807,7 @@
         row.status === "we_owe"
           ? `Biz qarzdamiz: ${fmt(row.we_owe)} so‘m`
           : row.status === "they_owe"
-            ? `Taminotchi qarz: ${fmt(row.they_owe)} so‘m`
+            ? `+${fmt(row.they_owe)} so‘m`
             : "Qarz yo‘q";
     }
     if (detailExport && data.suppliersExportUrl) {
@@ -8292,6 +8312,20 @@
     if (shop) shop.value = tpl.shop_label || "";
     const tgLink = document.getElementById("cd-tg-link");
     if (tgLink && document.activeElement !== tgLink) tgLink.value = tpl.telegram_group_link || "";
+    const days = Array.isArray(tpl.remind_weekdays) ? tpl.remind_weekdays.map(Number) : [0, 1, 2, 3, 4, 5, 6];
+    document.querySelectorAll("#cd-remind-days input[type=checkbox]").forEach((el) => {
+      el.checked = days.includes(Number(el.value));
+    });
+    const overdueEl = document.getElementById("cd-remind-overdue");
+    if (overdueEl && document.activeElement !== overdueEl) {
+      overdueEl.value = String(
+        Number.isFinite(Number(tpl.remind_overdue_days)) ? Number(tpl.remind_overdue_days) : 1
+      );
+    }
+    const soonEl = document.getElementById("cd-remind-soon");
+    if (soonEl) soonEl.checked = tpl.remind_soon !== false;
+    const dueEl = document.getElementById("cd-remind-due");
+    if (dueEl) dueEl.checked = tpl.remind_due_today !== false;
     const sampleEl = document.getElementById("cd-sms-sample");
     if (sampleEl && tpl.preview) {
       const credit = tpl.preview_credit
@@ -8364,7 +8398,7 @@
       if (userEl) userEl.textContent = tg.user || (tg.configured ? "Ro‘yxatdan o‘tgan" : "Sozlanmagan");
       if (hint) {
         hint.textContent =
-          "Kulol Optom va Kulol Optom-2 hozirgi server akkauntidan foydalanadi.";
+          "Bu do‘kon o‘z userbotidan yozadi. Boshqa serverga ulashilmaydi.";
       }
     } else {
       if (sharedBox) sharedBox.hidden = true;
@@ -8991,6 +9025,42 @@
       await loadList();
     } catch (e) {
       alert(e.message || "O‘chirilmadi");
+    }
+  });
+
+  document.getElementById("cd-remind-form")?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById("cd-remind-msg");
+    const btn = document.getElementById("cd-remind-save");
+    const show = (text, ok) => {
+      if (!msg) return;
+      msg.hidden = false;
+      msg.textContent = text;
+      msg.classList.toggle("is-ok", !!ok);
+      msg.classList.toggle("is-err", !ok);
+    };
+    const days = Array.from(
+      document.querySelectorAll("#cd-remind-days input[type=checkbox]:checked")
+    ).map((el) => Number(el.value));
+    if (!days.length) {
+      show("Kamida bitta kun tanlang.", false);
+      return;
+    }
+    if (btn) btn.disabled = true;
+    show("Saqlanmoqda…", true);
+    try {
+      const json = await postJson(data.remindSettingsSaveUrl, {
+        remind_weekdays: days,
+        remind_overdue_days: Number(document.getElementById("cd-remind-overdue")?.value || 1),
+        remind_soon: !!document.getElementById("cd-remind-soon")?.checked,
+        remind_due_today: !!document.getElementById("cd-remind-due")?.checked,
+      });
+      if (json.template) paintSms(json.template);
+      show(json.message || "Saqlandi.", true);
+    } catch (e) {
+      show(e.message || "Saqlanmadi", false);
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 
