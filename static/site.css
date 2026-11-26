@@ -4554,6 +4554,22 @@ body.cabinet-body {
 .cd-cal { display: grid; gap: .9rem; }
 .cd-cal[hidden] { display: none; }
 .cd-tg-form { margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e2e8f2; }
+.cd-remind-title { margin: 0 0 .35rem; font-size: 1rem; }
+.cd-remind-days {
+  display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .45rem;
+}
+.cd-remind-day {
+  display: inline-flex; align-items: center; gap: .35rem;
+  padding: .4rem .65rem; border: 1px solid #d5deea; border-radius: 10px;
+  background: #fff; cursor: pointer; font-size: .9rem; user-select: none;
+}
+.cd-remind-day:has(input:checked) {
+  border-color: #2c86e0; background: #eef6ff; color: #1d4f91;
+}
+.cd-remind-day input { margin: 0; }
+.cd-remind-flags {
+  display: flex; flex-wrap: wrap; gap: .75rem 1.1rem; margin: .6rem 0 .2rem;
+}
 .cd-tg-msg.is-ok { color: #15803d; }
 .cd-tg-msg.is-err { color: #b91c1c; }
 .cd-channel-card {

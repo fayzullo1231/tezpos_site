@@ -13,6 +13,7 @@ from .client_debts import (
     cabinet_sms_template,
     cabinet_sms_template_save,
     cabinet_sms_toggle,
+    cabinet_remind_settings_save,
     cabinet_telethon_save,
 )
 from .suppliers import (
@@ -105,6 +106,7 @@ urlpatterns = [
     path("cabinet/sms-template/", cabinet_sms_template, name="cabinet_sms_template"),
     path("cabinet/sms-template/save/", cabinet_sms_template_save, name="cabinet_sms_template_save"),
     path("cabinet/sms-template/sms/", cabinet_sms_toggle, name="cabinet_sms_toggle"),
+    path("cabinet/sms-template/remind/", cabinet_remind_settings_save, name="cabinet_remind_settings_save"),
     path("cabinet/sms-template/telethon/", cabinet_telethon_save, name="cabinet_telethon_save"),
     path("api/client-debts/", api_client_debts, name="api_client_debts"),
     path("api/client-debts/save/", api_client_debtor_save, name="api_client_debtor_save"),

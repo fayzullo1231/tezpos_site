@@ -351,6 +351,24 @@ class DebtSmsTemplate(models.Model):
         help_text="Userbot kirgandan keyin Telegram nomi",
         max_length=180,
     )
+    remind_weekdays = models.CharField(
+        max_length=32,
+        blank=True,
+        default="0,1,2,3,4,5,6",
+        help_text="Eslatma yuboriladigan hafta kunlari (0=Du … 6=Ya)",
+    )
+    remind_overdue_days = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Qarz kamida shuncha kun kechiksa eslatma (1 = ertasi kundan)",
+    )
+    remind_soon = models.BooleanField(
+        default=True,
+        help_text="Qaytarish sanasidan 1 kun oldin eslatma",
+    )
+    remind_due_today = models.BooleanField(
+        default=True,
+        help_text="Qaytarish kuni eslatma",
+    )
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -130,17 +130,65 @@ def build_reminder_text(
     return f"{head}\n\nQarz: {money} so'm\n\nQoldiq: {money} so'm"
 
 
-def reminder_kind_for(due: date | None, today: date | None = None) -> str | None:
+def parse_remind_weekdays(raw) -> set[int]:
+    """'0,1,2,3,4,5,6' → {0..6}. Bo‘sh yoki yaroqsiz → barcha kunlar."""
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return set(range(7))
+    out: set[int] = set()
+    for part in text.replace(" ", "").split(","):
+        if not part:
+            continue
+        try:
+            d = int(part)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= d <= 6:
+            out.add(d)
+    return out or set(range(7))
+
+
+def reminder_settings_for_shop(shop_key: str) -> dict[str, Any]:
+    shop = (shop_key or "").strip().lower()
+    row = DebtSmsTemplate.objects.filter(shop_key=shop).first() if shop else None
+    weekdays = parse_remind_weekdays(
+        getattr(row, "remind_weekdays", None) if row else "0,1,2,3,4,5,6"
+    )
+    overdue = 1
+    if row is not None:
+        try:
+            overdue = max(0, int(row.remind_overdue_days))
+        except (TypeError, ValueError):
+            overdue = 1
+    return {
+        "weekdays": weekdays,
+        "overdue_days": overdue,
+        "remind_soon": True if row is None else bool(row.remind_soon),
+        "remind_due_today": True if row is None else bool(row.remind_due_today),
+    }
+
+
+def reminder_kind_for(
+    due: date | None,
+    today: date | None = None,
+    *,
+    overdue_days: int = 1,
+    remind_soon: bool = True,
+    remind_due_today: bool = True,
+) -> str | None:
     if not due:
         return None
     today = today or timezone.localdate()
     delta = (due - today).days
-    if delta == 1:
+    if delta == 1 and remind_soon:
         return KIND_SOON
-    if delta == 0:
+    if delta == 0 and remind_due_today:
         return KIND_DUE_TODAY
     if delta < 0:
-        return KIND_OVERDUE
+        late = -delta
+        need = max(0, int(overdue_days or 0))
+        if need <= 0 or late >= need:
+            return KIND_OVERDUE
     return None
 
 

@@ -22,6 +22,7 @@ from accounts.telethon_debt import (
     USMON_FAMILY_KEYS,
     is_usmon_family,
     reminder_kind_for,
+    reminder_settings_for_shop,
     resolve_debtors_batch,
     send_debt_reminders_batch,
     telegram_display,
@@ -126,11 +127,40 @@ class Command(BaseCommand):
         jobs = []
         skipped = 0
         no_tg = 0
+        weekday_skip = 0
+        settings_cache: dict[str, dict] = {}
+        weekday = today.weekday()  # 0=Du … 6=Ya
+
+        def _settings(shop_key: str) -> dict:
+            key = (shop_key or "").strip().lower()
+            if key not in settings_cache:
+                settings_cache[key] = reminder_settings_for_shop(key)
+            return settings_cache[key]
+
         for row in rows:
+            cfg = _settings(row.shop_key)
+            if not options["all"] and weekday not in cfg["weekdays"]:
+                weekday_skip += 1
+                continue
             if options["all"]:
-                kind = reminder_kind_for(row.due_date, today) or KIND_BALANCE
+                kind = (
+                    reminder_kind_for(
+                        row.due_date,
+                        today,
+                        overdue_days=cfg["overdue_days"],
+                        remind_soon=cfg["remind_soon"],
+                        remind_due_today=cfg["remind_due_today"],
+                    )
+                    or KIND_BALANCE
+                )
             else:
-                kind = reminder_kind_for(row.due_date, today)
+                kind = reminder_kind_for(
+                    row.due_date,
+                    today,
+                    overdue_days=cfg["overdue_days"],
+                    remind_soon=cfg["remind_soon"],
+                    remind_due_today=cfg["remind_due_today"],
+                )
                 if not kind:
                     skipped += 1
                     continue
@@ -141,6 +171,7 @@ class Command(BaseCommand):
                 no_tg += 1
                 continue
             # Aniq «Telegram yo‘q» ni 12 soat ichida qayta yopmaymiz.
+            # Vaqtincha xato yoki eski belgi keyingi eslatmada qayta uriniladi.
             if row.telegram_status == "no_telegram" and row.telegram_checked_at:
                 fresh = timezone.now() - row.telegram_checked_at < timedelta(hours=12)
                 has_peer = bool(
@@ -159,7 +190,8 @@ class Command(BaseCommand):
 
         if options["dry_run"]:
             self.stdout.write(
-                f"Tayyor. dry_jobs={len(jobs)} skipped={skipped} no_telegram={no_tg}"
+                f"Tayyor. dry_jobs={len(jobs)} skipped={skipped} "
+                f"weekday_skip={weekday_skip} no_telegram={no_tg}"
             )
             return
 
@@ -177,5 +209,6 @@ class Command(BaseCommand):
                 )
 
         self.stdout.write(
-            f"Tayyor. sent={sent} skipped={skipped} no_telegram={no_tg} errors={errors}"
+            f"Tayyor. sent={sent} skipped={skipped} weekday_skip={weekday_skip} "
+            f"no_telegram={no_tg} errors={errors}"
         )
