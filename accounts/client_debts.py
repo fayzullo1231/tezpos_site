@@ -1040,13 +1040,13 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
         "telethon": telethon_public_status(row.shop_key),
         "remind_weekdays": [
             int(x)
-            for x in str(row.remind_weekdays or "0,1,2,3,4,5,6").split(",")
+            for x in str(getattr(row, "remind_weekdays", None) or "0,1,2,3,4,5,6").split(",")
             if str(x).strip().isdigit() and 0 <= int(str(x).strip()) <= 6
         ]
         or [0, 1, 2, 3, 4, 5, 6],
-        "remind_overdue_days": int(row.remind_overdue_days or 1),
-        "remind_soon": bool(row.remind_soon),
-        "remind_due_today": bool(row.remind_due_today),
+        "remind_overdue_days": int(getattr(row, "remind_overdue_days", None) or 1),
+        "remind_soon": bool(getattr(row, "remind_soon", True)),
+        "remind_due_today": bool(getattr(row, "remind_due_today", True)),
     }
 
 
