@@ -639,7 +639,8 @@ async def _resolve_phone(client, phone_n: str) -> dict:
         return _meta_err("Telefon yo‘q")
 
     floods = 0
-    saw_missing = False
+    saw_not_occupied = False
+    saw_empty = False
     last_err = ""
     for idx, phone in enumerate(variants):
         if idx:
@@ -657,7 +658,8 @@ async def _resolve_phone(client, phone_n: str) -> dict:
                             return _meta_ok(user)
                         except Exception:
                             pass
-                    saw_missing = True
+                    # Bo‘sh javob — privacy bo‘lishi mumkin, import hali topishi mumkin
+                    saw_empty = True
                     break
                 return _meta_ok(users[0])
             except FloodWaitError as exc:
@@ -669,7 +671,7 @@ async def _resolve_phone(client, phone_n: str) -> dict:
                 await asyncio.sleep(wait)
             except RPCError as exc:
                 if _phone_not_occupied(exc):
-                    saw_missing = True
+                    saw_not_occupied = True
                     break
                 logger.warning("resolvePhone RPC %s", exc)
                 last_err = str(exc)[:200]
@@ -678,13 +680,14 @@ async def _resolve_phone(client, phone_n: str) -> dict:
                 logger.warning("resolvePhone xato %s", exc)
                 last_err = str(exc)[:200]
                 break
-    # Topilmasa — «xato» emas, aniq «topilmadi»
-    if saw_missing or not last_err:
+    # Faqat aniq NOT_OCCUPIED → topilmadi. Qolganlari import qilinadi.
+    if saw_not_occupied and not last_err:
         return _meta_no_tg("resolve_empty")
-    low = last_err.lower()
-    if any(x in low for x in ("not_occupied", "not found", "no user", "empty")):
+    if last_err and "not_occupied" in last_err.lower():
         return _meta_no_tg(last_err)
-    return _meta_err(last_err)
+    if saw_empty:
+        return _meta_err("resolve_privacy")
+    return _meta_err(last_err or "resolve_empty")
 
 
 def _user_from_import(result):
@@ -826,7 +829,10 @@ async def _delete_temp_contact(client, user) -> None:
 
 
 async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") -> dict:
-    """Avval +998 resolvePhone, bo‘lmasa kontakt import. Topilmasa — topilmadi."""
+    """
+    +998 resolvePhone → importContacts.
+    popular_invites = Telegram BOR, lekin yopiq — «topilmadi» deb yozilmaydi.
+    """
     phone_n = _uz_phone_digits(phone_n) or phone_n
     resolved = await _resolve_phone(client, phone_n)
     if resolved.get("ok") and resolved.get("user") is not None:
@@ -834,17 +840,22 @@ async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") 
     imported = await _import_user_by_phone(client, phone_n, contact_name)
     if imported.get("ok") and imported.get("user") is not None:
         return imported
-    # popular / empty / privacy — foydalanuvchiga «Telegram topilmadi»
-    if imported.get("error") in ("popular", "import_empty") or resolved.get(
-        "status"
-    ) == "no_telegram":
+    # popular = raqamda Telegram bor (privacy) — qayta uriniladi
+    if imported.get("error") == "popular":
+        return _meta_err("popular")
+    # Aniq yo‘q: NOT_OCCUPIED + import bo‘sh
+    if (
+        resolved.get("status") == "no_telegram"
+        and imported.get("error") == "import_empty"
+    ):
         return _meta_no_tg()
-    if imported.get("status") == "no_telegram":
-        return imported
-    if imported.get("status") == "error" and resolved.get("status") == "error":
-        # Vaqtincha tarmoq/Flood — lekin UI da topilmadi deb ko‘rsatamiz
-        return _meta_no_tg()
-    return imported if imported.get("ok") is False else _meta_no_tg()
+    if resolved.get("status") == "no_telegram" and imported.get("status") == "error":
+        # Import flood/RPC — hali topilmadi deb mahkamlamaymiz
+        return _meta_err(imported.get("error") or "import_retry")
+    if imported.get("error") == "import_empty":
+        # Resolve privacy bo‘lishi mumkin — qayta urinish
+        return _meta_err("pending")
+    return imported if isinstance(imported, dict) else _meta_err("Telegram topilmadi")
 
 
 def debtors_pending_telegram(shops, limit: int = 120) -> list:
@@ -971,21 +982,35 @@ async def resolve_pending_on_client(client, debtors) -> int:
         if not client.is_connected():
             break
         try:
-            meta = await _resolve_phone(client, digits)
+            meta2 = await _resolve_phone_for_send(
+                client, digits, str(getattr(row, "name", "") or "")
+            )
         except Exception as exc:
-            logger.warning("resolve qoldiq %s", exc)
+            logger.warning("resolve_for_send qoldiq %s", exc)
             break
-        if meta.get("ok") and meta.get("user") is not None:
-            await _save_found(row, meta["user"])
+        if meta2.get("ok") and meta2.get("user") is not None:
+            await _save_found(row, meta2["user"])
             streak = 0
-        elif meta.get("status") == "no_telegram" and found > 0:
-            clean = {k: v for k, v in meta.items() if k not in ("user", "_privacy", "_imported")}
+        elif meta2.get("status") == "no_telegram" and found > 0:
+            clean = {
+                k: v
+                for k, v in meta2.items()
+                if k not in ("user", "_privacy", "_imported")
+            }
             await apply_telegram_meta(row, clean)
             streak += 1
-        elif "flood" in str(meta.get("error") or "").lower():
+        elif "flood" in str(meta2.get("error") or "").lower():
             print("telegram qidiruv to'xtadi: flood", flush=True)
             break
         else:
+            # popular/pending — status error, qayta uriniladi
+            clean = {
+                k: v
+                for k, v in meta2.items()
+                if k not in ("user", "_privacy", "_imported")
+            }
+            if clean:
+                await apply_telegram_meta(row, clean)
             streak += 1
             if found == 0 and streak >= 5:
                 print("telegram qidiruv to'xtadi: limit", flush=True)
@@ -1002,7 +1027,7 @@ def _save_status(debtor: ClientDebtor, status: str) -> None:
 
 @sync_to_async
 def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
-    """Topilgan id saqlanib qoladi. Vaqtincha xato «Telegram yo‘q» qilib qo‘yilmaydi."""
+    """Topilgan id saqlanadi. popular/privacy «topilmadi» qilib mahkamlanmaydi."""
     status = meta.get("status") or "error"
     new_id = str(meta.get("telegram_id") or "").strip()
     new_hash = str(meta.get("access_hash") or "").strip()
@@ -1023,14 +1048,11 @@ def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
         debtor.telegram_access_hash = ""
         debtor.telegram_username = ""
         debtor.telegram_name = ""
+    elif status == "no_phone" and not (debtor.telegram_id or "").strip():
+        debtor.telegram_status = "no_phone"
     elif not (debtor.telegram_id or "").strip():
-        # «error» o‘rniga topilmadi — UI «Telegram xato» ko‘rsatmasin
-        if status == "no_phone":
-            debtor.telegram_status = "no_phone"
-        elif status == "error" and "flood" in str(meta.get("error") or "").lower():
-            debtor.telegram_status = "error"
-        else:
-            debtor.telegram_status = "no_telegram"
+        # popular / privacy / flood — qayta tekshiriladi, topilmadi emas
+        debtor.telegram_status = "error"
     debtor.telegram_checked_at = timezone.now()
     debtor.save(
         update_fields=[
@@ -1578,7 +1600,8 @@ def telegram_display(debtor: ClientDebtor) -> str:
     if st == "no_phone":
         return "Telefon yo‘q"
     if st == "error":
-        return "Telegram topilmadi"
+        # popular/privacy — hali bor bo‘lishi mumkin, yolg‘on «topilmadi» yo‘q
+        return "Tekshirilmoqda"
     return "Tekshirilmagan"
 
 

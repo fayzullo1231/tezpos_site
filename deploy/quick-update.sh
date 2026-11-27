@@ -21,6 +21,9 @@ python manage.py collectstatic --noinput
 systemctl restart tezpos-site
 systemctl --no-pager is-active tezpos-site
 
+# Yolg‘on «Telegram topilmadi» — qayta qidirish
+python manage.py reset_telegram_misses || true
+
 if [ -f deploy/tezpos-debt-listener.service ]; then
   cp deploy/tezpos-debt-listener.service /etc/systemd/system/
   systemctl daemon-reload

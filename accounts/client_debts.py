@@ -844,8 +844,10 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
             if (row.phone or "").strip() and not phone_ok
             else "Telefon yo‘q"
         )
-    elif tg_status in ("no_telegram", "error"):
+    elif tg_status == "no_telegram":
         tg_display = "Telegram topilmadi"
+    elif tg_status == "error":
+        tg_display = "Tekshirilmoqda"
     else:
         tg_display = ""
         if (row.phone or "").strip() and not phone_ok:

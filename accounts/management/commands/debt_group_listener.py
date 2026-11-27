@@ -489,6 +489,33 @@ class Command(BaseCommand):
                 return
             _recheck_started.add(key)
             await asyncio.sleep(2)
+
+            def _unlock_false_misses():
+                """Yolg‘on «topilmadi» ni ochib qayta qidirish."""
+                from django.db.models import Q
+
+                from accounts.models import ClientDebtor
+
+                return ClientDebtor.objects.filter(
+                    shop_key__in=list(allowed),
+                    is_active=True,
+                ).filter(
+                    Q(telegram_status="no_telegram") | Q(telegram_status="error")
+                ).filter(Q(telegram_id="") | Q(telegram_id__isnull=True)).update(
+                    telegram_status="",
+                    telegram_checked_at=None,
+                )
+
+            try:
+                cleared = await sync_to_async(_unlock_false_misses)()
+                if cleared:
+                    print(
+                        f"telegram yolg'on topilmadi ochildi: {cleared}",
+                        flush=True,
+                    )
+            except Exception:
+                logger.exception("telegram miss reset")
+
             try:
                 rows = await sync_to_async(debtors_pending_telegram)(allowed)
             except Exception:
