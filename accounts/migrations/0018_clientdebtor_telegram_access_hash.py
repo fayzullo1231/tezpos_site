@@ -3,7 +3,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0017_debtsmstemplate_remind_settings"),
+        ("accounts", "0016_clientdebtorledger_items"),
     ]
 
     operations = [
