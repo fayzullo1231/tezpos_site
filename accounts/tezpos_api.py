@@ -1465,11 +1465,6 @@ def get_stock_receipts(
                 break
             if _page_older_than_range(chunk):
                 break
-            # Sana filtri ishlayotgan bo‘lsa — kerakli kunni topgach ortiqcha sahifa kerak emas
-            if from_d and to_d and from_d == to_d:
-                matched = sum(1 for r in collected if _row_day(r) == from_d)
-                if matched >= 40:
-                    break
             has_next = bool(data.get("next")) if isinstance(data, dict) else False
             if not has_next and len(chunk) < 100:
                 break

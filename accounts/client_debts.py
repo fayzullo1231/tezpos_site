@@ -14,7 +14,7 @@ import time
 logger = logging.getLogger(__name__)
 
 from django.contrib.auth.decorators import login_required
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import JsonResponse
@@ -22,6 +22,19 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
+
+# 0017 migratsiyasi bo‘lmasa ham ro‘yxat ochilsin
+_REMIND_DEFER = (
+    "remind_weekdays",
+    "remind_overdue_days",
+    "remind_soon",
+    "remind_due_today",
+)
+
+
+def _tpl_qs():
+    """DebtSmsTemplate — remind ustunlari yo‘q bo‘lsa ham SELECT ishlasin."""
+    return DebtSmsTemplate.objects.defer(*_REMIND_DEFER)
 
 from . import devsms, tezpos_api
 from .auth_views import SESSION_DISPLAY, SESSION_SERVER
@@ -683,7 +696,7 @@ def _ensure_shop_label(tpl: DebtSmsTemplate, shop: str) -> DebtSmsTemplate:
 
 
 def _get_or_create_template(shop: str, tenant: TenantProfile | None = None) -> DebtSmsTemplate:
-    row = DebtSmsTemplate.objects.filter(shop_key=shop).first()
+    row = _tpl_qs().filter(shop_key=shop).first()
     if row:
         row = _ensure_shop_label(row, shop)
         if (
@@ -960,8 +973,15 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
         out.append(item)
     out.sort(key=lambda x: x["balance"], reverse=True)
     if shop_devsms_on(shop) and devsms.resolve_token():
-        _get_or_create_template(shop, None)
-    tpl = DebtSmsTemplate.objects.filter(shop_key=shop).first()
+        try:
+            _get_or_create_template(shop, None)
+        except OperationalError:
+            logger.exception("sms template create skipped (migration?)")
+    try:
+        tpl = _tpl_qs().filter(shop_key=shop).first()
+    except OperationalError:
+        logger.exception("DebtSmsTemplate read failed")
+        tpl = None
     if shop_blocks_devsms(shop) and tpl and tpl.sms_enabled:
         tpl.sms_enabled = False
         tpl.save(update_fields=["sms_enabled", "updated_at"])
@@ -1038,16 +1058,38 @@ def _serialize_template(row: DebtSmsTemplate) -> dict:
         "devsms_ready": bool(devsms.resolve_token()) and not shop_blocks_devsms(row.shop_key),
         "devsms_blocked": shop_blocks_devsms(row.shop_key),
         "telethon": telethon_public_status(row.shop_key),
-        "remind_weekdays": [
-            int(x)
-            for x in str(getattr(row, "remind_weekdays", None) or "0,1,2,3,4,5,6").split(",")
-            if str(x).strip().isdigit() and 0 <= int(str(x).strip()) <= 6
-        ]
-        or [0, 1, 2, 3, 4, 5, 6],
-        "remind_overdue_days": int(getattr(row, "remind_overdue_days", None) or 1),
-        "remind_soon": bool(getattr(row, "remind_soon", True)),
-        "remind_due_today": bool(getattr(row, "remind_due_today", True)),
+        "remind_weekdays": _remind_weekdays_safe(row),
+        "remind_overdue_days": _remind_int_safe(row, "remind_overdue_days", 1),
+        "remind_soon": _remind_bool_safe(row, "remind_soon", True),
+        "remind_due_today": _remind_bool_safe(row, "remind_due_today", True),
     }
+
+
+def _remind_weekdays_safe(row) -> list[int]:
+    try:
+        raw = getattr(row, "remind_weekdays", None)
+    except OperationalError:
+        raw = None
+    days = [
+        int(x)
+        for x in str(raw or "0,1,2,3,4,5,6").split(",")
+        if str(x).strip().isdigit() and 0 <= int(str(x).strip()) <= 6
+    ]
+    return days or [0, 1, 2, 3, 4, 5, 6]
+
+
+def _remind_int_safe(row, field: str, default: int) -> int:
+    try:
+        return int(getattr(row, field, None) or default)
+    except (OperationalError, TypeError, ValueError):
+        return default
+
+
+def _remind_bool_safe(row, field: str, default: bool) -> bool:
+    try:
+        return bool(getattr(row, field, default))
+    except OperationalError:
+        return default
 
 
 @login_required

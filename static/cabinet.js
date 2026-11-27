@@ -8279,7 +8279,20 @@
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
-      const json = await res.json();
+      const text = await res.text();
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch (_) {
+        if (res.status === 401 || res.status === 302 || /login/i.test(text.slice(0, 200))) {
+          throw new Error("Sessiya tugadi — qayta kiring");
+        }
+        throw new Error(
+          res.status >= 500
+            ? "Server xatosi (500) — qarzdorlar yuklanmadi"
+            : "Server JSON emas (sahifa buzilgan)"
+        );
+      }
       if (!res.ok) throw new Error(json.error || "fail");
       rows = Array.isArray(json.debtors) ? json.debtors : [];
       if (typeof json.sms_enabled === "boolean") {
