@@ -833,22 +833,22 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
     tg_user = (row.telegram_username or "").strip()
     tg_name = (row.telegram_name or "").strip()
     tg_status = (row.telegram_status or "").strip()
+    phone_ok = bool(devsms.normalize_phone(row.phone or ""))
     if tg_status == "ok":
         tg_display = ("@" + tg_user.lstrip("@")) if tg_user else (tg_name or "Telegram bor")
-    elif tg_status == "no_telegram":
-        tg_display = "Telegram yo‘q"
-    elif tg_status == "no_phone":
-        tg_display = "Telefon yo‘q"
-    elif tg_status == "error":
-        phone_ok = bool(devsms.normalize_phone(row.phone or ""))
+    elif tg_status == "no_phone" or (
+        (row.phone or "").strip() and not phone_ok
+    ):
         tg_display = (
-            "Telegram xato"
-            if phone_ok
-            else "Telefon noto‘g‘ri (998XXXXXXXXX)"
+            "Telefon noto‘g‘ri (998XXXXXXXXX)"
+            if (row.phone or "").strip() and not phone_ok
+            else "Telefon yo‘q"
         )
+    elif tg_status in ("no_telegram", "error"):
+        tg_display = "Telegram topilmadi"
     else:
         tg_display = ""
-        if (row.phone or "").strip() and not devsms.normalize_phone(row.phone or ""):
+        if (row.phone or "").strip() and not phone_ok:
             tg_display = "Telefon noto‘g‘ri (998XXXXXXXXX)"
     return {
         "id": row.pk,

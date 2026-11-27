@@ -579,14 +579,16 @@ def _meta_ok(u) -> dict:
     }
 
 
-def _meta_no_tg(err: str = "Bu raqamda Telegram yo‘q") -> dict:
+def _meta_no_tg(err: str = "Telegram topilmadi") -> dict:
     return {
         "ok": False,
         "status": "no_telegram",
         "telegram_id": "",
         "username": "",
         "display_name": "",
-        "error": err if err != "resolve_privacy" else "Bu raqamda Telegram yo‘q",
+        "error": "Telegram topilmadi"
+        if err in ("", "resolve_privacy", "resolve_empty", "import_empty", "popular")
+        else (err or "Telegram topilmadi"),
         "user": None,
         "_privacy": err == "resolve_privacy",
     }
@@ -615,11 +617,13 @@ def _phone_not_occupied(exc) -> bool:
 
 
 def _phone_variants(phone_n: str) -> list[str]:
-    """Telegram ilovasi raqamni + siz yuboradi. +998 ikkinchi urinish."""
+    """Mahalliy 9 xona bo‘lsa ham 998XXXXXXXXX va +998XXXXXXXXX qidiriladi."""
     digits = _uz_phone_digits(phone_n)
     if not digits:
         return []
-    return [digits, "+" + digits]
+    # Avval +998 (Telegram ko‘pincha shunday), keyin 998...
+    out = ["+" + digits, digits]
+    return out
 
 
 async def _resolve_phone(client, phone_n: str) -> dict:
@@ -674,9 +678,13 @@ async def _resolve_phone(client, phone_n: str) -> dict:
                 logger.warning("resolvePhone xato %s", exc)
                 last_err = str(exc)[:200]
                 break
-    if saw_missing and not last_err:
-        return _meta_no_tg("resolve_privacy")
-    return _meta_err(last_err or "resolve_empty")
+    # Topilmasa — «xato» emas, aniq «topilmadi»
+    if saw_missing or not last_err:
+        return _meta_no_tg("resolve_empty")
+    low = last_err.lower()
+    if any(x in low for x in ("not_occupied", "not found", "no user", "empty")):
+        return _meta_no_tg(last_err)
+    return _meta_err(last_err)
 
 
 def _user_from_import(result):
@@ -818,20 +826,25 @@ async def _delete_temp_contact(client, user) -> None:
 
 
 async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") -> dict:
-    """Avval resolvePhone, bo‘lmasa kontakt import. popular_invites «yo‘q» emas."""
+    """Avval +998 resolvePhone, bo‘lmasa kontakt import. Topilmasa — topilmadi."""
+    phone_n = _uz_phone_digits(phone_n) or phone_n
     resolved = await _resolve_phone(client, phone_n)
     if resolved.get("ok") and resolved.get("user") is not None:
         return resolved
     imported = await _import_user_by_phone(client, phone_n, contact_name)
     if imported.get("ok") and imported.get("user") is not None:
         return imported
-    if imported.get("error") == "popular":
-        return _meta_err("Raqam vaqtincha yopiq")
-    if resolved.get("status") == "no_telegram" and imported.get("error") == "import_empty":
+    # popular / empty / privacy — foydalanuvchiga «Telegram topilmadi»
+    if imported.get("error") in ("popular", "import_empty") or resolved.get(
+        "status"
+    ) == "no_telegram":
         return _meta_no_tg()
-    if resolved.get("status") == "no_telegram":
-        return _meta_err("Telegram vaqtincha topilmadi")
-    return imported
+    if imported.get("status") == "no_telegram":
+        return imported
+    if imported.get("status") == "error" and resolved.get("status") == "error":
+        # Vaqtincha tarmoq/Flood — lekin UI da topilmadi deb ko‘rsatamiz
+        return _meta_no_tg()
+    return imported if imported.get("ok") is False else _meta_no_tg()
 
 
 def debtors_pending_telegram(shops, limit: int = 120) -> list:
@@ -1011,7 +1024,13 @@ def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
         debtor.telegram_username = ""
         debtor.telegram_name = ""
     elif not (debtor.telegram_id or "").strip():
-        debtor.telegram_status = "error" if status != "no_phone" else "no_phone"
+        # «error» o‘rniga topilmadi — UI «Telegram xato» ko‘rsatmasin
+        if status == "no_phone":
+            debtor.telegram_status = "no_phone"
+        elif status == "error" and "flood" in str(meta.get("error") or "").lower():
+            debtor.telegram_status = "error"
+        else:
+            debtor.telegram_status = "no_telegram"
     debtor.telegram_checked_at = timezone.now()
     debtor.save(
         update_fields=[
@@ -1511,10 +1530,16 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
     shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
     if is_usmon_family(shop):
         shop = "usmon"
+    phone_n = _uz_phone_digits(getattr(debtor, "phone", "") or "")
+    if not phone_n:
+        return {
+            "ok": False,
+            "error": "Telefon noto‘g‘ri — 9 xona yoki 998XXXXXXXXX yozing",
+        }
     job = {
         "type": "dm",
         "shop": shop,
-        "phone": debtor.phone or "",
+        "phone": phone_n,  # doim 998XXXXXXXXX — +998 bilan qidiriladi
         "debtor_id": int(debtor.pk),
         "telegram_id": str(getattr(debtor, "telegram_id", "") or ""),
         "telegram_access_hash": str(getattr(debtor, "telegram_access_hash", "") or ""),
@@ -1549,11 +1574,11 @@ def telegram_display(debtor: ClientDebtor) -> str:
                 return debtor.telegram_name
         return "Telegram bor"
     if st == "no_telegram":
-        return "Telegram yo‘q"
+        return "Telegram topilmadi"
     if st == "no_phone":
         return "Telefon yo‘q"
     if st == "error":
-        return "Telegram xato"
+        return "Telegram topilmadi"
     return "Tekshirilmagan"
 
 
