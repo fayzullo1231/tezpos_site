@@ -256,14 +256,27 @@ def _deliver_debt_notice(
     debtor: ClientDebtor, text: str, *, allow_sms: bool | None = None
 ) -> dict:
     """
-    Qarz matni: Telegram/DevSMS so‘rovni bloklamaydi.
-    TG — fayl navbatiga; DevSMS — fon oqimida.
+    Qarz matni: TG navbatga; DevSMS sync (faqat ruxsat etilgan do‘konlar).
     """
     msg = (text or "").strip()
     if not msg:
         return {"ok": False, "error": "Matn bo‘sh", "channel": "none"}
     if not (debtor.phone or "").strip():
         return {"ok": False, "error": "Telefon yo‘q", "channel": "none"}
+    phone_n = devsms.normalize_phone(debtor.phone)
+    if not phone_n:
+        return {
+            "ok": False,
+            "error": "Telefon noto‘g‘ri — 998XXXXXXXXX (12 xona) yozing",
+            "channel": "none",
+        }
+    # Saqlangan qisqa/noto‘g‘ri raqamni to‘g‘rilab qo‘yamiz
+    if str(debtor.phone or "").strip() != phone_n:
+        try:
+            debtor.phone = phone_n
+            debtor.save(update_fields=["phone", "updated_at"])
+        except Exception:
+            pass
 
     shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
     tg_ok = False
@@ -827,9 +840,16 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
     elif tg_status == "no_phone":
         tg_display = "Telefon yo‘q"
     elif tg_status == "error":
-        tg_display = "Telegram xato"
+        phone_ok = bool(devsms.normalize_phone(row.phone or ""))
+        tg_display = (
+            "Telegram xato"
+            if phone_ok
+            else "Telefon noto‘g‘ri (998XXXXXXXXX)"
+        )
     else:
         tg_display = ""
+        if (row.phone or "").strip() and not devsms.normalize_phone(row.phone or ""):
+            tg_display = "Telefon noto‘g‘ri (998XXXXXXXXX)"
     return {
         "id": row.pk,
         "name": row.name,
@@ -1001,9 +1021,20 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
         "total_debt": float(total),
         "total_display": _fmt_money(total),
         "shop_label": shop_label,
-        "sms_enabled": (not shop_blocks_devsms(shop))
-        and bool(tpl and tpl.sms_enabled and devsms.resolve_token()),
-        "devsms_blocked": shop_blocks_devsms(shop),
+        # DevSMS faqat kuloloptomuz (yoki alohida yoqilgan do‘konlar).
+        # kuloloptom / kuloloptom-2 — faqat Telegram.
+        "sms_enabled": (
+            bool(devsms.resolve_token())
+            and (
+                shop_devsms_on(shop)
+                or (
+                    not uses_shared_telethon(shop)
+                    and not shop_blocks_devsms(shop)
+                    and bool(tpl and tpl.sms_enabled)
+                )
+            )
+        ),
+        "devsms_blocked": shop_blocks_devsms(shop) or uses_shared_telethon(shop),
     }
 
 
@@ -1224,7 +1255,13 @@ def cabinet_client_debtor_save(request):
     name = str(body.get("name") or "").strip()[:180]
     if not name:
         return JsonResponse({"error": "Mijoz ismi majburiy"}, status=400)
-    phone = str(body.get("phone") or "").strip()[:40]
+    phone_raw = str(body.get("phone") or "").strip()[:40]
+    phone = devsms.normalize_phone(phone_raw) or phone_raw
+    if phone_raw and not devsms.normalize_phone(phone_raw):
+        return JsonResponse(
+            {"error": "Telefon noto‘g‘ri. Masalan: 998901234567 (12 xona)"},
+            status=400,
+        )
     note = str(body.get("note") or "").strip()[:180]
     sid = body.get("id")
 
@@ -1890,7 +1927,17 @@ def api_client_debtor_save(request):
     name = str(body.get("name") or "").strip()[:180]
     if not name:
         return _cors(JsonResponse({"error": "Mijoz ismi majburiy"}, status=400))
-    phone = str(body.get("phone") or "").strip()[:40]
+    phone_raw = str(body.get("phone") or "").strip()[:40]
+    phone = devsms.normalize_phone(phone_raw) or phone_raw
+    if phone_raw and not devsms.normalize_phone(phone_raw):
+        return _cors(
+            JsonResponse(
+                {
+                    "error": "Telefon noto‘g‘ri. Masalan: 998901234567 (12 xona)",
+                },
+                status=400,
+            )
+        )
     note = str(body.get("note") or "").strip()[:180]
     sid = body.get("id")
     who = shop
@@ -1900,10 +1947,27 @@ def api_client_debtor_save(request):
             row = _get_debtor(shop, sid, extra_keys=keys)
         except (ClientDebtor.DoesNotExist, TypeError, ValueError):
             return _cors(JsonResponse({"error": "Topilmadi"}, status=404))
+        old_phone = (row.phone or "").strip()
         row.name = name
         row.phone = phone
         row.note = note
-        row.save(update_fields=["name", "phone", "note", "updated_at"])
+        upd = ["name", "phone", "note", "updated_at"]
+        if old_phone != (phone or "").strip():
+            row.telegram_status = ""
+            row.telegram_id = ""
+            row.telegram_access_hash = ""
+            row.telegram_username = ""
+            row.telegram_name = ""
+            row.telegram_checked_at = None
+            upd += [
+                "telegram_status",
+                "telegram_id",
+                "telegram_access_hash",
+                "telegram_username",
+                "telegram_name",
+                "telegram_checked_at",
+            ]
+        row.save(update_fields=upd)
     else:
         row = None
         digits = "".join(ch for ch in phone if ch.isdigit())

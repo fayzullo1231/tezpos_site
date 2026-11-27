@@ -26,17 +26,22 @@ DEVSMS_TEMPLATE_URLS = (
 
 
 def normalize_phone(raw: str) -> str:
-    """TezPOS MpNormalizePhone."""
+    """Faqat to‘liq UZ raqam: 998 + 9 xona. Noto‘g‘ri 998386922 kabi qisqa → bo‘sh."""
     d = "".join(ch for ch in str(raw or "") if ch.isdigit())
     if not d:
         return ""
     if d.startswith("998") and len(d) == 12:
         return d
+    if d.startswith("998") and len(d) > 12:
+        return d[:12]
+    # 998 bilan boshlangan, lekin 12 xonadan kam — to‘liq emas
+    if d.startswith("998") and len(d) < 12:
+        return ""
     if len(d) == 9:
         return "998" + d
     if d.startswith("0") and len(d) == 10:
         return "998" + d[1:]
-    return d if len(d) >= 9 else ""
+    return ""
 
 
 def _fmt_som(value) -> str:

@@ -540,19 +540,10 @@ def verify_telethon_session(api_id: str, api_hash: str, session: str) -> dict[st
 
 
 def _uz_phone_digits(phone_n: str) -> str:
-    """9 xonali mahalliy raqamga +998 yozilmasa ham 998XXXXXXXXX qaytaradi."""
-    d = "".join(ch for ch in str(phone_n or "") if ch.isdigit())
-    if not d:
-        return ""
-    if d.startswith("998") and len(d) >= 12:
-        d = d[:12]
-    elif len(d) >= 9:
-        d = "998" + d[-9:]
-    else:
-        return ""
-    if len(d) != 12 or not d.startswith("998"):
-        return ""
-    return d
+    """Faqat 998XXXXXXXXX (12). Qisqa 998386922 kabi → bo‘sh (Telegram xato bermasin)."""
+    from .devsms import normalize_phone
+
+    return normalize_phone(phone_n)
 
 
 def _intl_phone(phone_n: str) -> str:
