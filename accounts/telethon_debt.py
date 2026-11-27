@@ -1592,10 +1592,12 @@ def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
     )
 
 
-def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
+def enqueue_text_by_phone(
+    debtor: ClientDebtor, text: str, *, wait_listener: bool = True
+) -> dict:
     """
-    Kulol Optom qarz xabari: avval listener orqali yuboradi,
-    bo‘lmasa fayl navbatiga yozadi (xabar yo‘qolmasin).
+    Qarz DM: peer bor bo‘lsa qisqa kutadi; yo‘q / wait_listener=False —
+    darhol outbox (SMS kutmasin, TG fonida).
     """
     if debtor is None or not (text or "").strip():
         return {"ok": False, "error": "Matn yoki mijoz yo‘q"}
@@ -1622,10 +1624,24 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
     from .tg_outbox import write_job
     from .tg_send_local import send_via_listener
 
-    # Topilgan telegram_id bo‘lsa tez yo‘l; resolve kerak bo‘lsa biroz uzoqroq
     has_peer = bool(job["telegram_id"] and job["telegram_access_hash"])
-    wait = 10 if has_peer else 22
-    res = send_via_listener(job, timeout=wait)
+    # TG topilmagan / SMS yo‘lida — listener kutmasdan navbat
+    if not wait_listener or not has_peer:
+        write_job(job)
+        logger.info(
+            "Telegram DM navbatga (tez) shop=%s phone=%s peer=%s",
+            job["shop"],
+            job["phone"],
+            int(has_peer),
+        )
+        return {
+            "ok": True,
+            "queued": True,
+            "channel": "telegram",
+            "fast_queue": True,
+        }
+
+    res = send_via_listener(job, timeout=4)
     if res.get("ok"):
         logger.info(
             "Telegram DM ketdi shop=%s phone=%s",
@@ -1634,10 +1650,10 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
         )
         return {**res, "ok": True, "queued": False, "channel": "telegram"}
 
-    # Timeout: so‘rov listenerga yetgan — ikki marta yubormaslik
     if res.get("timeout"):
+        write_job(job)
         logger.warning(
-            "Telegram DM listener timeout shop=%s phone=%s — kutilyapti",
+            "Telegram DM listener timeout shop=%s phone=%s — navbatda",
             job["shop"],
             job["phone"],
         )

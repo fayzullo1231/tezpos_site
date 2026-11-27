@@ -491,7 +491,7 @@ def send_dev_sms(
     elif t == "eskiz":
         body["type"] = "eskiz"
 
-    res = _api_post(DEVSMS_URL, auth, body)
+    res = _api_post(DEVSMS_URL, auth, body, timeout=10)
     data = res.get("data") or {}
     if res.get("http") == 200 and data.get("success"):
         payload = data.get("data") if isinstance(data.get("data"), dict) else {}

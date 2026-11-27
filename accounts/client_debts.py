@@ -256,7 +256,7 @@ def _deliver_debt_notice(
     debtor: ClientDebtor, text: str, *, allow_sms: bool | None = None
 ) -> dict:
     """
-    Qarz matni: TG navbatga; DevSMS sync (faqat ruxsat etilgan do‘konlar).
+    Avval DevSMS (tez), keyin Telegram navbat (TG topilmasa ham SMS kutmaydi).
     """
     msg = (text or "").strip()
     if not msg:
@@ -279,29 +279,13 @@ def _deliver_debt_notice(
             pass
 
     shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
-    tg_ok = False
-    tg_queued = False
-    tg_err = ""
-    tg_id = ""
-    if telethon_configured(shop) or shop_blocks_devsms(shop):
-        try:
-            tg_res = enqueue_text_by_phone(debtor, msg)
-            tg_queued = bool(tg_res.get("queued"))
-            tg_ok = bool(tg_res.get("ok") or tg_queued)
-            tg_err = "" if tg_ok else str(tg_res.get("error") or "Telegram yuborilmadi")
-        except Exception as exc:
-            logger.warning("Telegram yuborilmadi: %s", exc)
-            tg_err = str(exc)[:200]
-    else:
-        tg_err = "Telethon sozlanmagan"
+    if allow_sms is None:
+        allow_sms = _sms_enabled_for(shop)
 
     sms: dict = {"ok": False, "skipped": True}
     sms_ok = False
     sms_err = ""
-    if allow_sms is None:
-        allow_sms = _sms_enabled_for(shop)
     if allow_sms and _sms_enabled_for(shop):
-        # DevSMS sync — gunicorn daemon thread so‘rov tugagach o‘chib qolardi
         try:
             sms = devsms.send_dev_sms(
                 phone=debtor.phone,
@@ -322,6 +306,23 @@ def _deliver_debt_notice(
             sms_err = str(exc)[:200]
     else:
         sms = {"ok": False, "skipped": True, "error": ""}
+
+    tg_ok = False
+    tg_queued = False
+    tg_err = ""
+    tg_id = ""
+    # TG alohida — topilmasa SMS allaqachon ketgan; navbatga tez yoziladi
+    if telethon_configured(shop) or shop_blocks_devsms(shop):
+        try:
+            tg_res = enqueue_text_by_phone(debtor, msg, wait_listener=False)
+            tg_queued = bool(tg_res.get("queued"))
+            tg_ok = bool(tg_res.get("ok") or tg_queued)
+            tg_err = "" if tg_ok else str(tg_res.get("error") or "Telegram yuborilmadi")
+        except Exception as exc:
+            logger.warning("Telegram yuborilmadi: %s", exc)
+            tg_err = str(exc)[:200]
+    else:
+        tg_err = "Telethon sozlanmagan"
 
     if tg_ok and sms_ok:
         channel = "both"
