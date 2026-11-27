@@ -288,31 +288,25 @@ def _deliver_debt_notice(
     if allow_sms is None:
         allow_sms = _sms_enabled_for(shop)
     if allow_sms and _sms_enabled_for(shop):
-        phone = debtor.phone
-        sms_body = devsms.to_approved_sms(msg)
-
-        def _bg_sms(p=phone, m=sms_body):
-            from django.db import close_old_connections
-
-            try:
-                close_old_connections()
-                res = devsms.send_dev_sms(phone=p, message=m)
-                if not res.get("ok"):
-                    logger.warning(
-                        "DevSMS fon xato phone=%s err=%s",
-                        p,
-                        res.get("error"),
-                    )
-            except Exception:
-                logger.exception("DevSMS fon yuborilmadi phone=%s", p)
-            finally:
-                close_old_connections()
-
-        import threading
-
-        threading.Thread(target=_bg_sms, daemon=True).start()
-        sms = {"ok": True, "queued": True, "skipped": False}
-        sms_ok = True
+        # DevSMS sync — gunicorn daemon thread so‘rov tugagach o‘chib qolardi
+        try:
+            sms = devsms.send_dev_sms(
+                phone=debtor.phone,
+                message=devsms.to_approved_sms(msg),
+            )
+            sms_ok = bool(sms.get("ok"))
+            sms_err = "" if sms_ok else str(sms.get("error") or "SMS yuborilmadi")
+            if not sms_ok:
+                logger.warning(
+                    "DevSMS xato shop=%s phone=%s err=%s",
+                    shop,
+                    debtor.phone,
+                    sms_err,
+                )
+        except Exception as exc:
+            logger.exception("DevSMS yuborilmadi shop=%s", shop)
+            sms = {"ok": False, "error": str(exc)[:200]}
+            sms_err = str(exc)[:200]
     else:
         sms = {"ok": False, "skipped": True, "error": ""}
 
