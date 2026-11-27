@@ -85,10 +85,88 @@ def _shop_match(shop: str, allowed: set[str]) -> bool:
     return False
 
 
+def reclaim_stale_runs(max_age_sec: float = 90) -> int:
+    """Crash qolgan *.run fayllarni yana pending *.json qiladi."""
+    n = 0
+    now = time.time()
+    for root in _outbox_candidates():
+        pending = root / "pending"
+        if not pending.is_dir():
+            continue
+        for path in list(pending.glob("*.run")):
+            try:
+                age = now - path.stat().st_mtime
+            except OSError:
+                continue
+            if age < max_age_sec:
+                continue
+            dest = path.with_suffix(".json")
+            try:
+                if dest.exists():
+                    path.unlink(missing_ok=True)
+                else:
+                    path.replace(dest)
+                n += 1
+                logger.warning("Telegram stale .run qaytarildi: %s", dest.name)
+            except OSError:
+                continue
+    return n
+
+
+def requeue_fail_jobs(limit: int = 40) -> int:
+    """fail/ dagi vaqtinchalik xatolarni qayta urinishga qo‘yadi."""
+    n = 0
+    for root in _outbox_candidates():
+        fail = root / "fail"
+        pending = root / "pending"
+        if not fail.is_dir():
+            continue
+        try:
+            pending.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        for path in sorted(fail.glob("*.json"))[:limit]:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            err = str(data.get("error") or "").lower()
+            if any(
+                x in err
+                for x in (
+                    "telefon yo",
+                    "telefon noto",
+                    "matn bo",
+                    "noma’lum",
+                    "noma'lum",
+                )
+            ):
+                continue
+            data.pop("error", None)
+            dest = pending / f"{time.time_ns()}_{uuid.uuid4().hex[:8]}.json"
+            try:
+                dest.write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+                path.unlink(missing_ok=True)
+                n += 1
+            except OSError:
+                continue
+    if n:
+        logger.info("Telegram fail qayta navbat: %s", n)
+    return n
+
+
 def take_jobs(shops: set[str]) -> list[tuple[Path, dict[str, Any]]]:
     """Shu sessiondagi do‘konlar uchun pending joblarni oladi."""
     close_old_connections()
+    reclaim_stale_runs()
     allowed = {str(s or "").strip().lower() for s in shops if s}
+    # kuloloptom-2 shared session
+    if "kuloloptom" in allowed:
+        allowed.add("kuloloptom-2")
+    if "kuloloptom-2" in allowed:
+        allowed.add("kuloloptom")
     out: list[tuple[Path, dict[str, Any]]] = []
     roots: list[Path] = []
     try:

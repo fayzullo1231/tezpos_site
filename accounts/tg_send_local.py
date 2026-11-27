@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import urllib.error
 import urllib.request
 from typing import Any
@@ -40,5 +41,17 @@ def send_via_listener(job: dict[str, Any], timeout: float = 40) -> dict[str, Any
         except Exception:
             pass
         return {"ok": False, "error": err or str(exc)}
+    except (TimeoutError, socket.timeout) as exc:
+        return {"ok": False, "error": str(exc)[:200], "timeout": True}
+    except urllib.error.URLError as exc:
+        reason = str(getattr(exc, "reason", exc) or exc)
+        low = reason.lower()
+        if "timed out" in low or "timeout" in low:
+            return {"ok": False, "error": reason[:200], "timeout": True}
+        return {"ok": False, "error": reason[:200], "offline": True}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)[:200], "offline": True}
+        msg = str(exc)[:200]
+        low = msg.lower()
+        if "timed out" in low or "timeout" in low:
+            return {"ok": False, "error": msg, "timeout": True}
+        return {"ok": False, "error": msg, "offline": True}

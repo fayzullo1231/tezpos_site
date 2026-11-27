@@ -1520,15 +1520,30 @@ async def _send_group_async(link: str, text: str, shop_key: str = "") -> dict[st
 def send_group_message(
     link: str, text: str, *, timeout: int = 60, shop_key: str = ""
 ) -> dict[str, Any]:
-    """Gunicorn kutmasin — faqat navbat. Listener o‘zi yuboradi."""
+    """Avval listener (tez), bo‘lmasa navbat — xabar yo‘qolmasin."""
     if not telethon_configured(shop_key or None):
         return {"ok": False, "error": "Telethon sozlanmagan"}
     if not (text or "").strip():
         return {"ok": False, "error": "Matn bo‘sh"}
     if not parse_group_link(link):
         return {"ok": False, "error": "Telegram havola noto‘g‘ri"}
+    from .tg_send_local import send_via_listener
+
+    job = {
+        "type": "group",
+        "shop": (shop_key or "").strip().lower(),
+        "link": link,
+        "text": text,
+    }
+    res = send_via_listener(job, timeout=min(12, timeout))
+    if res.get("ok"):
+        return res
     enqueue_group_message(link, text, shop_key)
-    return {"ok": True, "queued": True}
+    return {
+        "ok": True,
+        "queued": True,
+        "error": res.get("error") or "",
+    }
 
 
 def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
@@ -1546,7 +1561,10 @@ def enqueue_group_message(link: str, text: str, shop_key: str = "") -> None:
 
 
 def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
-    """Darhol navbatga yozadi — HTTP so‘rov Telethon/resolve kutmaydi."""
+    """
+    Kulol Optom qarz xabari: avval listener orqali yuboradi,
+    bo‘lmasa fayl navbatiga yozadi (xabar yo‘qolmasin).
+    """
     if debtor is None or not (text or "").strip():
         return {"ok": False, "error": "Matn yoki mijoz yo‘q"}
     shop = (getattr(debtor, "shop_key", "") or "").strip().lower()
@@ -1570,14 +1588,47 @@ def enqueue_text_by_phone(debtor: ClientDebtor, text: str) -> dict:
         "text": (text or "").strip(),
     }
     from .tg_outbox import write_job
+    from .tg_send_local import send_via_listener
+
+    # Topilgan telegram_id bo‘lsa tez yo‘l; resolve kerak bo‘lsa biroz uzoqroq
+    has_peer = bool(job["telegram_id"] and job["telegram_access_hash"])
+    wait = 10 if has_peer else 22
+    res = send_via_listener(job, timeout=wait)
+    if res.get("ok"):
+        logger.info(
+            "Telegram DM ketdi shop=%s phone=%s",
+            job["shop"],
+            job["phone"],
+        )
+        return {**res, "ok": True, "queued": False, "channel": "telegram"}
+
+    # Timeout: so‘rov listenerga yetgan — ikki marta yubormaslik
+    if res.get("timeout"):
+        logger.warning(
+            "Telegram DM listener timeout shop=%s phone=%s — kutilyapti",
+            job["shop"],
+            job["phone"],
+        )
+        return {
+            "ok": True,
+            "queued": True,
+            "channel": "telegram",
+            "listener_timeout": True,
+        }
 
     write_job(job)
-    logger.info(
-        "Telegram DM navbatga shop=%s phone=%s",
+    logger.warning(
+        "Telegram DM navbatga shop=%s phone=%s err=%s",
         job["shop"],
         job["phone"],
+        (res.get("error") or "")[:160],
     )
-    return {"ok": True, "queued": True, "channel": "telegram"}
+    return {
+        "ok": True,
+        "queued": True,
+        "channel": "telegram",
+        "listener_error": (res.get("error") or "")[:200],
+    }
 
 
 def ensure_telegram_resolved(debtor: ClientDebtor, *, force: bool = False) -> ClientDebtor:

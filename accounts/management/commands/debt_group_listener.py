@@ -443,7 +443,14 @@ class Command(BaseCommand):
                     if any(s == "usmon" or s.startswith("usmon") or s.startswith("import") for s in allowed):
                         senders["usmon"] = _send_any_job
                         senders["import"] = _send_any_job
-                    jobs = await sync_to_async(take_jobs)(allowed)
+                    def _prep_jobs():
+                        from accounts.tg_outbox import reclaim_stale_runs, requeue_fail_jobs
+
+                        reclaim_stale_runs(90)
+                        requeue_fail_jobs(20)
+                        return take_jobs(allowed)
+
+                    jobs = await sync_to_async(_prep_jobs)()
                     for path, job in jobs:
                         err = ""
                         try:
