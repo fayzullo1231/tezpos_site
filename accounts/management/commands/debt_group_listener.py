@@ -497,34 +497,25 @@ class Command(BaseCommand):
             _recheck_started.add(key)
             await asyncio.sleep(2)
 
-            def _unlock_false_misses():
-                """Yolg‘on «topilmadi» ni ochib qayta qidirish."""
-                from django.db.models import Q
-
+            def _heal_and_list():
+                """telegram_id bor → status=ok; qolganlar qayta qidiriladi."""
                 from accounts.models import ClientDebtor
 
-                return ClientDebtor.objects.filter(
-                    shop_key__in=list(allowed),
-                    is_active=True,
-                ).filter(
-                    Q(telegram_status="no_telegram") | Q(telegram_status="error")
-                ).filter(Q(telegram_id="") | Q(telegram_id__isnull=True)).update(
-                    telegram_status="",
-                    telegram_checked_at=None,
-                )
-
-            try:
-                cleared = await sync_to_async(_unlock_false_misses)()
-                if cleared:
-                    print(
-                        f"telegram yolg'on topilmadi ochildi: {cleared}",
-                        flush=True,
+                healed = (
+                    ClientDebtor.objects.filter(
+                        shop_key__in=list(allowed),
+                        is_active=True,
                     )
-            except Exception:
-                logger.exception("telegram miss reset")
+                    .exclude(telegram_id="")
+                    .exclude(telegram_status="ok")
+                    .update(telegram_status="ok")
+                )
+                return healed, debtors_pending_telegram(allowed)
 
             try:
-                rows = await sync_to_async(debtors_pending_telegram)(allowed)
+                healed, rows = await sync_to_async(_heal_and_list)()
+                if healed:
+                    print(f"telegram status heal ok: {healed}", flush=True)
             except Exception:
                 logger.exception("telegram qidiruv ro'yxati")
                 _recheck_started.discard(key)

@@ -242,7 +242,7 @@ def _sms_enabled_for(shop: str) -> bool:
         return False
     if not devsms.resolve_token():
         return False
-    if shop_devsms_on(shop):
+    if shop_devsms_on(shop) or uses_shared_telethon(shop):
         DebtSmsTemplate.objects.filter(shop_key=shop, sms_enabled=False).update(
             sms_enabled=True
         )
@@ -470,11 +470,11 @@ def _maybe_deliver_personal(
     if shop_blocks_devsms(shop):
         allow_sms = False
     elif shop_devsms_on(shop):
-        # Faqat kuloloptomuz — Dev SMS
+        # kuloloptomuz — Dev SMS
         allow_sms = _sms_enabled_for(shop)
     elif uses_shared_telethon(shop):
-        # kuloloptom / kuloloptom-2 — faqat Telegram userbot (raqam orqali)
-        allow_sms = False
+        # kuloloptom / kuloloptom-2 — Telegram + DevSMS (token bo‘lsa)
+        allow_sms = _sms_enabled_for(shop)
     else:
         allow_sms = bool(send_sms) and _sms_enabled_for(shop)
     allow_tg = telethon_configured(shop) or shop_blocks_devsms(shop)
@@ -520,7 +520,7 @@ def _maybe_deliver_personal(
                     else:
                         out.append(ln)
                 text = "\n".join(out if inserted else lines + ["", item_block])
-        if shop_devsms_on(shop):
+        if shop_devsms_on(shop) or uses_shared_telethon(shop):
             text = _force_sms_head(text, _kulol_sms_label())
         if len(text) > 3900:
             text = text[:3890] + "\n…"
@@ -833,9 +833,20 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
     tg_user = (row.telegram_username or "").strip()
     tg_name = (row.telegram_name or "").strip()
     tg_status = (row.telegram_status or "").strip()
+    tg_id = str(getattr(row, "telegram_id", "") or "").strip()
     phone_ok = bool(devsms.normalize_phone(row.phone or ""))
-    if tg_status == "ok":
-        tg_display = ("@" + tg_user.lstrip("@")) if tg_user else (tg_name or "Telegram bor")
+    # Id/username qolgan bo‘lsa — status tozalangan bo‘lsa ham nomni ko‘rsat
+    if tg_id and tg_status not in ("no_telegram", "no_phone"):
+        if tg_status != "ok":
+            tg_status = "ok"
+    if tg_status == "ok" or (
+        (tg_user or tg_name) and tg_status not in ("no_telegram", "no_phone")
+    ):
+        tg_display = (
+            ("@" + tg_user.lstrip("@"))
+            if tg_user
+            else (tg_name or "Telegram bor")
+        )
     elif tg_status == "no_phone" or (
         (row.phone or "").strip() and not phone_ok
     ):
@@ -846,7 +857,9 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
         )
     elif tg_status == "no_telegram":
         tg_display = "Telegram topilmadi"
-    elif tg_status == "error":
+    elif tg_status == "error" or (
+        phone_ok and not tg_status
+    ):
         tg_display = "Tekshirilmoqda"
     else:
         tg_display = ""
@@ -1023,20 +1036,17 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
         "total_debt": float(total),
         "total_display": _fmt_money(total),
         "shop_label": shop_label,
-        # DevSMS faqat kuloloptomuz (yoki alohida yoqilgan do‘konlar).
-        # kuloloptom / kuloloptom-2 — faqat Telegram.
+        # DevSMS: kuloloptomuz + kuloloptom (token) + boshqa yoqiq do‘konlar
         "sms_enabled": (
             bool(devsms.resolve_token())
+            and not shop_blocks_devsms(shop)
             and (
                 shop_devsms_on(shop)
-                or (
-                    not uses_shared_telethon(shop)
-                    and not shop_blocks_devsms(shop)
-                    and bool(tpl and tpl.sms_enabled)
-                )
+                or uses_shared_telethon(shop)
+                or bool(tpl and tpl.sms_enabled)
             )
         ),
-        "devsms_blocked": shop_blocks_devsms(shop) or uses_shared_telethon(shop),
+        "devsms_blocked": shop_blocks_devsms(shop),
     }
 
 

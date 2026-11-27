@@ -24,13 +24,20 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         shop = str(options.get("shop") or "").strip().lower()
-        qs = ClientDebtor.objects.filter(is_active=True).filter(
-            Q(telegram_status="no_telegram") | Q(telegram_status="error")
-        ).filter(Q(telegram_id="") | Q(telegram_id__isnull=True))
+        base = ClientDebtor.objects.filter(is_active=True)
         if shop:
-            qs = qs.filter(shop_key=shop)
+            base = base.filter(shop_key=shop)
+        # Avval id borlarni tikla
+        healed = (
+            base.exclude(telegram_id="")
+            .exclude(telegram_status="ok")
+            .update(telegram_status="ok")
+        )
+        qs = base.filter(
+            Q(telegram_status="no_telegram") | Q(telegram_status="error") | Q(telegram_status="")
+        ).filter(Q(telegram_id="") | Q(telegram_id__isnull=True))
         n = qs.count()
-        self.stdout.write(f"Qayta tekshiriladi: {n}")
+        self.stdout.write(f"Heal (id bor): {healed}; qayta qidirish: {n}")
         if options.get("dry_run"):
             return
         updated = qs.update(telegram_status="", telegram_checked_at=None)
