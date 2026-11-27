@@ -736,6 +736,29 @@ def _parse_import(result, by_cid: dict):
     return found, retry, popular
 
 
+async def _ensure_saved_contact(client, user, phone: str = "", name: str = "") -> None:
+    """Topilgan user — telefon daftariga yoziladi (DM uchun muhim)."""
+    from telethon.tl.functions.contacts import AddContactRequest
+
+    if user is None:
+        return
+    first = (name or "").strip()[:32] or "Mijoz"
+    digits = _uz_phone_digits(phone) or "".join(ch for ch in str(phone or "") if ch.isdigit())
+    phone_s = ("+" + digits) if digits else ""
+    try:
+        await client(
+            AddContactRequest(
+                id=user,
+                first_name=first,
+                last_name="",
+                phone=phone_s,
+                add_phone_privacy_exception=True,
+            )
+        )
+    except Exception:
+        logger.warning("AddContact xato", exc_info=True)
+
+
 async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") -> dict:
     """
     Bitta raqamni kontakt qilib oladi.
@@ -743,7 +766,7 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
     Kontakt saqlanadi, aks holda xabar chatga tushmaydi.
     """
     from telethon.errors import FloodWaitError, RPCError
-    from telethon.tl.functions.contacts import AddContactRequest, ImportContactsRequest
+    from telethon.tl.functions.contacts import ImportContactsRequest
     from telethon.tl.types import InputPhoneContact
 
     phones = _phone_variants(phone_n)
@@ -780,18 +803,7 @@ async def _import_user_by_phone(client, phone_n: str, contact_name: str = "") ->
             if user is not None:
                 meta = _meta_ok(user)
                 meta["_imported"] = True
-                try:
-                    await client(
-                        AddContactRequest(
-                            id=user,
-                            first_name=first,
-                            last_name="",
-                            phone=phone,
-                            add_phone_privacy_exception=True,
-                        )
-                    )
-                except Exception:
-                    logger.warning("addContact xato", exc_info=True)
+                await _ensure_saved_contact(client, user, phone, first)
                 return meta
             _found, retry, popular = _parse_import(result, {client_id: phone})
             if retry and attempt == 0:
@@ -859,16 +871,25 @@ async def _resolve_phone_for_send(client, phone_n: str, contact_name: str = "") 
 
 
 def debtors_pending_telegram(shops, limit: int = 120) -> list:
-    """Hali topilmagan, telefoni bor qarzdorlar. Har userbot faqat o‘z do‘koni."""
-    from django.db.models import F
+    """Tekshirilmoqda / xato / eski topilmadi — qayta kontakt qidiriladi."""
+    from datetime import timedelta
+
+    from django.db.models import F, Q
 
     keys = sorted({str(s or "").strip().lower() for s in (shops or []) if str(s or "").strip()})
     if not keys:
         return []
+    stale = timezone.now() - timedelta(hours=6)
     return list(
         ClientDebtor.objects.filter(shop_key__in=keys, is_active=True)
         .exclude(phone="")
         .exclude(telegram_status="ok")
+        .exclude(telegram_status="no_phone")
+        .filter(
+            Q(telegram_status__in=["", "error"])
+            | Q(telegram_status="no_telegram", telegram_checked_at__isnull=True)
+            | Q(telegram_status="no_telegram", telegram_checked_at__lt=stale)
+        )
         .order_by(F("telegram_checked_at").asc(nulls_first=True), "id")[: max(1, limit)]
     )
 
@@ -895,10 +916,16 @@ async def resolve_pending_on_client(client, debtors) -> int:
     found = 0
     missed: list[tuple] = []
 
-    async def _save_found(row, user) -> None:
+    async def _save_found(row, user, digits: str = "") -> None:
         nonlocal found
         meta = _meta_ok(user)
         meta["_imported"] = True
+        await _ensure_saved_contact(
+            client,
+            user,
+            digits or getattr(row, "phone", "") or "",
+            str(getattr(row, "name", "") or ""),
+        )
         clean = {k: v for k, v in meta.items() if k not in ("user", "_privacy", "_imported")}
         await apply_telegram_meta(row, clean)
         found += 1
@@ -933,7 +960,7 @@ async def resolve_pending_on_client(client, debtors) -> int:
             pair = by_cid.get(cid)
             if pair is None:
                 continue
-            await _save_found(pair[0], user)
+            await _save_found(pair[0], user, pair[1])
             hit.add(cid)
         if retry:
             await asyncio.sleep(RESOLVE_PAUSE_SEC)
@@ -947,7 +974,7 @@ async def resolve_pending_on_client(client, debtors) -> int:
                     pair = by_cid.get(cid)
                     if pair is None:
                         continue
-                    await _save_found(pair[0], user)
+                    await _save_found(pair[0], user, pair[1])
                     hit.add(cid)
         left = [by_cid[cid] for cid in by_cid if cid not in hit]
         return left
@@ -965,9 +992,10 @@ async def resolve_pending_on_client(client, debtors) -> int:
                 if len(left) < len(chunk):
                     use_plus = True
                 else:
-                    missed.extend(left)
-                    print("telegram import bo'sh — limit yoki raqam yopiq", flush=True)
-                    break
+                    print(
+                        "telegram import bo'sh — raqamdan bittalab qidiriladi",
+                        flush=True,
+                    )
             missed.extend(left)
             await asyncio.sleep(RESOLVE_PAUSE_SEC)
     except FloodWaitError as exc:
@@ -989,9 +1017,9 @@ async def resolve_pending_on_client(client, debtors) -> int:
             logger.warning("resolve_for_send qoldiq %s", exc)
             break
         if meta2.get("ok") and meta2.get("user") is not None:
-            await _save_found(row, meta2["user"])
+            await _save_found(row, meta2["user"], digits)
             streak = 0
-        elif meta2.get("status") == "no_telegram" and found > 0:
+        elif meta2.get("status") == "no_telegram":
             clean = {
                 k: v
                 for k, v in meta2.items()
@@ -1003,7 +1031,7 @@ async def resolve_pending_on_client(client, debtors) -> int:
             print("telegram qidiruv to'xtadi: flood", flush=True)
             break
         else:
-            # popular/pending — status error, qayta uriniladi
+            # popular/pending — status error, keyinroq qayta uriniladi
             clean = {
                 k: v
                 for k, v in meta2.items()
@@ -1012,8 +1040,8 @@ async def resolve_pending_on_client(client, debtors) -> int:
             if clean:
                 await apply_telegram_meta(row, clean)
             streak += 1
-            if found == 0 and streak >= 5:
-                print("telegram qidiruv to'xtadi: limit", flush=True)
+            if streak >= 12:
+                print("telegram qidiruv: keyingi tsiklga qoldi", flush=True)
                 break
         await asyncio.sleep(RESOLVE_PAUSE_SEC)
     return found
@@ -1194,6 +1222,10 @@ async def _send_by_phone(
             "meta": clean_meta,
         }
 
+    # Qarz DM oldidan kontaktga yoz — aks holda chatga tushmasligi mumkin
+    if user is not None:
+        await _ensure_saved_contact(client, user, phone_n, contact_name)
+
     send_ok = False
     send_err = ""
     while True:
@@ -1221,7 +1253,7 @@ async def _send_by_phone(
             send_err = str(exc)[:200]
             break
 
-    if not send_ok and not imported_temp and phone_n:
+    if not send_ok and phone_n:
         meta2 = await _resolve_phone_for_send(client, phone_n, contact_name)
         user2 = meta2.get("user")
         if meta2.get("ok") and user2 is not None:
@@ -1232,6 +1264,7 @@ async def _send_by_phone(
                 for k, v in meta2.items()
                 if k not in ("user", "_privacy", "_imported")
             }
+            await _ensure_saved_contact(client, user2, phone_n, contact_name)
             try:
                 body, ents = prepare_telegram_dm(text)
                 try:
@@ -1248,7 +1281,6 @@ async def _send_by_phone(
             except Exception as exc:
                 send_err = str(exc)[:200]
 
-    # Kontakt saqlanadi. O‘chirilsa xabar chatga tushmay, so‘rovlar ichida qoladi.
     if not send_ok:
         return {
             "ok": False,

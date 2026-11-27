@@ -491,46 +491,54 @@ class Command(BaseCommand):
                 await asyncio.sleep(0.15)
 
         async def _recheck_missing():
+            """Tekshirilmoqda qotib qolmasin — kontakt qidiruv doimiy."""
             key = ",".join(sorted(allowed))
             if not key or key in _recheck_started:
                 return
             _recheck_started.add(key)
-            await asyncio.sleep(2)
+            first = True
+            try:
+                while True:
+                    await asyncio.sleep(2 if first else 75)
+                    first = False
+                    if box.get("client") is None or not ready.is_set():
+                        continue
 
-            def _heal_and_list():
-                """telegram_id bor → status=ok; qolganlar qayta qidiriladi."""
-                from accounts.models import ClientDebtor
+                    def _heal_and_list():
+                        from accounts.models import ClientDebtor
 
-                healed = (
-                    ClientDebtor.objects.filter(
-                        shop_key__in=list(allowed),
-                        is_active=True,
+                        healed = (
+                            ClientDebtor.objects.filter(
+                                shop_key__in=list(allowed),
+                                is_active=True,
+                            )
+                            .exclude(telegram_id="")
+                            .exclude(telegram_status="ok")
+                            .update(telegram_status="ok")
+                        )
+                        return healed, debtors_pending_telegram(allowed)
+
+                    try:
+                        healed, rows = await sync_to_async(_heal_and_list)()
+                        if healed:
+                            print(f"telegram status heal ok: {healed}", flush=True)
+                    except Exception:
+                        logger.exception("telegram qidiruv ro'yxati")
+                        continue
+                    if not rows:
+                        continue
+                    print(
+                        f"telegram qidiruv shops={key} soni={len(rows)}",
+                        flush=True,
                     )
-                    .exclude(telegram_id="")
-                    .exclude(telegram_status="ok")
-                    .update(telegram_status="ok")
-                )
-                return healed, debtors_pending_telegram(allowed)
-
-            try:
-                healed, rows = await sync_to_async(_heal_and_list)()
-                if healed:
-                    print(f"telegram status heal ok: {healed}", flush=True)
-            except Exception:
-                logger.exception("telegram qidiruv ro'yxati")
+                    try:
+                        found = await resolve_pending_on_client(box["client"], rows)
+                    except Exception:
+                        logger.exception("telegram qidiruv")
+                        continue
+                    print(f"telegram qidiruv tugadi topildi={found}", flush=True)
+            finally:
                 _recheck_started.discard(key)
-                return
-            print(f"telegram qidiruv shops={key} soni={len(rows)}", flush=True)
-            if box.get("client") is None or not ready.is_set():
-                _recheck_started.discard(key)
-                return
-            try:
-                found = await resolve_pending_on_client(box["client"], rows)
-            except Exception:
-                logger.exception("telegram qidiruv")
-                _recheck_started.discard(key)
-                return
-            print(f"telegram qidiruv tugadi topildi={found}", flush=True)
 
         outbox_task = asyncio.create_task(_drain_outbox())
         recheck_task = asyncio.create_task(_recheck_missing())
