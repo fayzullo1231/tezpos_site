@@ -835,18 +835,30 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
     tg_name = (row.telegram_name or "").strip()
     tg_status = (row.telegram_status or "").strip()
     tg_id = str(getattr(row, "telegram_id", "") or "").strip()
-    phone_ok = bool(devsms.normalize_phone(row.phone or ""))
+    phone_n = devsms.normalize_phone(row.phone or "")
+    phone_ok = bool(phone_n)
+    # Qisqa raqamni 998… ga tekislash (qidiruv uchun)
+    if phone_n and str(row.phone or "").strip() != phone_n:
+        try:
+            row.phone = phone_n
+            row.save(update_fields=["phone", "updated_at"])
+        except Exception:
+            pass
     # Id/username qolgan bo‘lsa — status tozalangan bo‘lsa ham nomni ko‘rsat
     if tg_id and tg_status not in ("no_telegram", "no_phone"):
         if tg_status != "ok":
             tg_status = "ok"
+    low_name = tg_name.lower()
+    name_ok = bool(tg_name) and not any(
+        x in low_name for x in ("tezpos", "qarz", "mijoz")
+    )
     if tg_status == "ok" or (
-        (tg_user or tg_name) and tg_status not in ("no_telegram", "no_phone")
+        (tg_user or name_ok) and tg_status not in ("no_telegram", "no_phone")
     ):
         tg_display = (
             ("@" + tg_user.lstrip("@"))
             if tg_user
-            else (tg_name or "Telegram bor")
+            else (tg_name if name_ok else "Telegram bor")
         )
     elif tg_status == "no_phone" or (
         (row.phone or "").strip() and not phone_ok
@@ -858,10 +870,18 @@ def _serialize_debtor(row: ClientDebtor, *, with_ledger=False, limit=80) -> dict
         )
     elif tg_status == "no_telegram":
         tg_display = "Telegram topilmadi"
-    elif tg_status == "error" or (
-        phone_ok and not tg_status
-    ):
-        tg_display = "Tekshirilmoqda"
+    elif tg_status == "error" or (phone_ok and not tg_status):
+        # Yangi — tekshirilmoqda; eski error — qotib qolmasin
+        checked = getattr(row, "telegram_checked_at", None)
+        age_sec = (
+            (timezone.now() - checked).total_seconds() if checked else None
+        )
+        if checked and age_sec is not None and age_sec >= 120:
+            tg_display = "Telegram topilmadi"
+            if not tg_status:
+                tg_status = "no_telegram"
+        else:
+            tg_display = "Tekshirilmoqda"
     else:
         tg_display = ""
         if (row.phone or "").strip() and not phone_ok:

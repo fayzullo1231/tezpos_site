@@ -27,17 +27,31 @@ class Command(BaseCommand):
         base = ClientDebtor.objects.filter(is_active=True)
         if shop:
             base = base.filter(shop_key=shop)
+        from accounts import devsms
+
         # Avval id borlarni tikla
         healed = (
             base.exclude(telegram_id="")
             .exclude(telegram_status="ok")
             .update(telegram_status="ok")
         )
+        # Qisqa telefonlarni 998… ga
+        phone_fixed = 0
+        for row in base.exclude(phone="").iterator():
+            nrm = devsms.normalize_phone(row.phone or "")
+            if nrm and str(row.phone or "").strip() != nrm:
+                row.phone = nrm
+                row.save(update_fields=["phone", "updated_at"])
+                phone_fixed += 1
         qs = base.filter(
-            Q(telegram_status="no_telegram") | Q(telegram_status="error") | Q(telegram_status="")
+            Q(telegram_status="no_telegram")
+            | Q(telegram_status="error")
+            | Q(telegram_status="")
         ).filter(Q(telegram_id="") | Q(telegram_id__isnull=True))
         n = qs.count()
-        self.stdout.write(f"Heal (id bor): {healed}; qayta qidirish: {n}")
+        self.stdout.write(
+            f"Heal (id bor): {healed}; telefon: {phone_fixed}; qayta qidirish: {n}"
+        )
         if options.get("dry_run"):
             return
         updated = qs.update(telegram_status="", telegram_checked_at=None)

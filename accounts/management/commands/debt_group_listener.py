@@ -499,7 +499,7 @@ class Command(BaseCommand):
             first = True
             try:
                 while True:
-                    await asyncio.sleep(2 if first else 75)
+                    await asyncio.sleep(2 if first else 35)
                     first = False
                     if box.get("client") is None or not ready.is_set():
                         continue

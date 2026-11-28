@@ -879,14 +879,17 @@ def debtors_pending_telegram(shops, limit: int = 120) -> list:
     keys = sorted({str(s or "").strip().lower() for s in (shops or []) if str(s or "").strip()})
     if not keys:
         return []
-    stale = timezone.now() - timedelta(hours=6)
+    stale = timezone.now() - timedelta(hours=4)
+    fresh_err = timezone.now() - timedelta(minutes=2)
     return list(
         ClientDebtor.objects.filter(shop_key__in=keys, is_active=True)
         .exclude(phone="")
         .exclude(telegram_status="ok")
         .exclude(telegram_status="no_phone")
         .filter(
-            Q(telegram_status__in=["", "error"])
+            Q(telegram_status="")
+            | Q(telegram_status="error", telegram_checked_at__isnull=True)
+            | Q(telegram_status="error", telegram_checked_at__lt=fresh_err)
             | Q(telegram_status="no_telegram", telegram_checked_at__isnull=True)
             | Q(telegram_status="no_telegram", telegram_checked_at__lt=stale)
         )
@@ -1055,12 +1058,15 @@ def _save_status(debtor: ClientDebtor, status: str) -> None:
 
 @sync_to_async
 def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
-    """Topilgan id saqlanadi. popular/privacy «topilmadi» qilib mahkamlanmaydi."""
+    """Topilgan id saqlanadi. Qayta-qayta error — «Tekshirilmoqda»da qotmasin."""
+    from datetime import timedelta
+
     status = meta.get("status") or "error"
     new_id = str(meta.get("telegram_id") or "").strip()
     new_hash = str(meta.get("access_hash") or "").strip()
     new_user = str(meta.get("username") or "").strip()
     new_name = str(meta.get("display_name") or "").strip()
+    err = str(meta.get("error") or "").lower()
     if status == "ok" and new_id:
         debtor.telegram_status = "ok"
         debtor.telegram_id = new_id
@@ -1079,8 +1085,18 @@ def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
     elif status == "no_phone" and not (debtor.telegram_id or "").strip():
         debtor.telegram_status = "no_phone"
     elif not (debtor.telegram_id or "").strip():
-        # popular / privacy / flood — qayta tekshiriladi, topilmadi emas
-        debtor.telegram_status = "error"
+        # 1-urinish: error (Tekshirilmoqda); 2+/eski: topilmadi — qotib qolmasin
+        prev = (debtor.telegram_status or "").strip()
+        checked = debtor.telegram_checked_at
+        stale = bool(
+            checked and (timezone.now() - checked) >= timedelta(minutes=5)
+        )
+        if prev in ("error", "no_telegram") or stale:
+            debtor.telegram_status = "no_telegram"
+            debtor.telegram_username = ""
+            debtor.telegram_name = ""
+        else:
+            debtor.telegram_status = "error"
     debtor.telegram_checked_at = timezone.now()
     debtor.save(
         update_fields=[
