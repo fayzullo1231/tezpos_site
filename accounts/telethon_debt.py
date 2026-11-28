@@ -1066,7 +1066,6 @@ def apply_telegram_meta(debtor: ClientDebtor, meta: dict) -> None:
     new_hash = str(meta.get("access_hash") or "").strip()
     new_user = str(meta.get("username") or "").strip()
     new_name = str(meta.get("display_name") or "").strip()
-    err = str(meta.get("error") or "").lower()
     if status == "ok" and new_id:
         debtor.telegram_status = "ok"
         debtor.telegram_id = new_id
