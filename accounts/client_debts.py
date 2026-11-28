@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 from django.contrib.auth.decorators import login_required
 from django.db import OperationalError, transaction
-from django.db.models import DecimalField, Sum, Value
+from django.db.models import Count, DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -1031,7 +1031,7 @@ def _list_payload(shop: str, extra_keys=None) -> dict:
     elif is_usmon_family(shop):
         shop_label = IMPORT_PRODUCT_LABEL
     return {
-        "ok": True,
+        "ok": True, 
         "debtors": out,
         "count": len(out),
         "total_debt": float(total),
@@ -1894,6 +1894,56 @@ def _import_pos_customers(shop: str, request) -> int:
     if n:
         logger.info("POS customers imported shop=%s count=%s", shop, n)
     return n
+
+
+@csrf_exempt
+@require_http_methods(["GET", "OPTIONS"])
+def api_client_debts_shift_stats(request):
+    """Smena uchun: +qarz = nasiya savdo, −to‘lov = nasiya undirildi."""
+    if request.method == "OPTIONS":
+        return _cors(JsonResponse({"ok": True}))
+    try:
+        shop = _token_shop(request)
+    except PermissionError as exc:
+        return _cors(JsonResponse({"error": str(exc)}, status=401))
+    except tezpos_api.TezPosApiError as exc:
+        return _cors(JsonResponse({"error": str(exc)}, status=exc.status or 401))
+    keys = _request_shop_keys(request, shop) or [shop]
+    qs = ClientDebtorLedger.objects.filter(
+        debtor__shop_key__in=keys,
+        debtor__is_active=True,
+    )
+    since_raw = (request.GET.get("since") or "").strip()
+    if since_raw:
+        try:
+            since_dt = datetime.fromisoformat(since_raw.replace("Z", "+00:00"))
+            if timezone.is_naive(since_dt):
+                since_dt = timezone.make_aware(since_dt, timezone.get_current_timezone())
+            qs = qs.filter(created_at__gte=since_dt)
+        except (TypeError, ValueError):
+            pass
+    adds = qs.filter(kind=ClientDebtorLedger.KIND_ADD).aggregate(
+        total=Coalesce(Sum("amount"), Value(0), output_field=DecimalField()),
+        n=Count("id"),
+    )
+    subs = qs.filter(kind=ClientDebtorLedger.KIND_SUB).aggregate(
+        total=Coalesce(Sum("amount"), Value(0), output_field=DecimalField()),
+        n=Count("id"),
+    )
+    debt_total = float(adds.get("total") or 0)
+    collected = float(subs.get("total") or 0)
+    return _cors(
+        JsonResponse(
+            {
+                "ok": True,
+                "shop": shop,
+                "debt_total": debt_total,
+                "collected_total": collected,
+                "credit_sales_count": int(adds.get("n") or 0),
+                "collected_count": int(subs.get("n") or 0),
+            }
+        )
+    )
 
 
 @csrf_exempt
